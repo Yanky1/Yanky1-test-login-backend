@@ -1,0 +1,15 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 10.0.x }
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger "trx;LogFileName=results.trx"
+      - run: dotnet list package --vulnerable --include-transitive 2>&1 | tee vuln.txt; ! grep -q "has the following vulnerable packages" vuln.txt

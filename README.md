@@ -1,0 +1,41 @@
+# Solvelt seller portal – backend
+
+ASP.NET Core 10 API for seller sign-up / sign-in: signup wizard drafts, email verification, JWT + rotating refresh tokens,
+lockout, passkeys (built-in Identity passkey support), Google/Apple sign-in, TOTP 2FA, seller approval status.
+Frontend: <https://github.com/Yanky1/test-login-frontend>.
+
+## Prerequisites
+.NET 10 SDK. Optional: PostgreSQL 15+ (production), a local SMTP catcher such as Mailpit (dev).
+
+## Run locally
+```bash
+cd src/Solvelt.Api
+dotnet user-secrets init
+dotnet user-secrets set "Email:Provider" "Smtp"        # or "Sink" to keep mails in memory
+dotnet run --urls https://localhost:5001               # SQLite at App_Data/solvelt.db, created automatically
+```
+Dev defaults: Turnstile Cloudflare **test** keys, ephemeral JWT key, frontend at `http://localhost:5173` (Vite proxies `/api` to the backend).
+OpenAPI document: `/openapi/v1.json` (Development only). Health: `/health`.
+Create the first admin by setting `AdminSeed:Email` / `AdminSeed:Password` (user-secrets / env) – the admin is created at startup if missing.
+
+## Tests
+```bash
+dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLite, fake TimeProvider)
+```
+
+## Configuration keys
+See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
+(server idle limit), `Lockout`, `RateLimit`, `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`.
+The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
+
+## API (all under `/api/v1`)
+`auth/*` signup, login, refresh, logout, logout-all, verify-email, resend-code, forgot/reset-password, passkey, external (Google/Apple) ·
+`account/*` me, change-password, email change, 2FA, sessions, passkeys, linked logins · `seller/*` wizard + certificate ·
+`admin/sellers/{id}/status` (Admin role) · `public-config`. Testing environment only: `/api/test/emails`.
+Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
+
+## Deploy notes
+* PostgreSQL: set `Database:Provider=Postgres`; apply migrations with `dotnet ef database update` (or `Database:AutoMigrate=true` for a single instance).
+* Required in Production: `App:HmacSecret`, `Jwt:PrivateKeyPem`, Turnstile keys, an email provider, `DataProtection:KeysPath` (reset links must survive restarts), shared file storage if >1 instance.
+* Run behind TLS; set `App:TrustedProxies` to your reverse proxy so per-IP rate limits use the real client IP.
+* Serve the SPA and API from the same site (e.g. `/` and `/api`) so the SameSite=Strict refresh cookie works. See `docs/SETUP-INTEGRATIONS.md`.
