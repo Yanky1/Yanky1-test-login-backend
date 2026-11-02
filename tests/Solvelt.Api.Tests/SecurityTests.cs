@@ -153,3 +153,18 @@ public class UnitTests
     [Fact]
     public void Audit_mask_hides_local_part() => Assert.Equal("a***@x.com", AuditLog.Mask("alice@x.com"));
 }
+
+public class StagingFactory : ApiFactory
+{
+    protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder b) { base.ConfigureWebHost(b); b.UseEnvironment("Staging"); }
+}
+
+public class StartupSafeguardTests
+{
+    [Fact]
+    public void Test_only_features_and_default_secrets_are_refused_outside_Development_and_Testing()
+    {
+        using var f = new StagingFactory();
+        Assert.ThrowsAny<Exception>(() => f.CreateClient()); // Turnstile:UseTestStub=true in Staging -> startup failure
+    }
+}

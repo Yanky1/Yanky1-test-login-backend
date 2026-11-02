@@ -21,6 +21,11 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 | Secret leakage | Secrets via user-secrets/env only; logs never include passwords, tokens or codes; codes/tokens stored hashed |
 | Privilege escalation | Role policies (`Admin`, `Seller`, `VerifiedEmail`); admin accounts only via seed config |
 
+## Self-review notes
+* Forgot-password mail is sent off the request path (`Email:SendInBackground`) so latency does not reveal account existence.
+* Startup refuses to run outside Development/Testing without `App:HmacSecret` and `Jwt:PrivateKeyPem`, and refuses `Turnstile:UseTestStub` outside Testing.
+* TOTP codes are accepted once per 30 s window per Identity defaults (no replay cache); failures count toward the login lockout.
+
 ## Residual risks / operator duties
 Persist Data Protection keys; run behind TLS and set `App:TrustedProxies`; enable `Passwords:CheckPwned`; rotate JWT keys; monitor `AuditEvents`;
 Turnstile/email/Google/Apple require real credentials and were not exercised against live services in CI.

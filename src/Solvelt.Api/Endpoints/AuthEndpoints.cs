@@ -228,7 +228,7 @@ public static class AuthEndpoints
                 {
                     var token = await users.GeneratePasswordResetTokenAsync(user);
                     var link = $"{app.Value.FrontendBaseUrl.TrimEnd('/')}/reset-password?email={Uri.EscapeDataString(email)}&token={WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token))}";
-                    await mailer.SendAsync(Templates.ResetPassword(email, link));
+                    await mailer.SendDetachedAsync(Templates.ResetPassword(email, link));
                     await audit.WriteAsync("password.reset_requested", user.Id, email);
                 }
             }

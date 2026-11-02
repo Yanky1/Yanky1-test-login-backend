@@ -73,12 +73,28 @@ public class ResendEmailSender(HttpClient http, IOptions<EmailOptions> opt, ILog
     }
 }
 
-public class Mailer(IEmailSender sender, ILogger<Mailer> log)
+public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<EmailOptions> opt, ILogger<Mailer> log)
 {
     /// <summary>Never throws: failed email must not break the security flow; failures are logged without content.</summary>
     public async Task SendAsync(EmailMessage m)
     {
         try { await sender.SendAsync(m); }
         catch (Exception ex) { log.LogError(ex, "Failed to send {Kind} email", m.Kind); }
+    }
+
+    /// <summary>For anti-enumeration flows: returns immediately (when enabled) so timing is identical whether or not a mail is sent.</summary>
+    public Task SendDetachedAsync(EmailMessage m)
+    {
+        if (!opt.Value.SendInBackground) return SendAsync(m);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<IEmailSender>().SendAsync(m);
+            }
+            catch (Exception ex) { log.LogError(ex, "Failed to send {Kind} email", m.Kind); }
+        });
+        return Task.CompletedTask;
     }
 }

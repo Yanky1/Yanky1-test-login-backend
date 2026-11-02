@@ -38,7 +38,7 @@ builder.Services.Configure<PasswordSettings>(cfg.GetSection(PasswordSettings.Sec
 var app0 = cfg.GetSection(AppOptions.Section).Get<AppOptions>() ?? new AppOptions();
 if (string.IsNullOrWhiteSpace(app0.HmacSecret))
 {
-    if (env.IsProduction()) throw new InvalidOperationException("App:HmacSecret must be configured in Production.");
+    if (!env.IsDevelopment() && !env.IsEnvironment("Testing")) throw new InvalidOperationException("App:HmacSecret must be configured outside Development/Testing.");
     builder.Services.PostConfigure<AppOptions>(o => o.HmacSecret = "dev-only-hmac-secret-change-me-0123456789");
 }
 
@@ -172,6 +172,9 @@ builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
 builder.Services.AddOpenApi();
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 6 * 1024 * 1024);
+
+if (cfg.GetValue<bool>("Turnstile:UseTestStub") && !env.IsEnvironment("Testing"))
+    throw new InvalidOperationException("Turnstile:UseTestStub may only be enabled in the Testing environment.");
 
 var app = builder.Build();
 

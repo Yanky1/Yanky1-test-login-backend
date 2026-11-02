@@ -41,6 +41,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             ["App:CorsOrigins:0"] = "http://localhost:5173",
             ["App:FrontendBaseUrl"] = "http://localhost:5173",
             ["Email:Provider"] = "Sink",
+            ["Email:SendInBackground"] = "false",
             ["Turnstile:UseTestStub"] = "true",
             ["Turnstile:SecretKey"] = "1x0000000000000000000000000000000AA",
             ["Turnstile:SiteKey"] = "1x00000000000000000000AA",

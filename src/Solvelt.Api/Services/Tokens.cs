@@ -21,7 +21,7 @@ public class JwtKeys
         var o = opt.Value;
         var rsa = RSA.Create(3072);
         if (!string.IsNullOrWhiteSpace(o.PrivateKeyPem)) rsa.ImportFromPem(o.PrivateKeyPem);
-        else if (env.IsProduction()) throw new InvalidOperationException("Jwt:PrivateKeyPem must be configured in Production.");
+        else if (!env.IsDevelopment() && !env.IsEnvironment("Testing")) throw new InvalidOperationException("Jwt:PrivateKeyPem must be configured outside Development/Testing.");
         SigningKey = new RsaSecurityKey(rsa) { KeyId = o.KeyId };
         var keys = new List<SecurityKey> { new RsaSecurityKey(rsa.ExportParameters(false)) { KeyId = o.KeyId } };
         foreach (var (kid, pem) in o.PreviousPublicKeys)

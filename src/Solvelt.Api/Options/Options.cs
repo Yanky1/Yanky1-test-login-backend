@@ -76,6 +76,8 @@ public class EmailOptions
     public string? SmtpUser { get; set; }
     public string? SmtpPassword { get; set; }
     public string ResendApiKey { get; set; } = "";
+    /// <summary>Send "forgot password" mail off the request path so response time does not reveal whether the account exists.</summary>
+    public bool SendInBackground { get; set; } = true;
 }
 
 public class PasskeyConfig
