@@ -97,8 +97,11 @@ public static class Seeder
         var db = sp.GetRequiredService<AppDbContext>();
         var cfg = sp.GetRequiredService<IConfiguration>();
         var provider = cfg["Database:Provider"] ?? "Sqlite";
-        if ((cfg["Database:ConnectionString"] ?? "Data Source=App_Data/solvelt.db").Contains("App_Data"))
-            Directory.CreateDirectory("App_Data");
+        if (!provider.Equals("Postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            var ds = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(cfg["Database:ConnectionString"] ?? "Data Source=App_Data/solvelt.db").DataSource;
+            if (Path.GetDirectoryName(Path.GetFullPath(ds)) is { Length: > 0 } dir) Directory.CreateDirectory(dir);
+        }
         if (provider.Equals("Postgres", StringComparison.OrdinalIgnoreCase))
         {
             if (cfg.GetValue("Database:AutoMigrate", false)) await db.Database.MigrateAsync();
