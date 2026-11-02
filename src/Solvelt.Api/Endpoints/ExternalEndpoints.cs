@@ -1,0 +1,117 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Solvelt.Api.Data;
+using Solvelt.Api.Domain;
+using Solvelt.Api.Options;
+using Solvelt.Api.Security;
+using Solvelt.Api.Services;
+
+namespace Solvelt.Api.Endpoints;
+
+public record ExchangeRequest(string? Code);
+
+public static class ExternalEndpoints
+{
+    public static void MapExternalEndpoints(this RouteGroupBuilder g)
+    {
+        var a = g.MapGroup("/auth/external");
+
+        // Start: GET so the browser can navigate. terms=1 is required to create a new account.
+        a.MapGet("/{provider}/start", async (string provider, string? returnUrl, string? terms, HttpContext ctx,
+            IAuthenticationSchemeProvider schemes, IOptions<ExternalAuthOptions> ext) =>
+        {
+            var name = provider.ToLowerInvariant() switch { "google" => "Google", "apple" when ext.Value.AppleEnabled => "Apple", _ => null };
+            if (name is null || await schemes.GetSchemeAsync(name) is null) return Results.NotFound();
+            var props = new AuthenticationProperties
+            {
+                RedirectUri = "/api/v1/auth/external/callback?provider=" + name
+            };
+            props.Items["terms"] = terms == "1" ? "1" : "0";
+            props.Items["next"] = SafeRedirect.Sanitize(returnUrl) ?? "";
+            return Results.Challenge(props, [name]);
+        }).RequireRateLimiting("auth");
+
+        a.MapGet("/callback", async (string provider, HttpContext ctx, UserManager<AppUser> users, AuthFlows flows, AppDbContext db,
+            TimeProvider time, IAuditLog audit, IOptions<AppOptions> app, SessionService sessions) =>
+        {
+            var front = app.Value.FrontendBaseUrl.TrimEnd('/');
+            IResult Error(string code) => Results.Redirect($"{front}/login?error={code}");
+            var res = await ctx.AuthenticateAsync(Extensions.ExternalScheme);
+            await ctx.SignOutAsync(Extensions.ExternalScheme);
+            if (!res.Succeeded || res.Principal is null) return Error("external_failed");
+            string next = "", terms = "";
+            res.Properties?.Items.TryGetValue("next", out next!);
+            res.Properties?.Items.TryGetValue("terms", out terms!);
+            next ??= ""; var termsAccepted = terms == "1";
+            var sub = res.Principal.FindFirstValue("sub") ?? res.Principal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var email = res.Principal.FindFirstValue("email") ?? res.Principal.FindFirstValue(ClaimTypes.Email);
+            var verified = string.Equals(res.Principal.FindFirstValue("email_verified"), "true", StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(sub)) return Error("external_failed");
+
+            var user = await users.FindByLoginAsync(provider, sub);
+            if (user is null)
+            {
+                if (string.IsNullOrEmpty(email) || !verified) return Error("email_unverified"); // never link/create on unverified provider email
+                email = Crypto.NormalizeEmail(email);
+                user = await users.FindByEmailAsync(email);
+                if (user is not null)
+                {
+                    if (!user.EmailConfirmed)
+                    {
+                        // Pre-hijacking defence: an unverified local account may have been registered by someone else.
+                        // Drop its password and sessions before the real owner takes it over via the provider.
+                        await users.RemovePasswordAsync(user);
+                        user.HasPassword = false; user.EmailConfirmed = true;
+                        await users.UpdateAsync(user);
+                        await sessions.RevokeAllAsync(user.Id, "unverified-account-claimed");
+                    }
+                    await users.AddLoginAsync(user, new UserLoginInfo(provider, sub, provider));
+                    await audit.WriteAsync("login.linked", user.Id, email, provider);
+                }
+                else
+                {
+                    if (!termsAccepted) return Error("terms_required");
+                    user = await flows.CreateSellerUserAsync(email, null, true, true);
+                    await users.AddLoginAsync(user, new UserLoginInfo(provider, sub, provider));
+                    await audit.WriteAsync("signup.created", user.Id, email, "method=" + provider);
+                }
+            }
+            var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
+            if (!await users.IsInRoleAsync(user, "Admin") && (seller is null || seller.Status is SellerStatus.Rejected or SellerStatus.Suspended))
+                return Error("login_failed");
+
+            var code = Crypto.RandomToken();
+            db.ExternalExchanges.Add(new ExternalExchange
+            {
+                CodeHash = Crypto.Sha256(code), UserId = user.Id, Provider = provider, ReturnUrl = SafeRedirect.Sanitize(next),
+                ExpiresAt = time.UtcNow().AddMinutes(2)
+            });
+            await db.SaveChangesAsync();
+            var url = $"{front}/auth/callback?code={Uri.EscapeDataString(code)}";
+            if (SafeRedirect.Sanitize(next) is { } n) url += "&next=" + Uri.EscapeDataString(n);
+            return Results.Redirect(url);
+        });
+
+        a.MapPost("/exchange", async (ExchangeRequest r, HttpContext ctx, AppDbContext db, UserManager<AppUser> users, SessionService sessions,
+            AuthFlows flows, TimeProvider time, IAuditLog audit) =>
+        {
+            if (string.IsNullOrWhiteSpace(r.Code)) return Results.Json(new { error = "Login failed" }, statusCode: 401);
+            var hash = Crypto.Sha256(r.Code);
+            var ex = await db.ExternalExchanges.FirstOrDefaultAsync(e => e.CodeHash == hash);
+            if (ex is null || ex.UsedAt is not null || ex.ExpiresAt <= time.UtcNow()) return Results.Json(new { error = "Login failed" }, statusCode: 401);
+            ex.UsedAt = time.UtcNow();
+            await db.SaveChangesAsync();
+            var user = await users.FindByIdAsync(ex.UserId.ToString());
+            if (user is null) return Results.Json(new { error = "Login failed" }, statusCode: 401);
+            var s = await sessions.CreateAsync(user, ex.Provider.ToLowerInvariant(), AuthFlows.Ip(ctx), AuthFlows.Ua(ctx));
+            await audit.WriteAsync("login.succeeded", user.Id, user.Email, "method=" + ex.Provider);
+            return Results.Ok(await flows.BuildLoginAsync(user, s, ctx));
+        }).RequireRateLimiting("auth");
+
+        // Link a provider to the signed-in account: start must be authenticated -> frontend calls this to get a one-time link URL.
+    }
+}

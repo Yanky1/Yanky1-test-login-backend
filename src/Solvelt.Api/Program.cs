@@ -1,0 +1,222 @@
+using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using Solvelt.Api;
+using Solvelt.Api.Data;
+using Solvelt.Api.Domain;
+using Solvelt.Api.Email;
+using Solvelt.Api.Endpoints;
+using Solvelt.Api.Options;
+using Solvelt.Api.Security;
+using Solvelt.Api.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+var cfg = builder.Configuration;
+var env = builder.Environment;
+
+builder.Services.Configure<AppOptions>(cfg.GetSection(AppOptions.Section));
+builder.Services.Configure<JwtOptions>(cfg.GetSection(JwtOptions.Section));
+builder.Services.Configure<SessionSettings>(cfg.GetSection(SessionSettings.Section));
+builder.Services.Configure<LockoutSettings>(cfg.GetSection(LockoutSettings.Section));
+builder.Services.Configure<RateLimitOptions>(cfg.GetSection(RateLimitOptions.Section));
+builder.Services.Configure<TurnstileOptions>(cfg.GetSection(TurnstileOptions.Section));
+builder.Services.Configure<EmailOptions>(cfg.GetSection(EmailOptions.Section));
+builder.Services.Configure<PasskeyConfig>(cfg.GetSection(PasskeyConfig.Section));
+builder.Services.Configure<StorageOptions>(cfg.GetSection(StorageOptions.Section));
+builder.Services.Configure<ExternalAuthOptions>(cfg.GetSection(ExternalAuthOptions.Section));
+builder.Services.Configure<AdminSeedOptions>(cfg.GetSection(AdminSeedOptions.Section));
+builder.Services.Configure<PasswordSettings>(cfg.GetSection(PasswordSettings.Section));
+
+var app0 = cfg.GetSection(AppOptions.Section).Get<AppOptions>() ?? new AppOptions();
+if (string.IsNullOrWhiteSpace(app0.HmacSecret))
+{
+    if (env.IsProduction()) throw new InvalidOperationException("App:HmacSecret must be configured in Production.");
+    builder.Services.PostConfigure<AppOptions>(o => o.HmacSecret = "dev-only-hmac-secret-change-me-0123456789");
+}
+
+// ---- Database (SQLite for dev/tests, PostgreSQL in production)
+var provider = cfg["Database:Provider"] ?? "Sqlite";
+var conn = cfg["Database:ConnectionString"] ?? "Data Source=App_Data/solvelt.db";
+builder.Services.AddDbContext<AppDbContext>(o =>
+{
+    if (provider.Equals("Postgres", StringComparison.OrdinalIgnoreCase)) o.UseNpgsql(conn);
+    else o.UseSqlite(conn);
+});
+
+// ---- Identity (+ built-in passkeys)
+builder.Services.AddIdentityCore<AppUser>(o =>
+{
+    o.User.RequireUniqueEmail = true;
+    o.Password.RequiredLength = 10;
+    o.Password.RequireDigit = o.Password.RequireLowercase = o.Password.RequireUppercase = o.Password.RequireNonAlphanumeric = true;
+    o.Lockout.AllowedForNewUsers = false; // lockout handled by LoginThrottleService (per submitted email)
+    o.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
+})
+.AddRoles<IdentityRole<Guid>>()
+.AddEntityFrameworkStores<AppDbContext>()
+.AddSignInManager()
+.AddDefaultTokenProviders();
+builder.Services.AddScoped<IPasswordValidator<AppUser>, PasswordRulesValidator>();
+{
+    var pk = cfg.GetSection(PasskeyConfig.Section).Get<PasskeyConfig>() ?? new PasskeyConfig();
+    builder.Services.Configure<IdentityPasskeyOptions>(o =>
+    {
+        o.ServerDomain = pk.RelyingPartyId;
+        o.ValidateOrigin = ctx => ValueTask.FromResult(pk.AllowedOrigins.Contains(ctx.Origin ?? "", StringComparer.OrdinalIgnoreCase));
+        o.UserVerificationRequirement = "preferred";
+        o.ResidentKeyRequirement = "preferred";
+    });
+}
+builder.Services.Configure<DataProtectionTokenProviderOptions>(o => o.TokenLifespan = TimeSpan.FromMinutes(30));
+var dp = builder.Services.AddDataProtection().SetApplicationName("Solvelt");
+if (cfg["DataProtection:KeysPath"] is { Length: > 0 } kp) dp.PersistKeysToFileSystem(new DirectoryInfo(kp));
+
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<Crypto>();
+builder.Services.AddSingleton<JwtKeys>();
+builder.Services.AddScoped<IAuditLog, AuditLog>();
+builder.Services.AddScoped<SessionService>();
+builder.Services.AddScoped<LoginThrottleService>();
+builder.Services.AddScoped<OneTimeCodeService>();
+builder.Services.AddScoped<KosherService>();
+builder.Services.AddScoped<SellerStatusService>();
+builder.Services.AddScoped<AuthFlows>();
+builder.Services.AddSingleton<IFileStorage, LocalFileStorage>();
+builder.Services.AddHttpClient<ITurnstileVerifier, TurnstileVerifier>();
+builder.Services.AddSingleton<EmailSink>();
+builder.Services.AddScoped<Mailer>();
+switch ((cfg["Email:Provider"] ?? "Sink").ToLowerInvariant())
+{
+    case "smtp": builder.Services.AddScoped<IEmailSender, SmtpEmailSender>(); break;
+    case "resend": builder.Services.AddHttpClient<IEmailSender, ResendEmailSender>(); break;
+    default: builder.Services.AddScoped<IEmailSender, SinkEmailSender>(); break;
+}
+
+// ---- AuthN / AuthZ
+var authBuilder = builder.Services.AddAuthentication(o =>
+{
+    o.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    o.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+}).AddJwtBearer(o =>
+{
+    o.MapInboundClaims = false;
+    o.RequireHttpsMetadata = true;
+    o.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async ctx =>
+        {
+            var sid = ctx.Principal?.FindFirstValue("sid");
+            var sub = ctx.Principal?.FindFirstValue("sub");
+            var sessions = ctx.HttpContext.RequestServices.GetRequiredService<SessionService>();
+            if (!Guid.TryParse(sid, out var sessionId) || !Guid.TryParse(sub, out var userId) ||
+                !await sessions.ValidateAndTouchAsync(sessionId, userId))
+                ctx.Fail("session_invalid");
+        }
+    };
+});
+builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<JwtKeys, IOptions<JwtOptions>, TimeProvider>((o, keys, jwt, time) =>
+    {
+        o.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true, ValidIssuer = jwt.Value.Issuer,
+            ValidateAudience = true, ValidAudience = jwt.Value.Audience,
+            ValidateLifetime = true, ClockSkew = TimeSpan.Zero, RequireExpirationTime = true,
+            ValidateIssuerSigningKey = true, RequireSignedTokens = true,
+            IssuerSigningKeys = keys.ValidationKeys,
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+            NameClaimType = "sub", RoleClaimType = ClaimTypes.Role,
+            LifetimeValidator = (nbf, exp, _, _) =>
+                exp is not null && time.GetUtcNow().UtcDateTime < exp.Value && (nbf is null || time.GetUtcNow().UtcDateTime >= nbf.Value)
+        };
+    });
+builder.Services.AddIdentityCookiesForPasskeys();
+builder.Services.AddExternalProviders(cfg, env);
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("Admin", p => p.RequireRole("Admin"))
+    .AddPolicy("VerifiedEmail", p => p.RequireAuthenticatedUser().RequireClaim("email_verified", "true"))
+    .AddPolicy("Seller", p => p.RequireRole("Seller"));
+
+// ---- Rate limiting (per IP)
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    var rl = cfg.GetSection(RateLimitOptions.Section).Get<RateLimitOptions>() ?? new RateLimitOptions();
+    static string Ip(HttpContext c) => c.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    o.AddPolicy("auth", c => RateLimitPartition.GetFixedWindowLimiter("auth:" + Ip(c),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = rl.AuthPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.AddPolicy("sensitive", c => RateLimitPartition.GetFixedWindowLimiter("sens:" + Ip(c),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = rl.SensitivePerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    o.OnRejected = async (ctx, ct) =>
+    {
+        ctx.HttpContext.Response.StatusCode = 429;
+        ctx.HttpContext.Response.ContentType = "application/problem+json";
+        await ctx.HttpContext.Response.WriteAsJsonAsync(new { type = "about:blank", title = "Too many requests", status = 429 }, ct);
+    };
+});
+
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(app0.CorsOrigins)
+    .WithHeaders("Authorization", "Content-Type", "X-CSRF-Token").WithMethods("GET", "POST", "PUT", "PATCH", "DELETE").AllowCredentials()));
+builder.Services.AddProblemDetails();
+builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
+builder.Services.AddOpenApi();
+builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 6 * 1024 * 1024);
+
+var app = builder.Build();
+
+var appOpts = app.Services.GetRequiredService<IOptions<AppOptions>>().Value;
+if (appOpts.TrustedProxies.Length > 0)
+{
+    var fh = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto };
+    fh.KnownIPNetworks.Clear(); fh.KnownProxies.Clear();
+    foreach (var p in appOpts.TrustedProxies) fh.KnownProxies.Add(System.Net.IPAddress.Parse(p));
+    app.UseForwardedHeaders(fh);
+}
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+if (!env.IsDevelopment() && !env.IsEnvironment("Testing") && appOpts.UseHsts) app.UseHsts();
+if (appOpts.UseHttpsRedirection) app.UseHttpsRedirection();
+app.Use(async (ctx, next) =>
+{
+    var h = ctx.Response.Headers;
+    h["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+    h["X-Content-Type-Options"] = "nosniff";
+    h["Referrer-Policy"] = "no-referrer";
+    h["X-Frame-Options"] = "DENY";
+    h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    h["Cross-Origin-Opener-Policy"] = "same-origin";
+    if (ctx.Request.Path.StartsWithSegments("/api")) h["Cache-Control"] = "no-store";
+    await next();
+});
+app.UseCors();
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+
+await Seeder.InitAsync(app);
+
+if (env.IsDevelopment()) app.MapOpenApi();
+app.MapHealthChecks("/health").AllowAnonymous();
+var v1 = app.MapGroup("/api/v1");
+v1.MapAuthEndpoints();
+v1.MapExternalEndpoints();
+v1.MapPasskeyEndpoints();
+v1.MapAccountEndpoints();
+v1.MapSellerEndpoints();
+v1.MapAdminEndpoints();
+if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
+
+app.Run();
+
+public partial class Program;
