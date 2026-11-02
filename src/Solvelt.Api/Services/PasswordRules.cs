@@ -40,7 +40,7 @@ public class PasswordRulesValidator(IOptions<PasswordSettings> opt, IHttpClientF
         return errors;
     }
 
-    private static bool IsTrivial(string p) => p.Length > 0 && p.Distinct().Count() <= 3;
+    private static bool IsTrivial(string p) => p.Length > 0 && p.Distinct().Count() <= 4;
 
     public async Task<IdentityResult> ValidateAsync(UserManager<AppUser> manager, AppUser user, string? password)
     {

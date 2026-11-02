@@ -18,6 +18,12 @@ public record RenameRequest(string? Name);
 
 public static class PasskeyEndpoints
 {
+    private static async Task<PasskeyAttestationResult> SafeAttest(SignInManager<AppUser> sm, PasskeyCredentialRequest r)
+    {
+        try { return await sm.PerformPasskeyAttestationAsync(CredJson(r)); }
+        catch (Exception) { return PasskeyAttestationResult.Fail(new PasskeyException("Invalid credential")); }
+    }
+
     private static string CredJson(PasskeyCredentialRequest r) => r.Credential?.GetRawText() ?? "";
 
     public static void MapPasskeyEndpoints(this RouteGroupBuilder g)
@@ -36,7 +42,8 @@ public static class PasskeyEndpoints
         {
             var fail = () => Results.Json(new LoginFailure("Login failed", new AttemptsHint(null, false, false, null, null)), statusCode: 401);
             if (r.Credential is null) return fail();
-            var res = await sm.PerformPasskeyAssertionAsync(CredJson(r));
+            PasskeyAssertionResult<AppUser> res;
+            try { res = await sm.PerformPasskeyAssertionAsync(CredJson(r)); } catch (Exception) { return fail(); }
             if (!res.Succeeded || res.User is null) { await audit.WriteAsync("passkey.signin_failed"); return fail(); }
             var user = res.User;
             var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
@@ -66,7 +73,7 @@ public static class PasskeyEndpoints
             if (!Validation.IsEmail(r.Email) || !r.AcceptTerms || r.Credential is null) return Results.Problem("Invalid request.", statusCode: 400);
             var email = Crypto.NormalizeEmail(r.Email!);
             if (await users.FindByEmailAsync(email) is not null) return Results.Problem("We couldn't create an account with this email.", statusCode: 400);
-            var att = await sm.PerformPasskeyAttestationAsync(CredJson(r));
+            var att = await SafeAttest(sm, r);
             if (!att.Succeeded) return Results.Problem("Passkey registration failed.", statusCode: 400);
             AppUser user;
             try { user = await flows.CreateSellerUserAsync(email, null, false, true, Guid.TryParse(att.UserEntity?.Id, out var uid) ? uid : null); }
@@ -107,7 +114,7 @@ public static class PasskeyEndpoints
         {
             var user = await users.FindByIdAsync(p.UserId().ToString());
             if (user is null || r.Credential is null) return Results.Unauthorized();
-            var att = await sm.PerformPasskeyAttestationAsync(CredJson(r));
+            var att = await SafeAttest(sm, r);
             if (!att.Succeeded) return Results.Problem("Passkey registration failed.", statusCode: 400);
             var name = string.IsNullOrWhiteSpace(r.Name) ? "Passkey" : r.Name.Trim();
             att.Passkey.Name = name.Length > 60 ? name[..60] : name;
