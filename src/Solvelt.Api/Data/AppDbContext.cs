@@ -78,6 +78,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<BookingEvent> BookingEvents => Set<BookingEvent>();
     public DbSet<BookingCounter> BookingCounters => Set<BookingCounter>();
     public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
+    public DbSet<BookingMessage> BookingMessages => Set<BookingMessage>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

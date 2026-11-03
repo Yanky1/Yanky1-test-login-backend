@@ -18,6 +18,8 @@ public record RescheduleReqIn(string? RequestId, DateTime? NewStart);
 public record BuyerCancelIn(string? RequestId, string? Reason);
 public record ProposalAnswerIn(bool Accept);
 public record QuoteDeclineIn(string? Reason);
+public record BookingMessageIn(string? MessageId, string? Text);
+public record BookingMessageOut(string? Text);
 
 /// <summary>Background work: expire holds, auto-decline unanswered requests, expire quotes, remind providers, redact customer data.</summary>
 public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mailer, CalendarService cal, Outbox outbox, IOptions<BookingOptions> opt, IOptions<AppOptions> app,
@@ -56,6 +58,7 @@ public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mail
         {
             b.BuyerName = "Redacted"; b.BuyerEmail = null; b.BuyerPhone = null; b.AddressJson = null; b.PostalCode = null; b.IntakeAnswersJson = "[]"; b.PiiRedactedAt = now;
             db.BookingEvents.Add(new BookingEvent { BookingId = b.Id, At = now, Type = "booking.redacted", Actor = "system", Text = "Customer details removed" });
+            foreach (var m in await db.BookingMessages.Where(x => x.BookingId == b.Id).ToListAsync(ct)) m.Text = "[message removed]";
             redacted++;
         }
         var qTerminal = new[] { QuoteStatus.Accepted, QuoteStatus.Declined, QuoteStatus.Expired, QuoteStatus.Withdrawn };
@@ -235,6 +238,19 @@ public static class BookingsModule
             var b = await db.Bookings.FirstOrDefaultAsync(x => x.MarketplaceBookingId == mid);
             if (b is null) return Err(404, "booking_not_found", "Booking not found.");
             return Out(await svc.AcceptProposalAsync(b, req!.Accept));
+        });
+        write.MapPost("/bookings/{mid}/messages", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, TimeProvider time, string mid) =>
+        {
+            var (req, err) = await Signed<BookingMessageIn>(ctx, verifier);
+            if (err is not null) return err;
+            var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == mid && x.Status != BookingStatus.Hold);
+            if (b is null) return Err(404, "booking_not_found", "Booking not found.");
+            if (req!.MessageId is not { Length: > 0 and <= 64 } mm) return Err(422, "message_id", "messageId is required (up to 64 characters).");
+            if (string.IsNullOrWhiteSpace(req.Text) || req.Text.Length > 2000) return Err(422, "text", "Write a message of up to 2000 characters.");
+            if (await db.BookingMessages.AnyAsync(m => m.MarketplaceMessageId == mm)) return Results.Json(new { duplicate = true });
+            db.BookingMessages.Add(new BookingMessage { BookingId = b.Id, SellerId = b.SellerId, Direction = "buyer", MarketplaceMessageId = mm, Text = req.Text.Trim(), CreatedAt = time.UtcNow() });
+            try { await db.SaveChangesAsync(); } catch (DbUpdateException) { return Results.Json(new { duplicate = true }); }
+            return Results.Json(new { duplicate = false }, statusCode: 201);
         });
         write.MapPost("/quote-requests", async (HttpContext ctx, InboundVerifier verifier, QuoteService svc) =>
         {

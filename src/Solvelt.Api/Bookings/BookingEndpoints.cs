@@ -193,6 +193,31 @@ public static class BookingEndpoints
         s.MapPost("/{id:guid}/reassign", (Guid id, ReassignIn r, HttpContext ctx, AppDbContext db, CalendarService cal, BookingService svc, IAuditLog audit) =>
             Act(ctx, db, cal, audit, id, "booking.reassigned", (b, a) => r.ProviderId is null ? Task.FromResult(BRes.Invalid("Choose a provider.", "provider")) : svc.ReassignAsync(b, Actor.Seller(a.UserId), r.ProviderId.Value, r.Version)));
 
+        s.MapGet("/{id:guid}/messages", async (Guid id, HttpContext ctx, AppDbContext db) =>
+        {
+            var a = ctx.GetAccess()!;
+            if (await Load(db, a, id, false) is null) return Results.NotFound();
+            var rows = await db.BookingMessages.AsNoTracking().Where(m => m.BookingId == id).OrderBy(m => m.CreatedAt).ThenBy(m => m.Id).Take(500).ToListAsync();
+            return Results.Json(new { messages = rows.Select(m => new { id = m.Id, direction = m.Direction, text = m.Text, createdAt = BJson.Utc(m.CreatedAt), mine = m.AuthorUserId == a.UserId }) }, BJson.Opts);
+        }).RequireActiveAccount();
+
+        s.MapPost("/{id:guid}/messages", async (Guid id, BookingMessageOut r, HttpContext ctx, AppDbContext db, Outbox outbox, TimeProvider time) =>
+        {
+            var a = ctx.GetAccess()!;
+            var b = await Load(db, a, id, true);
+            if (b is null) return await Load(db, a, id, false) is null ? Results.NotFound() : AccessExtensions.Forbidden();
+            if (string.IsNullOrWhiteSpace(r.Text) || r.Text.Length > 2000) return Validation.Invalid("text", "Write a message of up to 2000 characters.");
+            if (b.Status is BookingStatus.Hold or BookingStatus.Expired || b.PiiRedactedAt is not null) return ProviderEndpoints.Problem(409, "thread_closed", "This booking can't receive messages.");
+            var m = new BookingMessage { BookingId = id, SellerId = b.SellerId, Direction = "seller", AuthorUserId = a.UserId, Text = r.Text.Trim(), CreatedAt = time.UtcNow() };
+            db.BookingMessages.Add(m);
+            outbox.Enqueue("message.sent", b.SellerId, b.Id.ToString(), new
+            {
+                messageId = m.Id, kind = "booking", booking = new { bookingId = b.Id, number = b.Number, marketplaceBookingId = b.MarketplaceBookingId }, text = m.Text, sentAt = m.CreatedAt
+            });
+            await db.SaveChangesAsync();
+            return Results.Json(new { id = m.Id, direction = m.Direction, text = m.Text, createdAt = m.CreatedAt, mine = true }, BJson.Opts, statusCode: 201);
+        }).RequireActiveAccount();
+
         MapQuotes(g);
     }
 

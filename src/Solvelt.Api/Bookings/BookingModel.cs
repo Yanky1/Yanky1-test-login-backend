@@ -101,6 +101,16 @@ public static class BookingModel
             e.Property(x => x.Text).HasMaxLength(1000);
             e.HasOne<Booking>().WithMany().HasForeignKey(x => x.BookingId).OnDelete(DeleteBehavior.Cascade);
         });
+        b.Entity<BookingMessage>(e =>
+        {
+            e.ToTable("booking_messages");
+            e.HasIndex(x => new { x.BookingId, x.CreatedAt });
+            e.HasIndex(x => x.MarketplaceMessageId).IsUnique();
+            e.Property(x => x.Direction).HasMaxLength(8);
+            e.Property(x => x.Text).HasMaxLength(2000);
+            e.Property(x => x.MarketplaceMessageId).HasMaxLength(64);
+            e.HasOne<Booking>().WithMany().HasForeignKey(x => x.BookingId).OnDelete(DeleteBehavior.Cascade);
+        });
         b.Entity<BookingCounter>(e => { e.ToTable("booking_counters"); e.HasKey(x => x.Year); });
         b.Entity<QuoteRequest>(e =>
         {

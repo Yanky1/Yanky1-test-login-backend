@@ -241,3 +241,17 @@ public class QuoteRequest
     public DateTime? PiiRedactedAt { get; set; }
     public int Version { get; set; } = 1;
 }
+
+/// <summary>A message in the thread of one booking (buyer via the marketplace, or the team). Own table: the order/product conversations of workstream E stay untouched.</summary>
+public class BookingMessage
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BookingId { get; set; }
+    public Guid SellerId { get; set; }
+    /// <summary>buyer | seller</summary>
+    public string Direction { get; set; } = "buyer";
+    public Guid? AuthorUserId { get; set; }
+    public string? MarketplaceMessageId { get; set; }
+    public string Text { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}

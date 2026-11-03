@@ -351,6 +351,30 @@ namespace Solvelt.Api.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
+            migrationBuilder.CreateTable(
+                name: "booking_messages",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uuid", nullable: false),
+                    BookingId = table.Column<Guid>(type: "uuid", nullable: false),
+                    SellerId = table.Column<Guid>(type: "uuid", nullable: false),
+                    Direction = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: false),
+                    AuthorUserId = table.Column<Guid>(type: "uuid", nullable: true),
+                    MarketplaceMessageId = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    Text = table.Column<string>(type: "character varying(2000)", maxLength: 2000, nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_booking_messages", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_booking_messages_bookings_BookingId",
+                        column: x => x.BookingId,
+                        principalTable: "bookings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
             migrationBuilder.CreateIndex(
                 name: "IX_products_SellerId_Type",
                 table: "products",
@@ -360,6 +384,17 @@ namespace Solvelt.Api.Migrations
                 name: "IX_booking_events_BookingId_At",
                 table: "booking_events",
                 columns: new[] { "BookingId", "At" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_booking_messages_BookingId_CreatedAt",
+                table: "booking_messages",
+                columns: new[] { "BookingId", "CreatedAt" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_booking_messages_MarketplaceMessageId",
+                table: "booking_messages",
+                column: "MarketplaceMessageId",
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_booking_settings_IcsTokenHash",
@@ -451,6 +486,9 @@ namespace Solvelt.Api.Migrations
 
             migrationBuilder.DropTable(
                 name: "booking_events");
+
+            migrationBuilder.DropTable(
+                name: "booking_messages");
 
             migrationBuilder.DropTable(
                 name: "booking_settings");

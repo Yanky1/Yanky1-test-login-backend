@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261103092820_Services")]
+    [Migration("20261103095655_Services")]
     partial class Services
     {
         /// <inheritdoc />
@@ -640,6 +640,48 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("BookingId", "At");
 
                     b.ToTable("booking_events", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.BookingMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AuthorUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("MarketplaceMessageId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MarketplaceMessageId")
+                        .IsUnique();
+
+                    b.HasIndex("BookingId", "CreatedAt");
+
+                    b.ToTable("booking_messages", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.BookingSettings", b =>
@@ -1908,8 +1950,7 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("SellerId", "Handle");
 
-                    b.HasIndex("SellerId", "Sku")
-                        .IsUnique();
+                    b.HasIndex("SellerId", "Sku");
 
                     b.HasIndex("SellerId", "Status");
 
@@ -2153,8 +2194,7 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("ProductId", "ComboKey")
                         .IsUnique();
 
-                    b.HasIndex("SellerId", "Sku")
-                        .IsUnique();
+                    b.HasIndex("SellerId", "Sku");
 
                     b.ToTable("product_variants", (string)null);
                 });
@@ -3238,6 +3278,15 @@ namespace Solvelt.Api.Migrations
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.BookingEvent", b =>
+                {
+                    b.HasOne("Solvelt.Api.Domain.Booking", null)
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.BookingMessage", b =>
                 {
                     b.HasOne("Solvelt.Api.Domain.Booking", null)
                         .WithMany()
