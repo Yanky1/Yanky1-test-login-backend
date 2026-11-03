@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Solvelt.Api.Data;
+using Solvelt.Api.Delivery;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Options;
 using Solvelt.Api.Services;
@@ -362,6 +363,7 @@ public static class AdminModule
         g.MapUserAdminEndpoints();
         g.MapModerationEndpoints();
         g.MapSupportEndpoints();
+        g.MapDeliveryAdminEndpoints();
         g.MapIntegrationEndpoints();
         g.MapAuditEndpoints();
         g.MapSettingsEndpoints();
