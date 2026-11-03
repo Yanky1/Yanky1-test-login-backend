@@ -24,6 +24,10 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 | Phone/SMS channel abuse | Signed webhooks, replay/seq protection, shared lockout, SMS code + PIN, no enumeration, AI as language layer only with redaction (see `PHONE-SMS.md`) |
 | Owner-invariant races (two Owners removing each other) | Per-account lock around every membership change (in-process; `FOR UPDATE` on PostgreSQL). **Production must run PostgreSQL**: SQLite is single-instance dev/test only. Actor role re-read inside the lock |
 | Privilege escalation | Role policies (`Admin`, `Seller`, `VerifiedEmail`); admin accounts only via seed config |
+| Double booking / slot races | Per-provider calendar lock (atomic UPDATE) + re-validation inside the transaction, unique marketplace booking id, parallel-request test (exactly one wins) |
+| Booking IDOR / privilege | Every booking, quote, calendar and provider endpoint resolves account, role and brand scope from the database; foreign or out-of-scope ids are 404; providers act only on their own bookings; viewers are read-only |
+| Customer data leaks | Address/phone only for the assigned provider and Owner/Admin from confirmation, retention job, no buyer data in audit, logs, reminder mails or ICS; meeting link only in the confirmed event |
+| Calendar feed leaks | 256-bit hashed, revocable ICS tokens, minimal event data, `no-store`, rate limited |
 
 ## Self-review notes
 * Forgot-password mail is sent off the request path (`Email:SendInBackground`) so latency does not reveal account existence.
@@ -35,7 +39,3 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 ## Residual risks / operator duties
 Persist Data Protection keys; run behind TLS and set `App:TrustedProxies`; enable `Passwords:CheckPwned`; rotate JWT keys; monitor `AuditEvents`;
 Turnstile/email/Google/Apple require real credentials and were not exercised against live services in CI.
-| Double booking / slot races | Per-provider calendar lock (atomic UPDATE) + re-validation inside the transaction, unique marketplace booking id, parallel-request test (exactly one wins) |
-| Booking IDOR / privilege | Every booking, quote, calendar and provider endpoint resolves account, role and brand scope from the database; foreign or out-of-scope ids are 404; providers act only on their own bookings; viewers are read-only |
-| Customer data leaks | Address/phone only for the assigned provider and Owner/Admin from confirmation, retention job, no buyer data in audit, logs, reminder mails or ICS; meeting link only in the confirmed event |
-| Calendar feed leaks | 256-bit hashed, revocable ICS tokens, minimal event data, `no-store`, rate limited |
