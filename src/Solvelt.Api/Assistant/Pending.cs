@@ -41,7 +41,7 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
         var a = new AssistantPendingAction
         {
             SellerId = c.Access.SellerId, UserId = c.Access.UserId, ConversationId = c.ConversationId, Type = def.Type, TargetKind = p.TargetKind, TargetId = p.TargetId, TargetLabel = ReadTools.Clip(p.TargetLabel, 200),
-            Summary = ReadTools.Clip(p.Summary, 500), PayloadJson = payload, DiffJson = JsonSerializer.Serialize(p.Diff), Risk = p.Risk, Stamp = p.Stamp, IdempotencyKey = key, CreatedAt = now,
+            Summary = ReadTools.Clip(p.Summary, 500), PayloadJson = payload, DiffJson = JsonSerializer.Serialize(p.Diff, JsonSerializerOptions.Web), Risk = p.Risk, Stamp = p.Stamp, IdempotencyKey = key, CreatedAt = now,
             ExpiresAt = now.AddMinutes(opt.CurrentValue.ActionExpiryMinutes)
         };
         db.AssistantActions.Add(a);
