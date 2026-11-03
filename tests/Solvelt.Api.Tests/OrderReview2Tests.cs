@@ -205,3 +205,23 @@ public class OrderServiceListingTests(OrdersFactory f) : IClassFixture<OrdersFac
         Assert.Equal(HttpStatusCode.Created, mixed.StatusCode);                              // real products still work
     }
 }
+
+public class OrderMarkReadRaceTests(OrdersFactory f) : IClassFixture<OrdersFactory>
+{
+    [Fact]
+    public async Task Marking_a_conversation_read_many_times_at_once_never_fails()
+    {
+        var s = await NewShop(f);
+        var (mid, _, number, _) = await Place(s);
+        var (_, _, conv, _) = await Msg.BuyerMessage(f, "order", mid, number);
+        var codes = await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(async () => (await s.Owner.Post($"/api/v1/seller/messages/{conv}/read")).StatusCode)));
+        Assert.All(codes, c => Assert.Equal(HttpStatusCode.NoContent, c));
+        Assert.Equal(1, f.WithDb(db => db.ConversationReads.Count(r => r.ConversationId == conv)));
+        Assert.Equal(0, (int)(await Node(await s.Owner.Get("/api/v1/seller/messages/counts")))["unread"]!);
+        // a reply (which also marks read) racing with reads is fine too, and a later buyer message is unread again
+        var more = await Task.WhenAll(Enumerable.Range(0, 6).Select(i => Task.Run(async () => i == 0 ? (await Msg.Reply(s.Owner, conv, "On it")).StatusCode : (await s.Owner.Post($"/api/v1/seller/messages/{conv}/read")).StatusCode)));
+        Assert.All(more, c => Assert.True(c is HttpStatusCode.Created or HttpStatusCode.NoContent, c.ToString()));
+        await Msg.BuyerMessage(f, "order", mid, number, conv: f.WithDb(db => db.Conversations.First(c => c.Id == conv).MarketplaceConversationId), text: "again");
+        Assert.Equal(1, (int)(await Node(await s.Owner.Get("/api/v1/seller/messages/counts")))["unread"]!);
+    }
+}

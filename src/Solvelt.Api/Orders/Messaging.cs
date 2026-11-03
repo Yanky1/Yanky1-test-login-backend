@@ -188,7 +188,6 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         await db.Messages.Where(x => x.ConversationId == conv.Id && x.Direction == MessageDirection.Buyer && x.RespondedAt == null)
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.RespondedAt, now), ct);
         conv.LastMessageAt = now; conv.MessageCount++; conv.AwaitingReplySince = null; conv.OverdueNotifiedAt = null;
-        await MarkReadAsync(conv.Id, actor, now, conv.BuyerMessageCount, save: false);
         var order = conv.OrderId is { } oid ? await db.Orders.AsNoTracking().Where(x => x.Id == oid).Select(x => new { x.Number, x.MarketplaceOrderId }).FirstOrDefaultAsync(ct) : null;
         outbox.Enqueue("message.sent", conv.SellerId, conv.MarketplaceConversationId ?? conv.Id.ToString(), new
         {
@@ -197,17 +196,22 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
             attachments = atts.Select(a => new { id = a.Id, fileName = a.FileName, contentType = a.ContentType, size = a.Size, path = $"/api/internal/v1/attachments/{a.Id}" })
         });
         await db.SaveChangesAsync(ct);
+        await MarkReadAsync(conv.Id, actor, now, conv.BuyerMessageCount);   // the author has read the thread (separate, race-tolerant statement)
         notifier.Live("message.new", conv.SellerId, conv.BrandId, new { conversationId = conv.Id, byTeam = true });
         return new(201, "ok", "", conv, msg, Warnings: warn.Count > 0 ? warn : null);
     }
 
-    public async Task MarkReadAsync(Guid conversationId, Guid userId, DateTime at, int? buyerCount = null, bool save = true)
+    /// <summary>Marks the conversation read for one user. Idempotent and race-free: an UPDATE first, an INSERT only when there is no row yet, and a lost INSERT race falls back to the UPDATE.</summary>
+    public async Task MarkReadAsync(Guid conversationId, Guid userId, DateTime at, int? buyerCount = null)
     {
         var count = buyerCount ?? await db.Conversations.Where(c => c.Id == conversationId).Select(c => c.BuyerMessageCount).FirstOrDefaultAsync();
-        var r = await db.ConversationReads.FirstOrDefaultAsync(x => x.ConversationId == conversationId && x.UserId == userId);
-        if (r is null) db.ConversationReads.Add(new ConversationRead { ConversationId = conversationId, UserId = userId, LastReadAt = at, ReadBuyerCount = count });
-        else { if (r.LastReadAt < at) r.LastReadAt = at; if (r.ReadBuyerCount < count) r.ReadBuyerCount = count; }
-        if (save) await db.SaveChangesAsync();
+        Task<int> Update() => db.ConversationReads.Where(x => x.ConversationId == conversationId && x.UserId == userId)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.LastReadAt, x => x.LastReadAt < at ? at : x.LastReadAt)
+                .SetProperty(x => x.ReadBuyerCount, x => x.ReadBuyerCount < count ? count : x.ReadBuyerCount));
+        if (await Update() > 0) return;
+        db.ConversationReads.Add(new ConversationRead { ConversationId = conversationId, UserId = userId, LastReadAt = at, ReadBuyerCount = count });
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException) { db.ChangeTracker.Clear(); await Update(); }   // another request inserted the row first
     }
 
     public record AttachmentOutcome(int Status, string Code, string Message, MessageAttachment? Attachment = null);
