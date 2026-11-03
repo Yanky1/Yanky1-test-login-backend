@@ -18,6 +18,7 @@ using Solvelt.Api.Options;
 using Solvelt.Api.Phone;
 using Solvelt.Api.Security;
 using Solvelt.Api.Services;
+using Solvelt.Api.Teams;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
@@ -90,6 +91,7 @@ builder.Services.AddScoped<SessionService>();
 builder.Services.AddScoped<AccountSecurityService>();
 builder.Services.AddScoped<LoginThrottleService>();
 builder.Services.AddScoped<OneTimeCodeService>();
+builder.AddTeams();
 builder.Services.AddScoped<KosherService>();
 builder.Services.AddScoped<SellerStatusService>();
 builder.Services.AddScoped<AuthFlows>();
@@ -122,7 +124,14 @@ var authBuilder = builder.Services.AddAuthentication(o =>
             var sessions = ctx.HttpContext.RequestServices.GetRequiredService<SessionService>();
             if (!Guid.TryParse(sid, out var sessionId) || !Guid.TryParse(sub, out var userId) ||
                 !await sessions.ValidateAndTouchAsync(sessionId, userId))
-                ctx.Fail("session_invalid");
+            { ctx.Fail("session_invalid"); return; }
+            // Active seller account: the token's `acc` claim is only a hint. Membership, role, brand scope and account status are re-read from
+            // the database on EVERY request, so removal/demotion/suspension takes effect on the next request (no waiting for token expiry).
+            if (Guid.TryParse(ctx.Principal?.FindFirstValue("acc"), out var accId))
+            {
+                var access = await ctx.HttpContext.RequestServices.GetRequiredService<AccountContextService>().ResolveAsync(userId, accId);
+                if (access is not null) ctx.HttpContext.SetAccess(access);
+            }
         }
     };
 });
@@ -223,6 +232,7 @@ v1.MapAccountEndpoints();
 v1.MapSellerEndpoints();
 v1.MapAdminEndpoints();
 app.MapPhoneChannels(v1);
+v1.MapTeams();
 if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
 
 app.Run();

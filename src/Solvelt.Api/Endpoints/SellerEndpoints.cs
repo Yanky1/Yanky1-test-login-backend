@@ -8,6 +8,7 @@ using Solvelt.Api.Domain;
 using Solvelt.Api.Email;
 using Solvelt.Api.Options;
 using Solvelt.Api.Services;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Endpoints;
 
@@ -26,10 +27,11 @@ public static partial class SellerEndpoints
 
     private static bool Editable(SellerAccount s) => s.Status is SellerStatus.Draft or SellerStatus.NeedsInfo;
 
-    private static async Task<SellerAccount?> Mine(AppDbContext db, ClaimsPrincipal p)
+    /// <summary>The ACTIVE seller account (membership re-validated against the database on this request). Other accounts' data is simply not reachable (404).</summary>
+    private static async Task<SellerAccount?> Mine(AppDbContext db, HttpContext ctx)
     {
-        var id = p.UserId();
-        return await db.Sellers.FirstOrDefaultAsync(s => s.UserId == id);
+        var a = ctx.GetAccess();
+        return a is null ? null : await db.Sellers.FirstOrDefaultAsync(s => s.Id == a.SellerId);
     }
 
     private static async Task<object> Dto(AppDbContext db, SellerAccount s, IOptions<AppOptions> app)
@@ -70,14 +72,21 @@ public static partial class SellerEndpoints
             options = f.OptionsJson is null ? null : System.Text.Json.JsonSerializer.Deserialize<string[]>(f.OptionsJson)
         })));
 
-        s.MapGet("/application", async (ClaimsPrincipal p, AppDbContext db, IOptions<AppOptions> app) =>
-            await Mine(db, p) is { } sel ? Results.Ok(await Dto(db, sel, app)) : Results.NotFound());
-
-        var w = s.MapGroup("/application").RequireAuthorization("VerifiedEmail");
-
-        w.MapPut("/business", async (BusinessRequest r, ClaimsPrincipal p, AppDbContext db, TimeProvider time, IOptions<AppOptions> app) =>
+        s.MapGet("/application", async (HttpContext ctx, AppDbContext db, IOptions<AppOptions> app) =>
         {
-            var sel = await Mine(db, p);
+            if (await Mine(db, ctx) is not { } sel) return Results.NotFound();
+            // Business/legal details: Owner and Admin. Managers/Viewers only get what they need to know (status).
+            return ctx.GetAccess()!.AtLeast(AccountRole.Admin)
+                ? Results.Ok(await Dto(db, sel, app))
+                : Results.Ok(new { sellerId = sel.Id, status = sel.Status.ToString(), vendorName = sel.VendorName, editable = false, restricted = true });
+        }).RequireActiveAccount();
+
+        // The application wizard edits legal/business details: Owner only (see docs/TEAMS.md permission matrix).
+        var w = s.MapGroup("/application").RequireAuthorization("VerifiedEmail").RequirePermission(Permission.AccountEditBusiness);
+
+        w.MapPut("/business", async (BusinessRequest r, HttpContext ctx, AppDbContext db, TimeProvider time, IOptions<AppOptions> app, TeamService team) =>
+        {
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             if (!Editable(sel)) return Results.Problem("The application can't be edited in its current status.", statusCode: 409);
             var errors = new Dictionary<string, string[]>();
@@ -106,13 +115,14 @@ public static partial class SellerEndpoints
             { sel.SmsOptIn = true; sel.SmsConsentAt = time.UtcNow(); sel.SmsConsentWordingVersion = app.Value.SmsWordingVersion; }
             else if (!r.SmsOptIn) { sel.SmsOptIn = false; sel.SmsConsentAt = null; sel.SmsConsentWordingVersion = null; }
             sel.DraftStep = Math.Max(sel.DraftStep, 4); sel.UpdatedAt = time.UtcNow();
+            await team.SyncDefaultBrandAsync(sel);
             await db.SaveChangesAsync();
             return Results.Ok(await Dto(db, sel, app));
         });
 
-        w.MapPut("/kosher", async (KosherRequest r, ClaimsPrincipal p, AppDbContext db, KosherService k, TimeProvider time, IOptions<AppOptions> app) =>
+        w.MapPut("/kosher", async (KosherRequest r, HttpContext ctx, AppDbContext db, KosherService k, TimeProvider time, IOptions<AppOptions> app) =>
         {
-            var sel = await Mine(db, p);
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             if (!Editable(sel)) return Results.Problem("The application can't be edited in its current status.", statusCode: 409);
             var (_, errors) = await k.ApplyAsync(sel, r.Answers ?? new());
@@ -122,9 +132,9 @@ public static partial class SellerEndpoints
             return Results.Ok(await Dto(db, sel, app));
         });
 
-        w.MapPost("/kosher/certificate", async (IFormFile file, ClaimsPrincipal p, AppDbContext db, KosherService k, IFileStorage storage, TimeProvider time, IAuditLog audit) =>
+        w.MapPost("/kosher/certificate", async (IFormFile file, HttpContext ctx, AppDbContext db, KosherService k, IFileStorage storage, TimeProvider time, IAuditLog audit) =>
         {
-            var sel = await Mine(db, p);
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             if (!Editable(sel)) return Results.Problem("The application can't be edited in its current status.", statusCode: 409);
             var cfg = await k.ConfigAsync();
@@ -156,9 +166,9 @@ public static partial class SellerEndpoints
             return Results.Ok(new { id = rec.Id, name = rec.OriginalName, size = rec.Size, contentType = rec.ContentType });
         }).DisableAntiforgery();
 
-        w.MapGet("/kosher/certificate", async (ClaimsPrincipal p, AppDbContext db, IFileStorage storage) =>
+        w.MapGet("/kosher/certificate", async (HttpContext ctx, AppDbContext db, IFileStorage storage) =>
         {
-            var sel = await Mine(db, p);
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             var f = await db.SellerFiles.FirstOrDefaultAsync(x => x.SellerId == sel.Id && x.FieldKey == "kosher_certificate");
             if (f is null) return Results.NotFound();
@@ -167,9 +177,9 @@ public static partial class SellerEndpoints
             return Results.File(stream, f.ContentType, f.OriginalName); // attachment; nosniff + no-store set globally
         });
 
-        w.MapDelete("/kosher/certificate", async (ClaimsPrincipal p, AppDbContext db, KosherService k) =>
+        w.MapDelete("/kosher/certificate", async (HttpContext ctx, AppDbContext db, KosherService k) =>
         {
-            var sel = await Mine(db, p);
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             if (!Editable(sel)) return Results.Problem("The application can't be edited in its current status.", statusCode: 409);
             await k.DeleteFilesAsync(sel.Id, "kosher_certificate");
@@ -177,10 +187,10 @@ public static partial class SellerEndpoints
             return Results.NoContent();
         });
 
-        w.MapPost("/submit", async (SubmitRequest r, ClaimsPrincipal p, AppDbContext db, KosherService k, SellerStatusService status,
+        w.MapPost("/submit", async (SubmitRequest r, HttpContext ctx, AppDbContext db, KosherService k, SellerStatusService status,
             TimeProvider time, IOptions<AppOptions> app) =>
         {
-            var sel = await Mine(db, p);
+            var sel = await Mine(db, ctx);
             if (sel is null) return Results.NotFound();
             if (!Editable(sel)) return Results.Problem("The application was already submitted.", statusCode: 409);
             if (!r.AcceptSellerAgreement) return Validation.Invalid("acceptSellerAgreement", "You must accept the Seller Agreement.");

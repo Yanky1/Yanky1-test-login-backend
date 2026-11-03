@@ -108,6 +108,7 @@ public static class Seeder
         }
         else await db.Database.EnsureCreatedAsync();
         AppDbContext.Seed(db);
+        await Solvelt.Api.Teams.TeamService.BackfillAsync(db, sp.GetRequiredService<TimeProvider>());
 
         var roles = sp.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
         foreach (var r in new[] { "Seller", "Admin" })

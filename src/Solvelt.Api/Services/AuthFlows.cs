@@ -6,14 +6,16 @@ using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Options;
 using Solvelt.Api.Security;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Services;
 
 public record LoginBody(string TokenType, string AccessToken, int ExpiresIn, string RefreshToken,
-    Guid SellerId, string Email, string VendorName, string AccountStatus, string[] Roles);
+    Guid SellerId, string Email, string VendorName, string AccountStatus, string[] Roles,
+    Guid? ActiveAccountId, List<AccountItem> Accounts);
 
 public class AuthFlows(AppDbContext db, UserManager<AppUser> users, IOptions<SessionSettings> sess,
-    IOptions<AppOptions> app, TimeProvider time, ITurnstileVerifier turnstile)
+    IOptions<AppOptions> app, TimeProvider time, ITurnstileVerifier turnstile, TeamService team, AccountContextService accounts)
 {
     public const string RefreshCookie = "sl_rt";
     public const string CsrfCookie = "sl_csrf";
@@ -26,11 +28,22 @@ public class AuthFlows(AppDbContext db, UserManager<AppUser> users, IOptions<Ses
     public async Task<LoginBody> BuildLoginAsync(AppUser user, IssuedSession s, HttpContext ctx)
     {
         var roles = (await users.GetRolesAsync(user)).ToArray();
-        var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == user.Id);
+        var access = s.ActiveAccountId is { } a ? await accounts.ResolveAsync(user.Id, a) : null;
+        var info = await SessionEndpoints.Describe(user, access, accounts);
         SetCookies(ctx, s.RefreshToken);
+        // sellerId / vendorName describe the ACTIVE account (empty while the user still has to choose one, or has none).
+        // `accountStatus` keeps its original meaning (sign-in state, DECISIONS #9); each account's approval status is in accounts[].accountStatus.
         return new LoginBody("Bearer", s.AccessToken, s.ExpiresIn, s.RefreshToken,
-            seller?.Id ?? Guid.Empty, user.Email ?? "", seller?.VendorName ?? "",
-            user.EmailConfirmed ? "Active" : "PendingEmailVerification", roles);
+            access?.SellerId ?? Guid.Empty, user.Email ?? "", info.VendorName,
+            user.EmailConfirmed ? "Active" : "PendingEmailVerification", roles, access?.SellerId, info.Accounts);
+    }
+
+    /// <summary>Sign-in gate: admins and users without any account may sign in; a user whose every account is Rejected/Suspended may not.</summary>
+    public async Task<bool> CanSignInAsync(AppUser user)
+    {
+        if (await users.IsInRoleAsync(user, "Admin")) return true;
+        var list = await accounts.ListAsync(user.Id);
+        return list.Count == 0 || list.Any(a => AccountContextService.Usable(Enum.Parse<SellerStatus>(a.AccountStatus)));
     }
 
     public void SetCookies(HttpContext ctx, string refreshToken)
@@ -80,11 +93,7 @@ public class AuthFlows(AppDbContext db, UserManager<AppUser> users, IOptions<Ses
         if (!res.Succeeded) throw new AccountCreationException(res.Errors.Select(e => e.Description).ToArray());
         await users.AddToRoleAsync(user, "Seller");
         var now = time.UtcNow();
-        db.Sellers.Add(new SellerAccount
-        {
-            UserId = user.Id, DraftStep = emailConfirmed ? 3 : 2, CreatedAt = now, UpdatedAt = now,
-            TermsVersion = termsAccepted ? app.Value.TermsVersion : null, TermsAcceptedAt = termsAccepted ? now : null
-        });
+        team.NewAccount(user.Id, emailConfirmed ? 3 : 2, termsAccepted ? app.Value.TermsVersion : null, termsAccepted ? now : null);
         await db.SaveChangesAsync();
         return user;
     }

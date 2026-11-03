@@ -33,6 +33,7 @@ public class AccountSecurityService(UserManager<AppUser> users, SessionService s
     public async Task DeleteUnverifiedAsync(AppUser user)
     {
         await sessions.RevokeAllAsync(user.Id, "account-replaced");
+        await db.Memberships.Where(m => m.UserId == user.Id).ExecuteDeleteAsync();
         await db.Sellers.Where(s => s.UserId == user.Id).ExecuteDeleteAsync();
         await db.OneTimeCodes.Where(c => c.UserId == user.Id).ExecuteDeleteAsync();
         await users.DeleteAsync(user);

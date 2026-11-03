@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Data;
 
@@ -24,6 +25,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<PhoneOptOut> PhoneOptOuts => Set<PhoneOptOut>();
     public DbSet<PhoneLink> PhoneLinks => Set<PhoneLink>();
     public DbSet<PhoneSeen> PhoneSeen => Set<PhoneSeen>();
+    public DbSet<AccountMembership> Memberships => Set<AccountMembership>();
+    public DbSet<MembershipBrand> MembershipBrands => Set<MembershipBrand>();
+    public DbSet<Brand> Brands => Set<Brand>();
+    public DbSet<AccountInvitation> Invitations => Set<AccountInvitation>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -31,7 +36,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.Entity<SellerAccount>(e =>
         {
             e.ToTable("seller_accounts");
-            e.HasIndex(x => x.UserId).IsUnique();
+            e.HasIndex(x => x.UserId); // no longer unique: a user may own several accounts
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.VendorName).HasMaxLength(200);
         });
@@ -49,6 +54,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.Entity<ExternalExchange>().HasIndex(x => x.CodeHash).IsUnique();
         b.Entity<AuditEvent>().HasIndex(x => x.At);
         b.ConfigurePhone();
+        b.ConfigureTeams();
     }
 
     public static void Seed(AppDbContext db)

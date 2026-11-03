@@ -8,6 +8,7 @@ using Microsoft.IdentityModel.Tokens;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Options;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Services;
 
@@ -33,10 +34,10 @@ public class JwtKeys
     }
 }
 
-public record IssuedSession(Guid SessionId, string AccessToken, int ExpiresIn, string RefreshToken);
+public record IssuedSession(Guid SessionId, string AccessToken, int ExpiresIn, string RefreshToken, Guid? ActiveAccountId = null);
 
 public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys keys, TimeProvider time,
-    IOptions<JwtOptions> jwt, IOptions<SessionSettings> sess, IAuditLog audit)
+    IOptions<JwtOptions> jwt, IOptions<SessionSettings> sess, IAuditLog audit, AccountContextService accounts)
 {
     public int AccessSeconds => jwt.Value.AccessTokenMinutes * 60;
 
@@ -51,7 +52,8 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         db.Sessions.Add(s);
         var raw = AddRefreshToken(s.Id, s.Id, now);
         await db.SaveChangesAsync();
-        return new IssuedSession(s.Id, await IssueAccessAsync(user, s.Id), AccessSeconds, raw);
+        var (token, active) = await IssueAccessWithAccountAsync(user, s.Id);
+        return new IssuedSession(s.Id, token, AccessSeconds, raw, active);
     }
 
     private string AddRefreshToken(Guid sessionId, Guid family, DateTime now)
@@ -65,8 +67,14 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         return raw;
     }
 
-    public async Task<string> IssueAccessAsync(AppUser user, Guid sessionId)
+    public async Task<string> IssueAccessAsync(AppUser user, Guid sessionId) => (await IssueAccessWithAccountAsync(user, sessionId)).Token;
+
+    /// <summary>Issues an access token carrying the session's active seller account (auto-selected when unambiguous). `acc`/`arole` are hints; the server re-validates per request.</summary>
+    public async Task<(string Token, Guid? ActiveAccountId)> IssueAccessWithAccountAsync(AppUser user, Guid sessionId)
     {
+        var session = await db.Sessions.FirstAsync(x => x.Id == sessionId);
+        var active = await accounts.EnsureActiveAsync(user, session);
+        var access = active is { } a ? await accounts.ResolveAsync(user.Id, a) : null;
         var roles = await users.GetRolesAsync(user);
         var now = time.GetUtcNow();
         var claims = new List<Claim>
@@ -78,14 +86,16 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
             new("email_verified", user.EmailConfirmed ? "true" : "false")
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
+        if (access is not null) { claims.Add(new Claim("acc", access.SellerId.ToString())); claims.Add(new Claim("arole", access.Role.ToString())); }
         var handler = new JsonWebTokenHandler();
-        return handler.CreateToken(new SecurityTokenDescriptor
+        var token = handler.CreateToken(new SecurityTokenDescriptor
         {
             Issuer = jwt.Value.Issuer, Audience = jwt.Value.Audience, Subject = new ClaimsIdentity(claims),
             NotBefore = now.UtcDateTime, IssuedAt = now.UtcDateTime,
             Expires = now.UtcDateTime.AddSeconds(AccessSeconds),
             SigningCredentials = new SigningCredentials(keys.SigningKey, SecurityAlgorithms.RsaSha256)
         });
+        return (token, access?.SellerId);
     }
 
     public bool IsIdle(UserSession s) => time.UtcNow() - s.LastActivityAt > TimeSpan.FromMinutes(sess.Value.IdleTimeoutMinutes);
@@ -111,7 +121,8 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
             var rawGrace = AddRefreshToken(session.Id, token.FamilyId, now);
             await db.SaveChangesAsync();
             await audit.WriteAsync("refresh.grace_used", session.UserId, null, $"session={session.Id}");
-            return new(RotateOutcome.Ok, graceUser, new IssuedSession(session.Id, await IssueAccessAsync(graceUser, session.Id), AccessSeconds, rawGrace));
+            var (gt, ga) = await IssueAccessWithAccountAsync(graceUser, session.Id);
+            return new(RotateOutcome.Ok, graceUser, new IssuedSession(session.Id, gt, AccessSeconds, rawGrace, ga));
         }
         if (token.UsedAt is not null)
         {
@@ -128,7 +139,8 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         session.LastActivityAt = now;
         var raw = AddRefreshToken(session.Id, token.FamilyId, now);
         await db.SaveChangesAsync();
-        return new(RotateOutcome.Ok, user, new IssuedSession(session.Id, await IssueAccessAsync(user, session.Id), AccessSeconds, raw));
+        var (nt, na) = await IssueAccessWithAccountAsync(user, session.Id);
+        return new(RotateOutcome.Ok, user, new IssuedSession(session.Id, nt, AccessSeconds, raw, na));
     }
 
     public async Task RevokeSessionAsync(Guid sessionId, string reason)

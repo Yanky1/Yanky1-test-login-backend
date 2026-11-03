@@ -13,6 +13,7 @@ using Solvelt.Api.Domain;
 using Solvelt.Api.Email;
 using Solvelt.Api.Options;
 using Solvelt.Api.Services;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Endpoints;
 
@@ -109,10 +110,8 @@ public static class AuthEndpoints
             else new PasswordHasher<AppUser>().VerifyHashedPassword(DummyUser, DummyHash, r.Password); // equalize timing
             if (ok)
             {
-                var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user!.Id);
-                var isAdmin = await users.IsInRoleAsync(user!, "Admin");
                 if (!user!.EmailConfirmed) ok = false; // unverified sign-ups cannot sign in until they prove the mailbox
-                else if (!isAdmin && (seller is null || seller.Status is SellerStatus.Rejected or SellerStatus.Suspended)) ok = false;
+                else if (!await flows.CanSignInAsync(user)) ok = false;
             }
             if (ok && user!.TwoFactorEnabled)
             {
@@ -273,6 +272,11 @@ public static class AuthEndpoints
             return Results.NoContent();
         }).RequireRateLimiting("sensitive");
 
-        a.MapGet("/session", (ClaimsPrincipal p) => Results.Ok(new { userId = p.UserId(), sessionId = p.SessionId() })).RequireAuthorization();
+        a.MapGet("/session", async (ClaimsPrincipal p, HttpContext ctx, UserManager<AppUser> users, AccountContextService accounts) =>
+        {
+            var user = await users.FindByIdAsync(p.UserId().ToString());
+            var info = user is null ? null : await SessionEndpoints.Describe(user, ctx.GetAccess(), accounts);
+            return Results.Ok(new { userId = p.UserId(), sessionId = p.SessionId(), activeAccountId = info?.ActiveAccountId, accounts = info?.Accounts ?? [] });
+        }).RequireAuthorization();
     }
 }

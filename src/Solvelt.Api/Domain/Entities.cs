@@ -6,6 +6,8 @@ public class AppUser : IdentityUser<Guid>
 {
     public DateTime CreatedAt { get; set; }
     public bool HasPassword { get; set; }
+    /// <summary>Seller account the user used last (auto-selected at sign-in while they are still an active member).</summary>
+    public Guid? LastAccountId { get; set; }
 }
 
 public enum SellerStatus { Draft, PendingReview, NeedsInfo, Approved, Live, Rejected, Suspended }
@@ -91,6 +93,8 @@ public class UserSession
     public string? UserAgent { get; set; }
     public string? IpAddress { get; set; }
     public string? Method { get; set; }
+    /// <summary>Seller account this session currently acts on (validated against the membership on every request).</summary>
+    public Guid? ActiveAccountId { get; set; }
 }
 
 public class RefreshToken

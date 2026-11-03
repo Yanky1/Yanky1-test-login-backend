@@ -50,8 +50,7 @@ public static class PasskeyEndpoints
             var user = res.User;
             // Only passkeys that were user-verified (biometric/PIN) are accepted: possession + inherence = MFA.
             if (res.Passkey is { IsUserVerified: false } || !user.EmailConfirmed) { await audit.WriteAsync("passkey.signin_failed", user.Id); return fail(); }
-            var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
-            if (!await users.IsInRoleAsync(user, "Admin") && (seller is null || seller.Status is SellerStatus.Rejected or SellerStatus.Suspended)) return fail();
+            if (!await flows.CanSignInAsync(user)) return fail();
             await users.AddOrUpdatePasskeyAsync(user, res.Passkey);
             var s = await sessions.CreateAsync(user, "passkey", AuthFlows.Ip(ctx), AuthFlows.Ua(ctx));
             await audit.WriteAsync("login.succeeded", user.Id, user.Email, "method=passkey");

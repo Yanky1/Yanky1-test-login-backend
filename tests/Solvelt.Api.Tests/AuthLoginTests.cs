@@ -16,7 +16,7 @@ public class AuthLoginTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var body = await res.Content.ReadFromJsonAsync<JsonElement>();
         var names = body.EnumerateObject().Select(p => p.Name).OrderBy(x => x).ToArray();
-        Assert.Equal(new[] { "accessToken", "accountStatus", "email", "expiresIn", "refreshToken", "roles", "sellerId", "tokenType", "vendorName" }, names);
+        Assert.Equal(new[] { "accessToken", "accounts", "accountStatus", "activeAccountId", "email", "expiresIn", "refreshToken", "roles", "sellerId", "tokenType", "vendorName" }, names); // original fields + additive multi-account fields
         Assert.Equal("Bearer", body.GetProperty("tokenType").GetString());
         Assert.Equal(3600, body.GetProperty("expiresIn").GetInt32());
         Assert.Equal(email, body.GetProperty("email").GetString());

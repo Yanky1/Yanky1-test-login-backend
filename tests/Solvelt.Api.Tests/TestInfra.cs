@@ -50,6 +50,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             ["Storage:LocalRoot"] = Path.Combine(Dir, "uploads"),
             ["RateLimit:AuthPerMinute"] = "100000",
             ["RateLimit:SensitivePerMinute"] = "100000",
+            ["RateLimit:TeamPerMinute"] = "100000",
             ["Passkeys:RelyingPartyId"] = "localhost",
             ["Passkeys:AllowedOrigins:0"] = "http://localhost:5173",
         };
@@ -108,8 +109,9 @@ public class StubOidcHandler(IOptionsMonitor<AuthenticationSchemeOptions> o, ILo
     }
 }
 
+public record AccountItem(Guid SellerId, string VendorName, string Role, string AccountStatus, int BrandCount);
 public record Login(string TokenType, string AccessToken, int ExpiresIn, string RefreshToken, Guid SellerId, string Email,
-    string VendorName, string AccountStatus, string[] Roles);
+    string VendorName, string AccountStatus, string[] Roles, Guid? ActiveAccountId = null, List<AccountItem>? Accounts = null);
 
 public class Api(ApiFactory f)
 {
@@ -129,6 +131,7 @@ public class Api(ApiFactory f)
 
     public Task<HttpResponseMessage> Get(string url, bool auth = true) => Send(new HttpRequestMessage(HttpMethod.Get, url), auth);
     public Task<HttpResponseMessage> Put(string url, object body) => Send(new HttpRequestMessage(HttpMethod.Put, url) { Content = JsonContent.Create(body) }, true);
+    public Task<HttpResponseMessage> Patch(string url, object body) => Send(new HttpRequestMessage(HttpMethod.Patch, url) { Content = JsonContent.Create(body) }, true);
     public Task<HttpResponseMessage> Delete(string url) => Send(new HttpRequestMessage(HttpMethod.Delete, url), true);
 
     public async Task<HttpResponseMessage> Send(HttpRequestMessage req, bool auth = true)
@@ -205,6 +208,9 @@ public class Api(ApiFactory f)
         var s = await Post("/api/v1/seller/application/submit", new { acceptSellerAgreement = true });
         Assert.Equal(HttpStatusCode.OK, s.StatusCode);
     }
+
+    public void SetSession(Login l) => Session = l;
+    public void SetToken(string accessToken) => Session = Session! with { AccessToken = accessToken };
 
     public async Task<JsonElement> JsonBody(HttpResponseMessage r) => await r.Content.ReadFromJsonAsync<JsonElement>();
 }

@@ -6,6 +6,7 @@ using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Email;
 using Solvelt.Api.Services;
+using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Endpoints;
 
@@ -19,11 +20,13 @@ public static class AccountEndpoints
     {
         var a = g.MapGroup("/account").RequireAuthorization();
 
-        a.MapGet("/me", async (ClaimsPrincipal p, UserManager<AppUser> users, AppDbContext db) =>
+        a.MapGet("/me", async (ClaimsPrincipal p, HttpContext ctx, UserManager<AppUser> users, AppDbContext db, AccountContextService accounts) =>
         {
             var user = await users.FindByIdAsync(p.UserId().ToString());
             if (user is null) return Results.Unauthorized();
-            var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
+            var access = ctx.GetAccess();
+            var info = await SessionEndpoints.Describe(user, access, accounts);
+            var seller = access is null ? null : await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.Id == access.SellerId);
             return Results.Ok(new
             {
                 email = user.Email, emailConfirmed = user.EmailConfirmed, hasPassword = user.HasPassword,
@@ -31,7 +34,8 @@ public static class AccountEndpoints
                 passkeyCount = (await users.GetPasskeysAsync(user)).Count,
                 logins = (await users.GetLoginsAsync(user)).Select(l => l.LoginProvider),
                 roles = await users.GetRolesAsync(user),
-                sellerId = seller?.Id, sellerStatus = seller?.Status.ToString(), vendorName = seller?.VendorName
+                sellerId = seller?.Id, sellerStatus = seller?.Status.ToString(), vendorName = seller?.VendorName,
+                activeAccountId = info.ActiveAccountId, accounts = info.Accounts, role = info.Role
             });
         });
 

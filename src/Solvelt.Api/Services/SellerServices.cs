@@ -132,7 +132,19 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
             };
             if (msg is not null) await mailer.SendAsync(msg);
         }
-        if (to is SellerStatus.Suspended or SellerStatus.Rejected) await sessions.RevokeAllAsync(seller.UserId, "status:" + to);
+        if (to is SellerStatus.Suspended or SellerStatus.Rejected)
+        {
+            // Members whose ONLY usable account this is lose their sessions (as before); members with other usable accounts keep theirs,
+            // but lose access to this account on their next request (the membership check treats Rejected/Suspended accounts as unusable).
+            var members = await db.Memberships.Where(m => m.SellerId == seller.Id).Select(m => m.UserId).ToListAsync();
+            foreach (var uid in members.Append(seller.UserId).Distinct())
+            {
+                var hasOther = await (from m in db.Memberships join s in db.Sellers on m.SellerId equals s.Id
+                                      where m.UserId == uid && m.Status == MembershipStatus.Active && m.SellerId != seller.Id
+                                            && s.Status != SellerStatus.Rejected && s.Status != SellerStatus.Suspended select m.Id).AnyAsync();
+                if (!hasOther) await sessions.RevokeAllAsync(uid, "status:" + to);
+            }
+        }
         return (true, null);
     }
 }

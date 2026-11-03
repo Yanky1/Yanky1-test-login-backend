@@ -79,9 +79,7 @@ public static class ExternalEndpoints
                     await audit.WriteAsync("signup.created", user.Id, email, "method=" + provider);
                 }
             }
-            var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
-            if (!await users.IsInRoleAsync(user, "Admin") && (seller is null || seller.Status is SellerStatus.Rejected or SellerStatus.Suspended))
-                return Error("login_failed");
+            if (!await flows.CanSignInAsync(user)) return Error("login_failed");
 
             var code = Crypto.RandomToken();
             db.ExternalExchanges.Add(new ExternalExchange
