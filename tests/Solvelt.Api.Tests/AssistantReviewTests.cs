@@ -45,6 +45,39 @@ public class AssistantReviewTests : IClassFixture<AssistantFactory>
         Assert.DoesNotContain("](", chat.ToJsonString()); Assert.DoesNotContain("evil.example", chat.ToJsonString());
     }
 
+    [Fact]
+    public async Task B1_conversation_labels_built_from_buyer_names_are_plain_text()
+    {
+        var s = await NewShop(_f);
+        var (_, id, number, _) = await Place(s);
+        var detail = await Orders.Detail(s.Owner, id);
+        var r = await Inbound(_f, "/api/internal/v1/messages", new { messageId = Msg.Id(), conversationId = "C-" + Guid.NewGuid().ToString("N")[..10], kind = "order", marketplaceOrderId = (string)detail["marketplaceOrderId"]!, sellerOrderNumber = number, buyerName = "[[Eve](x)](https://evil.example/p) Smith", text = "hello" });
+        Assert.True(r.IsSuccessStatusCode);
+        var conv = _f.WithDb(db => db.Conversations.Where(c => c.SellerId == s.Seller).Select(c => c.Id).First());
+        _f.Model.Override = q => q.Messages.Any(m => m.Blocks.Any(b => b is AToolResult))
+            ? Say($"Waiting: {{{{conversation:{conv}}}}}")
+            : new ModelResponse([new AToolUse("t", "list_conversations", JsonSerializer.SerializeToElement(new { }))], "tool_use", new(5, 5));
+        var chat = await Asst.Chat(s.Owner, "who wrote");
+        var all = chat.ToJsonString();
+        Assert.DoesNotContain("](", all); Assert.DoesNotContain("evil.example", all);
+        var label = (string)chat["message"]!["links"]![0]!["label"]!;
+        Assert.StartsWith("Conversation with Eve", label); Assert.Contains("S.", label);
+        Assert.Contains("Conversation with Eve", Asst.Text(chat));
+    }
+
+    [Fact]
+    public async Task B3b_a_link_token_in_the_same_response_as_its_lookup_still_resolves()
+    {
+        var s = await NewShop(_f);
+        _f.Model.Override = q => q.Messages.Any(m => m.Blocks.Any(b => b is AToolResult))
+            ? Say("That is all.")
+            : new ModelResponse([new AText($"Here it is: {{{{product:{s.Product}}}}}"), new AToolUse("t", "search_products", JsonSerializer.SerializeToElement(new { }))], "tool_use", new(5, 5));
+        var chat = await Asst.Chat(s.Owner, "find my mug");
+        Assert.Contains("Speckled stoneware coffee mug", Asst.Text(chat));
+        Assert.Contains(chat["message"]!["links"]!.AsArray(), l => (string)l!["id"]! == s.Product.ToString());
+        Assert.DoesNotContain("{{", chat.ToJsonString());
+    }
+
     [Theory]
     [InlineData("[[Mug](x)](https://evil.example/login)")]
     [InlineData("[[[support](a)](b)](mailto:attacker@evil.example)")]

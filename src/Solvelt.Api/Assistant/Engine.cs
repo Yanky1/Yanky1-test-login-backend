@@ -164,12 +164,15 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
 
                 var said = string.Concat(resp.Blocks.OfType<AText>().Select(b => b.Text));
                 var uses = resp.Blocks.OfType<AToolUse>().ToList();
-                if (said.Length > 0)
+                async Task ShowText()
                 {
                     // everything the user can see (stream, stored text, done event) goes through the SAME cleaning, so the raw model text is never shown
                     var shown = Render(said.Trim());
                     if (shown.Length > 0) { var piece = (final.Length > 0 ? "\n\n" : "") + shown; final.Append(piece); await Stream(emit, piece); }
                 }
+                // A {{kind:id}} written in the same response as the lookup that finds that id can only be resolved once the tools have run: show such text afterwards
+                var deferText = said.Length > 0 && uses.Count > 0 && LinkToken.IsMatch(said);
+                if (said.Length > 0 && !deferText) await ShowText();
                 if (resp.StopReason == "refusal") { status = "refused"; var m = "I can't help with that request."; if (final.Length == 0) { final.Append(m); await Stream(emit, m); } break; }
                 if (uses.Count == 0) { if (resp.StopReason == "max_tokens") status = "truncated"; break; }
 
@@ -185,6 +188,7 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
                     summaries.Add(new { name = use.Name, label, ok = !isErr });
                     await emit(new("tool", new { id = use.Id, name = use.Name, label, status = isErr ? "error" : "done" }));
                 }
+                if (deferText) await ShowText();
                 // announce new proposals once
                 foreach (var p in ctx.Proposals.DistinctBy(p => p.Id).Where(p => !announced.Contains(p.Id))) { announced.Add(p.Id); await emit(new("action", PendingActionService.Dto(p))); }
                 messages.Add(new("user", results));
