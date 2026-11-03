@@ -7,8 +7,9 @@ Each agent updates its own row (docs-only commit). Do not start work in an area 
 | Workstream | Orchestrator | Branch | Areas/files it owns | Status | Last updated |
 |---|---|---|---|---|---|
 | A. UI/UX redesign | account 2 | `feature/redesign` (frontend; backend only for email templates) | Frontend `src/**`, `e2e/**`, `e2e-ui/**`, `docs/DESIGN.md`, `docs/UX-AUDIT.md`, `docs/screenshots/`; backend `src/Solvelt.Api/Email/Templates.cs` | In progress (base: frontend main 3094fa3) | 2026-11-03 |
-| B. Seller products | account 2 | `feature/products` (both repos) | Backend product/category entities, `/api/v1/seller/products`, `/seller/questions`, `/categories`, `docs/PRODUCTS.md`; frontend product/catalog/questions pages and seller app shell | Not started; starts only after A is merged and verified | 2026-11-03 |
+| B. Seller products | account 2 | `feature/products` (both repos) | Backend product/category entities, `/api/v1/seller/products`, `/seller/questions`, `/categories`, `docs/PRODUCTS.md`; frontend product/catalog/questions pages and seller app shell | Not started; starts only after A AND D are merged and verified (order A → D → B); products belong to a brand | 2026-11-03 |
 | C. Phone (IVR) + SMS + AI | account 2 | `feature/phone-sms` (backend; frontend Settings cards after A merges) | Backend `src/Solvelt.Api/Phone/**`, `/api/v1/channels/**`, phone entities/options, `docs/PHONE-SMS.md`; frontend Phone number / Phone PIN Settings cards | In progress (resuming from WIP 2949da9) | 2026-11-03 |
+| D. Team members, roles & brands | account 2 | `feature/teams` (both repos; frontend phase after A merges) | Backend memberships, invitations, roles/permissions, brands, account switching (`/api/v1/session/account`), seller-endpoint authorization, `docs/TEAMS.md`; frontend account picker/switcher, Team, Brands and invite pages | In progress (backend phase) | 2026-11-03 |
 
 Rules: feature branches only; `git fetch origin main && git rebase origin/main` often; keep ONE EF migration per
 branch (regenerate on top of main if main gained migrations); fast-forward-merge into main only when every workflow
