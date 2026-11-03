@@ -142,7 +142,7 @@ public static class ProductEndpoints
                     {
                         type = r.Type.ToString(), priceModel = r.SvcModel?.ToString(), durationMinutes = r.SvcMinutes,
                         id = r.Id, title = r.Title, sku = r.Sku, status = r.Status.ToString(), brandId = r.BrandId, brandName = brands.GetValueOrDefault(r.BrandId),
-                        categoryId = r.CategoryId, price = Money.FromCents(r.PriceCents), currentPrice = Money.FromCents(sale ?? r.PriceCents), onSale = sale is not null,
+                        categoryId = r.CategoryId, price = Money.FromCents(r.Type == ListingType.Service ? r.SvcPrice : r.PriceCents), currentPrice = Money.FromCents(r.Type == ListingType.Service ? r.SvcPrice : sale ?? r.PriceCents), onSale = sale is not null,
                         quantity = Math.Max(r.Stock, 0), hasVariants = r.HasVariants, variantCount = r.Variants, qualityScore = r.QualityScore, canPublish = r.IsReady,
                         needsAttention = r.Status != ProductStatus.Archived && (!r.IsReady || r.QualityScore < 60),
                         lowStock = r.LowStockAlert is { } l && r.Stock <= l, version = r.Version, updatedAt = r.UpdatedAt,

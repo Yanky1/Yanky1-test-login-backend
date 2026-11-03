@@ -22,6 +22,7 @@ public class ServiceListingTests : IClassFixture<SvcFactory>
         Assert.Equal("Service", (string)item["type"]!);
         Assert.Equal("hourly", ((string)item["priceModel"]!).ToLowerInvariant());
         Assert.Equal(120, (int)item["durationMinutes"]!);
+        Assert.Equal(60m, (decimal)item["price"]!);          // the hourly rate shows in the price column
         var products = await ProdApi.Node(await b.Owner.Get("/api/v1/seller/products?type=product"));
         Assert.Equal(product.ToString(), (string)products["items"]!.AsArray().Single()!["id"]!);
         Assert.Equal("Product", (string)products["items"]![0]!["type"]!);
