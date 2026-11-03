@@ -35,3 +35,7 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 ## Residual risks / operator duties
 Persist Data Protection keys; run behind TLS and set `App:TrustedProxies`; enable `Passwords:CheckPwned`; rotate JWT keys; monitor `AuditEvents`;
 Turnstile/email/Google/Apple require real credentials and were not exercised against live services in CI.
+| Double booking / slot races | Per-provider calendar lock (atomic UPDATE) + re-validation inside the transaction, unique marketplace booking id, parallel-request test (exactly one wins) |
+| Booking IDOR / privilege | Every booking, quote, calendar and provider endpoint resolves account, role and brand scope from the database; foreign or out-of-scope ids are 404; providers act only on their own bookings; viewers are read-only |
+| Customer data leaks | Address/phone only for the assigned provider and Owner/Admin from confirmation, retention job, no buyer data in audit, logs, reminder mails or ICS; meeting link only in the confirmed event |
+| Calendar feed leaks | 256-bit hashed, revocable ICS tokens, minimal event data, `no-store`, rate limited |

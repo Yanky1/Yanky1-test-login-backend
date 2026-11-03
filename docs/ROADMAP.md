@@ -27,3 +27,11 @@ Each item lists a short design note so it can be added later.
 * **Multi-node live updates** – replace the in-process `EventHub` with Redis pub/sub or PostgreSQL LISTEN/NOTIFY.
 * **Business-day SLA calendars and per-method transit times**, **multiple open returns per order**, **buyer-visible attachment scanning (AV)**.
 
+* **Two-way Google / Outlook calendar sync and importing external calendars** (services) - OAuth app per provider (`CalendarConnection(membershipId, provider, refreshTokenEncrypted)`), push provider bookings as events, and read free/busy (never event bodies) into `CalendarBlock(Kind=Busy, Source=external)`; needs OAuth credentials and server-side fetching of remote content (SSRF review) which is why only the private ICS export exists now.
+* **Auto-created video meetings (Zoom / Meet / Teams)** - `IMeetingProvider.CreateAsync(booking)` returning a join URL stored on the booking and revealed in `booking.confirmed`; replaces the manually entered link.
+* **Group classes / multi-attendee capacity** - `Service.Capacity` + `Booking.Seats`; the slot engine counts seats instead of blocking the footprint, a `Session` entity groups bookings of one class.
+* **Recurring bookings / subscriptions** - `BookingSeries(rrule, until)` that materialises bookings through the same create path (each occurrence takes the calendar lock); marketplace owns the billing.
+* **Route-optimised travel time** - replace the fixed travel buffer by a distance-matrix call between consecutive at-customer jobs of a provider/day (`ITravelTimeProvider`), keep the buffer as fallback.
+* **Payments and payouts for services** - belong to the marketplace; the portal already emits the amounts (`booking.cancelled`, `booking.no_show`, `booking.additional_charge_requested`, `booking.completed`).
+* **Buyer-side booking UI** - part of the main website; consumes the signed availability/hold/confirm API.
+* **Booking threads in the Messages inbox** - move `booking_messages` into E's `Conversation` model (`ConversationKind.Booking`) once the order workstream is stable.

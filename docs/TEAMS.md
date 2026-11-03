@@ -31,6 +31,8 @@ Central table: `Teams/Permissions.cs` (`Permissions.Has(role, permission)`), enf
 | `BrandsManage` (create/edit/archive, logo) | ✔ | ✔ | – | – |
 | `BrandWorkRead` (products, questions … in scope) | ✔ | ✔ | ✔ | ✔ |
 | `BrandWorkWrite` | ✔ | ✔ | ✔ | – |
+| `OrderRefund` (see `docs/ORDERS.md`) | ✔ | ✔ | limit | – |
+| `ProvidersManage` (mark members as service providers, edit anyone's hours/time off, account ICS feed; see `docs/SERVICES.md`) | ✔ | ✔ | – | – |
 
 Owner/Admin always have all-brand scope; Manager/Viewer have *all brands* or a list.
 Rules: nobody edits their own role (use *Leave*); nobody changes or removes a member with a higher role, nor grants a higher role than their own; only an Owner can touch an Owner or create one (via role change or transfer); Owners can't be *invited*; an account always keeps ≥ 1 active Owner (leave/remove/demote refused with `409 last_owner`); the last active brand can't be archived (`409 last_brand`).
