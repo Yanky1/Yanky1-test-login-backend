@@ -79,7 +79,7 @@ public static class BookingEndpoints
             },
             policy,
             addOns = BJson.From<List<AddOn>>(b.AddOnsJson) ?? [],
-            intake = intake.Select(i => new { id = i.Id, question = questions.FirstOrDefault(q => q.Id == i.Id)?.Label ?? i.Id, answer = pii || b.Status == BookingStatus.Requested ? i.Answer : null }),
+            intake = intake.Select(i => new { id = i.Id, question = questions.FirstOrDefault(q => q.Id == i.Id)?.Label ?? i.Id, answer = pii || (b.Status == BookingStatus.Requested && BookingAccess.CanAct(a, b)) ? i.Answer : null }),
             customer = pii ? new { name = b.BuyerName, phone = b.BuyerPhone, address = BJson.From<System.Text.Json.JsonElement?>(b.AddressJson), postalCode = b.PostalCode, visible = true, redacted = false }
                 : (object)new { name = b.PiiRedactedAt is null && b.Status == BookingStatus.Requested ? b.BuyerName : null, phone = (string?)null, address = (object?)null, postalCode = b.Location == LocationKind.Customer && b.PiiRedactedAt is null ? b.PostalCode : null, visible = false, redacted = b.PiiRedactedAt != null },
             onlineInstructions = b.Location == LocationKind.Online ? d?.OnlineInstructions : null,
@@ -233,7 +233,7 @@ public static class BookingEndpoints
 
     private static object QuoteDto(QuoteRequest x, AccountAccess a, bool full)
     {
-        var pii = x.PiiRedactedAt is null && (a.Role >= AccountRole.Admin || x.QuoteProviderId == a.MembershipId || a.Role == AccountRole.Manager);
+        var pii = x.PiiRedactedAt is null && (a.Role >= AccountRole.Admin || x.QuoteProviderId == a.MembershipId);
         return new
         {
             id = x.Id, status = x.Status.ToString(), serviceId = x.ProductId, serviceTitle = x.ServiceTitle, brandId = x.BrandId, location = x.Location.ToString().ToLowerInvariant(),
@@ -405,9 +405,6 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
             string.IsNullOrEmpty(x.AddressJson) ? null : BJson.From<AddressIn>(x.AddressJson), r.IntakeAnswers);
         var res = await bookings.CreateAsync(req, hold: false, quote: x);
         if (!res.Ok) return res;
-        var bookingId = await db.Bookings.AsNoTracking().Where(b => b.MarketplaceBookingId == r.MarketplaceBookingId).Select(b => b.Id).FirstAsync();
-        await db.QuoteRequests.Where(q => q.Id == x.Id && q.Status == QuoteStatus.Quoted)
-            .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QuoteStatus.Accepted).SetProperty(q => q.BookingId, bookingId).SetProperty(q => q.UpdatedAt, time.UtcNow()).SetProperty(q => q.Version, q => q.Version + 1));
         return res;
     }
 

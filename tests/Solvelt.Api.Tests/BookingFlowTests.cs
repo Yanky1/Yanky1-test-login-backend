@@ -659,9 +659,14 @@ public class BookingFlowTests : IClassFixture<SvcFactory>
     {
         var b = await Svc.NewBiz(_f);
         var (mid, _, _) = await Svc.Book(b);
-        Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/outbox/dispatch", null)).StatusCode);
-        var sink = await Orders.Node(await _f.NewClient().GetAsync("/api/dev/outbox"));
-        var mine = sink.AsArray().Where(x => (string)x!["type"]! == "booking.confirmed" && ((string)x["body"]!).Contains(mid)).ToList();
+        // the dispatcher sends 50 events per call and the shared fixture holds many pending ones: dispatch until ours was delivered
+        List<JsonNode?> mine = [];
+        for (var i = 0; i < 40 && mine.Count == 0; i++)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/outbox/dispatch", null)).StatusCode);
+            var sink = await Orders.Node(await _f.NewClient().GetAsync("/api/dev/outbox"));
+            mine = sink.AsArray().Where(x => (string)x!["type"]! == "booking.confirmed" && ((string)x["body"]!).Contains(mid)).ToList();
+        }
         var one = Assert.Single(mine);
         Assert.StartsWith("v1=", (string)one!["signature"]!);
         Assert.True(Signing.Verify(OrdersFactory.OutSecret, (string)one["timestamp"]! + "." + (string)one["body"]!, (string)one["signature"]!));

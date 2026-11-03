@@ -88,7 +88,7 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         Assert.Equal((HttpStatusCode.UnprocessableEntity, "expires"), await Try(Quote(b, [ok], expiresInHours: -1)));
         Assert.Equal((HttpStatusCode.UnprocessableEntity, "expires"), await Try(Quote(b, [ok], expiresInHours: 24 * 90)));
         Assert.Equal((HttpStatusCode.UnprocessableEntity, "slot_unavailable"), await Try(Quote(b, [Svc.Local(b.Tz, wed, 22)])));          // after hours
-        Assert.Equal((HttpStatusCode.UnprocessableEntity, "provider"), await Try(new { price = 100m, durationMinutes = 60, slots = new[] { ok }, providerId = Guid.NewGuid(), expiresAt = DateTime.UtcNow.AddDays(2) }));
+        Assert.Equal((HttpStatusCode.UnprocessableEntity, "provider"), await Try(new { price = 100m, durationMinutes = 60, slots = new[] { ok }, providerId = Guid.NewGuid(), expiresAt = _f.Time.GetUtcNow().UtcDateTime.AddDays(2) }));
         Assert.Equal(HttpStatusCode.Created, (await b.Owner.Post($"/api/v1/seller/providers/{b.OwnerMember}/blocks", new { kind = "busy", start = ok, end = ok.AddHours(1) })).StatusCode);
         Assert.Equal((HttpStatusCode.UnprocessableEntity, "slot_unavailable"), await Try(Quote(b, [ok])));
         // a quote can be re-sent while it is still open
@@ -132,7 +132,7 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         Assert.Equal("Withdrawn", (string)(await ProdApi.Node(await b.Owner.Get($"/api/v1/seller/quote-requests/{id2}")))["status"]!);
         var late = await Svc.Post(b, $"/quotes/{qid2}/accept", new { marketplaceBookingId = Svc.BookingId(), start = Svc.Local(b.Tz, Svc.Next(_f, DayOfWeek.Wednesday), 10) });
         Assert.Equal(HttpStatusCode.Conflict, late.StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await Svc.Post(b, "/quotes/ghost/accept", new { marketplaceBookingId = "x", start = DateTime.UtcNow })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Svc.Post(b, "/quotes/ghost/accept", new { marketplaceBookingId = "x", start = _f.Time.GetUtcNow().UtcDateTime })).StatusCode);
     }
 
     [Fact]

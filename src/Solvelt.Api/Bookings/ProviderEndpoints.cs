@@ -45,7 +45,7 @@ public static class BookingAccess
 
     /// <summary>Customer address/phone/name: assigned provider and Owner/Admin only, from confirmation until redaction.</summary>
     public static bool SeesCustomerData(AccountAccess a, Booking b) =>
-        b.PiiRedactedAt is null && BookingStateMachine.CustomerDataVisibleStatus(b.Status) && (a.Role >= AccountRole.Admin || b.ProviderId == a.MembershipId);
+        b.PiiRedactedAt is null && b.ConfirmedAt is not null && BookingStateMachine.CustomerDataVisibleStatus(b.Status) && (a.Role >= AccountRole.Admin || b.ProviderId == a.MembershipId);
 }
 
 public static class ProviderEndpoints
@@ -388,7 +388,7 @@ public static class ProviderEndpoints
             var now = time.UtcNow();
             IQueryable<Booking> q;
             string name;
-            var prov = await db.ProviderProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.IcsTokenHash == hash && p.IsProvider);
+            var prov = await db.ProviderProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.IcsTokenHash == hash && p.IsProvider && db.Memberships.Any(m => m.Id == p.MembershipId && m.Status == MembershipStatus.Active));
             if (prov is not null) { q = db.Bookings.Where(b => b.ProviderId == prov.MembershipId); name = "Solvelt bookings"; }
             else
             {
