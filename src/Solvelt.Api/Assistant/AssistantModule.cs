@@ -76,7 +76,7 @@ public static class AssistantModule
         s.AddScoped<AssistantEngine>();
         s.AddScoped<AssistantMaintenance>();
         // action tools need the (scoped) pending-action service: build the registry per request
-        s.AddScoped<ToolRegistry>(sp => new ToolRegistry(sp.GetServices<IAssistantTool>().Concat(sp.GetServices<ActionDef>().Select(d => (IAssistantTool)new ActionTool(d, sp.GetRequiredService<PendingActionService>())))));
+        s.AddScoped<ToolRegistry>(sp => new ToolRegistry(sp.GetServices<IAssistantTool>().Concat(sp.GetServices<ActionDef>().Select(d => (IAssistantTool)new ActionTool(d)))));
         if (!builder.Environment.IsEnvironment("Testing") && (cfg.GetSection(AssistantOptions.Section).Get<AssistantOptions>() ?? new()).RunBackgroundJobs) s.AddHostedService<AssistantWorker>();
         var perMinute = cfg.GetValue("RateLimit:AssistantPerMinute", 30);
         s.Configure<RateLimiterOptions>(r => r.AddPolicy("assistant", c => RateLimitPartition.GetFixedWindowLimiter("assistant:" + (c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
@@ -101,6 +101,10 @@ public static class AssistantModule
     public static void MapAssistant(this RouteGroupBuilder v1)
     {
         var g = v1.MapGroup("/assistant").RequireAuthorization("Seller").RequireAuthorization("VerifiedEmail").RequireActiveAccount().RequireRateLimiting("assistant");
+        // feature flag off: everything except /config (which tells the UI to hide itself) answers 503, as documented
+        g.AddEndpointFilter(async (ctx, next) =>
+            !ctx.HttpContext.RequestServices.GetRequiredService<IOptionsMonitor<AssistantOptions>>().CurrentValue.Enabled && !ctx.HttpContext.Request.Path.Value!.EndsWith("/assistant/config", StringComparison.OrdinalIgnoreCase)
+                ? Problem(503, "assistant_disabled", "The assistant isn't available.") : await next(ctx));
 
         g.MapGet("/config", async (HttpContext ctx, IOptionsMonitor<AssistantOptions> opt, UsageService usage) =>
         {

@@ -33,6 +33,7 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
 
     public async Task<AssistantPendingAction> ProposeAsync(ToolContext c, ActionDef def, Proposal p)
     {
+        c.Ct.ThrowIfCancellationRequested(); // a timed-out tool call must not create a card after the model was told it failed
         var now = time.GetUtcNow().UtcDateTime;
         var payload = JsonSerializer.Serialize(p.Payload);
         var key = Key(c.Access.UserId, c.ConversationId, def.Type, p.TargetId, payload + "|" + p.Stamp);
@@ -44,6 +45,7 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
             Summary = ReadTools.Clip(p.Summary, 500), PayloadJson = payload, DiffJson = JsonSerializer.Serialize(p.Diff, JsonSerializerOptions.Web), Risk = p.Risk, Stamp = p.Stamp, IdempotencyKey = key, CreatedAt = now,
             ExpiresAt = now.AddMinutes(opt.CurrentValue.ActionExpiryMinutes)
         };
+        c.Ct.ThrowIfCancellationRequested();
         db.AssistantActions.Add(a);
         await db.SaveChangesAsync();
         return a;
@@ -145,8 +147,14 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
     public async Task<int> ExpireDueAsync()
     {
         var now = time.GetUtcNow().UtcDateTime;
-        return await db.AssistantActions.Where(x => x.Status == PendingStatus.Pending && x.ExpiresAt <= now)
+        var expired = await db.AssistantActions.Where(x => x.Status == PendingStatus.Pending && x.ExpiresAt <= now)
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, PendingStatus.Expired).SetProperty(x => x.ResolvedAt, now));
+        // A confirm that died mid-way (crash, deploy) leaves "Executing" forever. A claim needs ExpiresAt > now, so 5 minutes after expiry nothing can still be running it.
+        var stuck = now.AddMinutes(-5);
+        var recovered = await db.AssistantActions.Where(x => x.Status == PendingStatus.Executing && x.ExpiresAt < stuck)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, PendingStatus.Failed).SetProperty(x => x.ResolvedAt, now).SetProperty(x => x.ResultCode, "interrupted")
+                .SetProperty(x => x.ResultMessage, "This was interrupted while it ran. Check the item before asking again; nothing further will be done automatically."));
+        return expired + recovered;
     }
 }
 
