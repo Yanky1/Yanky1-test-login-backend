@@ -15,7 +15,7 @@ public record ReceiptRequest(string? Status);
 /// </summary>
 public static class InternalEndpoints
 {
-    private static IResult Err(int status, string code, string message, object? extra = null) =>
+    internal static IResult Err(int status, string code, string message, object? extra = null) =>
         Results.Json(new { type = "about:blank", title = message, status, code, errors = extra }, statusCode: status);
 
     /// <summary>A concurrent change kept the request from being stored: 503 + Retry-After (clients retry 5xx, many treat 4xx as final); per-order results say which orders were stored.</summary>
@@ -30,7 +30,7 @@ public static class InternalEndpoints
         }
     }
 
-    private static async Task<(T? Body, IResult? Error)> Signed<T>(HttpContext ctx, InboundVerifier verifier) where T : class
+    internal static async Task<(T? Body, IResult? Error)> Signed<T>(HttpContext ctx, InboundVerifier verifier) where T : class
     {
         var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
         if (!v.Ok) return (null, Err(v.Status, v.Code, v.Message));
