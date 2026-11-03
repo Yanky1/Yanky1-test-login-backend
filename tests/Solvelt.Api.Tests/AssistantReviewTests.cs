@@ -71,3 +71,48 @@ public class AssistantReviewTests : IClassFixture<AssistantFactory>
         Assert.Contains("ok", streamed);
     }
 }
+
+public class AssistantBudgetRaceTests : IClassFixture<AssistantLimitsFactory>
+{
+    private readonly AssistantLimitsFactory _f;
+    public AssistantBudgetRaceTests(AssistantLimitsFactory f) { _f = f; f.Model.Reset(); }
+
+    [Fact]
+    public async Task B4_parallel_messages_never_exceed_the_daily_budget()
+    {
+        var s = await NewShop(_f);                                       // limits: 4 per user, 6 per account
+        var results = await Task.WhenAll(Enumerable.Range(0, 12).Select(i => Asst.ChatRaw(s.Owner, "hello " + i)));
+        var ok = results.Count(r => r.StatusCode == HttpStatusCode.OK);
+        Assert.Equal(4, ok);
+        Assert.All(results.Where(r => r.StatusCode != HttpStatusCode.OK), r => Assert.Equal(HttpStatusCode.TooManyRequests, r.StatusCode));
+        Assert.Equal(4, _f.Model.Requests.Count);                        // refused messages never reached the model
+        Assert.Equal(4, _f.WithDb(db => db.AssistantUsages.Where(u => u.SellerId == s.Seller).Sum(u => u.Messages)));
+    }
+
+    [Fact]
+    public async Task B4_account_budget_holds_under_parallel_load_from_two_users()
+    {
+        var s = await NewShop(_f);
+        var (mate, _) = await TeamHelpers.JoinAs(_f, s.Owner, "manager");
+        var tasks = Enumerable.Range(0, 6).Select(i => Asst.ChatRaw(s.Owner, "o" + i)).Concat(Enumerable.Range(0, 6).Select(i => Asst.ChatRaw(mate, "m" + i)));
+        var results = await Task.WhenAll(tasks);
+        Assert.Equal(6, results.Count(r => r.StatusCode == HttpStatusCode.OK));   // account limit 6
+    }
+}
+
+public class AssistantTokenMidTurnTests : IClassFixture<AssistantTokenFactory>
+{
+    private readonly AssistantTokenFactory _f;
+    public AssistantTokenMidTurnTests(AssistantTokenFactory f) { _f = f; f.Model.Reset(); }
+
+    [Fact]
+    public async Task B4_token_budget_is_enforced_between_model_calls_of_one_turn()
+    {
+        var s = await NewShop(_f);                                       // 300 tokens per user per day; the fake spends ~150 per call
+        _f.Model.AlwaysCallTool = true;
+        var chat = await Asst.Chat(s.Owner, "go");
+        Assert.Equal("budget", (string)chat["message"]!["status"]!);
+        Assert.True(_f.Model.Requests.Count is >= 2 and < 8, "stopped by the token budget, not by MaxIterations: " + _f.Model.Requests.Count);
+        Assert.Contains("capacity", Asst.Text(chat));
+    }
+}

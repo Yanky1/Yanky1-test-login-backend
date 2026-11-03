@@ -223,11 +223,30 @@ public sealed class UsageService(AppDbContext db, TimeProvider time, IOptionsMon
         catch (DbUpdateException) { db.Entry(row!).State = EntityState.Detached; return await db.AssistantUsages.FirstAsync(u => u.SellerId == a.SellerId && u.UserId == a.UserId && u.Day == day); }
     }
 
-    public async Task CountMessageAsync(AccountAccess a)
+    /// <summary>
+    /// Counts one message ONLY if every daily budget still has room, in a single conditional UPDATE: parallel requests cannot all slip past a read-then-write check.
+    /// Returns the refusal (code, message) or null when the message was reserved.
+    /// </summary>
+    public async Task<(string? Code, string? Message)> TryReserveMessageAsync(AccountAccess a)
     {
-        var day = Today;
-        await RowAsync(a);
-        await db.AssistantUsages.Where(u => u.SellerId == a.SellerId && u.UserId == a.UserId && u.Day == day).ExecuteUpdateAsync(s => s.SetProperty(u => u.Messages, u => u.Messages + 1));
+        var o = opt.CurrentValue; var day = Today;
+        var row = await RowAsync(a);
+        var n = await db.AssistantUsages.Where(u => u.Id == row.Id && u.Messages < o.DailyMessagesPerUser && u.InputTokens + u.OutputTokens < o.DailyTokensPerUser
+                && db.AssistantUsages.Where(x => x.SellerId == u.SellerId && x.Day == u.Day).Sum(x => x.Messages) < o.DailyMessagesPerAccount
+                && db.AssistantUsages.Where(x => x.SellerId == u.SellerId && x.Day == u.Day).Sum(x => x.InputTokens + x.OutputTokens) < o.DailyTokensPerAccount)
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.Messages, u => u.Messages + 1));
+        return n == 1 ? (null, null) : await CheckAsync(a) is { Code: not null } why ? why : ("budget_user_messages", "You've reached today's assistant limit. It resets at midnight UTC.");
+    }
+
+    /// <summary>Token budgets only (used between model calls of one turn): a long tool loop cannot overshoot the day's capacity by more than one call.</summary>
+    public async Task<(string? Code, string? Message)> CheckTokensAsync(AccountAccess a)
+    {
+        var o = opt.CurrentValue; var day = Today;
+        var mine = await db.AssistantUsages.AsNoTracking().Where(u => u.SellerId == a.SellerId && u.UserId == a.UserId && u.Day == day).FirstOrDefaultAsync();
+        var acc = await db.AssistantUsages.AsNoTracking().Where(u => u.SellerId == a.SellerId && u.Day == day).GroupBy(u => 1).Select(g => new { t = g.Sum(x => x.InputTokens + x.OutputTokens) }).FirstOrDefaultAsync();
+        if ((mine?.InputTokens ?? 0) + (mine?.OutputTokens ?? 0) >= o.DailyTokensPerUser) return ("budget_user_tokens", "You've used today's assistant capacity. It resets at midnight UTC.");
+        if ((acc?.t ?? 0) >= o.DailyTokensPerAccount) return ("budget_account_tokens", "Your account used today's assistant capacity. It resets at midnight UTC.");
+        return (null, null);
     }
 
     public async Task AddTokensAsync(AccountAccess a, ModelUsage u)

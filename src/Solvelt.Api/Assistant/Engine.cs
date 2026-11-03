@@ -106,19 +106,18 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
         var text = (req.Text ?? "").Trim();
         if (text.Length == 0) throw new AssistantException(422, "empty", "Write a message first.");
         if (text.Length > o.MaxMessageChars) throw new AssistantException(422, "too_long", $"Messages can be at most {o.MaxMessageChars} characters.");
-        var (code, msg) = await usage.CheckAsync(a);
-        if (code is not null) throw new AssistantException(429, code, msg!);
-
-        AssistantConversation conv;
+        AssistantConversation? conv = null;
         if (req.ConversationId is { } cid)
             conv = await convs.Mine(a).FirstOrDefaultAsync(x => x.Id == cid) ?? throw new AssistantException(404, "not_found", "Conversation not found.");
-        else
+        // reserve the message atomically BEFORE doing any work (N parallel requests can't all pass a stale read)
+        var (code, msg) = await usage.TryReserveMessageAsync(a);
+        if (code is not null) throw new AssistantException(429, code, msg!);
+        if (conv is null)
         {
             var now0 = time.GetUtcNow().UtcDateTime;
             conv = new AssistantConversation { SellerId = a.SellerId, UserId = a.UserId, CreatedAt = now0, UpdatedAt = now0, Title = Title(text) };
             db.AssistantConversations.Add(conv); await db.SaveChangesAsync();
         }
-        await usage.CountMessageAsync(a);
         var history = await History(conv.Id, o.HistoryMessages);
         await convs.AppendAsync(conv.Id, a.SellerId, a.UserId, "user", text);
         await emit(new("conversation", new { conversationId = conv.Id, title = conv.Title }));
@@ -146,6 +145,8 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
             {
                 if (++iterations > o.MaxIterations) { status = "limit"; Append(final, "I've reached the limit of steps for one message, so I stopped here. Ask me to continue if you'd like."); await Stream(emit, "\n\nI've reached the limit of steps for one message, so I stopped here. Ask me to continue if you'd like."); break; }
                 ct.ThrowIfCancellationRequested();
+                if (iterations > 1 && await usage.CheckTokensAsync(a) is { Code: not null } over)
+                { status = "budget"; Append(final, over.Message!); await Stream(emit, (final.Length > over.Message!.Length ? "\n\n" : "") + over.Message); break; }
                 ModelResponse resp;
                 using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
