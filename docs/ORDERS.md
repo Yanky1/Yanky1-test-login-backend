@@ -201,7 +201,7 @@ Ship request: `{carrier: UPS|USPS|FedEx|DHL|Other, service?, trackingNumber, shi
 Tracking numbers are normalised (spaces removed, upper-case) and checked per carrier; quantities must not exceed what is still unshipped.
 Refund request: `{reason, note?, full?, lines?:[{lineId, quantity}], shippingCents?, returnId?}`; `.../refunds/preview` returns the computed amount
 and the maximum without writing anything. Reasons come from fixed lists (`reasons` in the order detail). The order detail also returns `actions`
-(what the caller may do right now) so the UI never has to guess.
+(what the caller may do right now, including `decideCancellation`, `decideReturn`, `receiveReturn`) so the UI never has to guess. The conversation detail returns `me` (the caller's user id) and `assignees` (active, non-Viewer members who can work on the conversation's brand; empty for read-only callers), so Managers, who cannot list team members, can still assign.
 
 **Tracking CSV** columns: `order_number, carrier, tracking_number` (+ optional `ship_date` `YYYY-MM-DD`, `sku`, `quantity`). `apply=false` validates every row with
 the real rules and returns row numbers + errors without changing anything; `apply=true` ships the valid rows. Limits: 1 MB, 500 rows.

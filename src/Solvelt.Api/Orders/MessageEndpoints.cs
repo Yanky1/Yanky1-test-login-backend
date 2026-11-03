@@ -112,6 +112,18 @@ public static class MessageEndpoints
             var order = c.OrderId is { } oid ? await db.Orders.AsNoTracking().Where(o => o.Id == oid).Select(o => new { o.Id, o.Number, o.Status, o.TotalCents, o.Currency, o.ShipByAt, o.PlacedAt }).FirstOrDefaultAsync() : null;
             var product = c.ProductId is { } pid ? await db.Products.AsNoTracking().Where(p => p.Id == pid).Select(p => new { p.Id, p.Title, p.Sku, p.PriceCents, Status = p.Status.ToString() }).FirstOrDefaultAsync() : null;
             var assignee = c.AssignedUserId is { } au ? await db.Users.AsNoTracking().Where(u => u.Id == au).Select(u => u.Email).FirstOrDefaultAsync() : null;
+            // people this conversation can be assigned to: active members who can work on its brand (never Viewers); only offered to callers who can write
+            var canAssign = a.CanWorkOnBrand(c.BrandId, true);
+            var assignees = new List<object>();
+            if (canAssign)
+            {
+                var ms = await db.Memberships.AsNoTracking().Where(m => m.SellerId == a.SellerId && m.Status == MembershipStatus.Active && m.Role != AccountRole.Viewer).ToListAsync();
+                var scoped = await db.MembershipBrands.AsNoTracking().Where(b => b.BrandId == c.BrandId).Select(b => b.MembershipId).ToListAsync();
+                var ok = ms.Where(m => m.AllBrands || m.Role >= AccountRole.Admin || scoped.Contains(m.Id)).ToList();
+                var uids = ok.Select(m => m.UserId).ToList();
+                var emails = await db.Users.AsNoTracking().Where(u => uids.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Email ?? "");
+                assignees = ok.Select(m => (object)new { userId = m.UserId, name = emails.GetValueOrDefault(m.UserId, ""), isMe = m.UserId == a.UserId }).ToList();
+            }
             return Results.Json(new
             {
                 conversation = Dto(c, brand, c.BuyerMessageCount > readCount, time.UtcNow(), opt.Value.ReplyDueHours, assignee, product?.Title, order?.Number),
@@ -119,7 +131,9 @@ public static class MessageEndpoints
                 product,
                 messages = msgs.Select(m => MsgDto(m, authors)),
                 notes = notes.Select(n => new { id = n.Id, text = n.Text, author = noteAuthors.GetValueOrDefault(n.AuthorId, ""), createdAt = n.CreatedAt }),
-                canWrite = a.CanWorkOnBrand(c.BrandId, true)
+                canWrite = a.CanWorkOnBrand(c.BrandId, true),
+                me = a.UserId,
+                assignees = canAssign ? assignees : []
             }, OrderJson.Opts);
         });
 

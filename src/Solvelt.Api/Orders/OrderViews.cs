@@ -52,6 +52,9 @@ public static class OrderViews
             refund = canRefund,
             refundLimitCents = a.Has(Permission.OrderRefund) ? (long?)null : managerRefundLimit,
             note = w,
+            decideCancellation = w && o.CancelRequested && o.Status != OrderStatus.Cancelled,
+            decideReturn = w && o.Status == OrderStatus.ReturnRequested,
+            receiveReturn = w && o.Status == OrderStatus.ReturnApproved,
         };
     }
 

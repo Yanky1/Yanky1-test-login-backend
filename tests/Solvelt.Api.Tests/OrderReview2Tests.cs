@@ -225,3 +225,47 @@ public class OrderMarkReadRaceTests(OrdersFactory f) : IClassFixture<OrdersFacto
         Assert.Equal(1, (int)(await Node(await s.Owner.Get("/api/v1/seller/messages/counts")))["unread"]!);
     }
 }
+
+public class OrderFrontendSupportTests(OrdersFactory f) : IClassFixture<OrdersFactory>
+{
+    [Fact]
+    public async Task A_conversation_lists_who_it_can_be_assigned_to_for_everyone_who_can_write_including_managers()
+    {
+        var s = await NewShop(f);
+        var brandY = await TeamHelpers.NewBrand(s.Owner, "Brand Y");
+        var (mgrX, mx) = await TeamHelpers.JoinAs(f, s.Owner, "Manager", [s.Brand]); await mgrX.Switch(s.Seller);
+        var (mgrY, my) = await TeamHelpers.JoinAs(f, s.Owner, "Manager", [brandY]); await mgrY.Switch(s.Seller);
+        var (viewer, vv) = await TeamHelpers.JoinAs(f, s.Owner, "Viewer"); await viewer.Switch(s.Seller);
+        var (mid, _, number, _) = await Place(s);
+        var (_, _, conv, _) = await Msg.BuyerMessage(f, "order", mid, number);
+        var d = await Node(await mgrX.Get($"/api/v1/seller/messages/{conv}"));                      // a MANAGER gets the list (they cannot call /team/members)
+        var names = d["assignees"]!.AsArray().Select(x => (string)x!["name"]!).ToList();
+        Assert.Contains(s.Owner.Session!.Email, names); Assert.Contains(mx, names);
+        Assert.DoesNotContain(my, names);                                                           // manager of another brand
+        Assert.DoesNotContain(vv, names);                                                           // viewers can't be assigned
+        Assert.Single(d["assignees"]!.AsArray(), x => (bool)x!["isMe"]!);
+        Assert.Equal(d["assignees"]!.AsArray().Single(x => (bool)x!["isMe"]!)!["userId"]!.ToString(), d["me"]!.ToString());
+        Assert.Empty((await Node(await viewer.Get($"/api/v1/seller/messages/{conv}")))["assignees"]!.AsArray());   // read-only: nothing to offer
+    }
+
+    [Fact]
+    public async Task Order_actions_say_who_may_decide_cancellations_and_returns_and_receive_goods()
+    {
+        var s = await NewShop(f);
+        var (viewer, _) = await TeamHelpers.JoinAs(f, s.Owner, "Viewer"); await viewer.Switch(s.Seller);
+        var (mid, id, _, _) = await Place(s, lid: "RL");
+        await Inbound(f, $"/api/internal/v1/orders/{mid}/cancel-requests", new { requestId = "C", reason = "changed_mind" });
+        Assert.True((bool)(await Detail(s.Owner, id))["actions"]!["decideCancellation"]!); Assert.False((bool)(await Detail(viewer, id))["actions"]!["decideCancellation"]!);
+        var cid = (string)(await Detail(s.Owner, id))["cancellations"]![0]!["id"]!;
+        await Ok(Act(s.Owner, id, $"cancellation-requests/{cid}/reject", new { note = "packed" }));
+        Assert.False((bool)(await Detail(s.Owner, id))["actions"]!["decideCancellation"]!);
+        await Ok(Act(s.Owner, id, "accept")); await Ok(Act(s.Owner, id, "ship", Ship())); await Ok(Act(s.Owner, id, "deliver"));
+        await Inbound(f, $"/api/internal/v1/orders/{mid}/return-requests", new { returnId = "R", reason = "damaged", lines = new[] { new { marketplaceLineId = "RL", quantity = 1 } } });
+        var a = (await Detail(s.Owner, id))["actions"]!; Assert.True((bool)a["decideReturn"]!); Assert.False((bool)a["receiveReturn"]!);
+        Assert.False((bool)(await Detail(viewer, id))["actions"]!["decideReturn"]!);
+        var rid = (string)(await Detail(s.Owner, id))["returns"]![0]!["id"]!;
+        await Ok(Act(s.Owner, id, $"returns/{rid}/approve"));
+        a = (await Detail(s.Owner, id))["actions"]!; Assert.False((bool)a["decideReturn"]!); Assert.True((bool)a["receiveReturn"]!);
+        Assert.False((bool)(await Detail(viewer, id))["actions"]!["receiveReturn"]!);
+    }
+}
