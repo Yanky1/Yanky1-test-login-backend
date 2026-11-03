@@ -16,6 +16,7 @@ using Solvelt.Api.Email;
 using Solvelt.Api.Endpoints;
 using Solvelt.Api.Options;
 using Solvelt.Api.Phone;
+using Solvelt.Api.Products;
 using Solvelt.Api.Security;
 using Solvelt.Api.Services;
 using Solvelt.Api.Teams;
@@ -92,6 +93,7 @@ builder.Services.AddScoped<AccountSecurityService>();
 builder.Services.AddScoped<LoginThrottleService>();
 builder.Services.AddScoped<OneTimeCodeService>();
 builder.AddTeams();
+builder.AddProducts();
 builder.Services.AddScoped<KosherService>();
 builder.Services.AddScoped<SellerStatusService>();
 builder.Services.AddScoped<AuthFlows>();
@@ -182,7 +184,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
 builder.Services.AddOpenApi();
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
-builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 6 * 1024 * 1024);
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 12 * 1024 * 1024);
 
 if (cfg.GetValue<bool>("Turnstile:UseTestStub") && !env.IsEnvironment("Testing"))
     throw new InvalidOperationException("Turnstile:UseTestStub may only be enabled in the Testing environment.");
@@ -233,6 +235,7 @@ v1.MapSellerEndpoints();
 v1.MapAdminEndpoints();
 app.MapPhoneChannels(v1);
 v1.MapTeams();
+app.MapProducts(v1);
 if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
 
 app.Run();

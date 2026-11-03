@@ -51,6 +51,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             ["RateLimit:AuthPerMinute"] = "100000",
             ["RateLimit:SensitivePerMinute"] = "100000",
             ["RateLimit:TeamPerMinute"] = "100000",
+            ["RateLimit:CatalogPerMinute"] = "100000",
             ["Passkeys:RelyingPartyId"] = "localhost",
             ["Passkeys:AllowedOrigins:0"] = "http://localhost:5173",
         };

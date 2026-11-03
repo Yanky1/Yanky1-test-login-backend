@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Products;
 using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Data;
@@ -29,6 +30,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<MembershipBrand> MembershipBrands => Set<MembershipBrand>();
     public DbSet<Brand> Brands => Set<Brand>();
     public DbSet<AccountInvitation> Invitations => Set<AccountInvitation>();
+    // products (see Products/)
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<CategoryAttribute> CategoryAttributes => Set<CategoryAttribute>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductOption> ProductOptions => Set<ProductOption>();
+    public DbSet<ProductVariant> Variants => Set<ProductVariant>();
+    public DbSet<ProductImage> ProductImages => Set<ProductImage>();
+    public DbSet<ProductAttributeValue> ProductAttributeValues => Set<ProductAttributeValue>();
+    public DbSet<ProductFaq> ProductFaqs => Set<ProductFaq>();
+    public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -55,10 +66,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.Entity<AuditEvent>().HasIndex(x => x.At);
         b.ConfigurePhone();
         b.ConfigureTeams();
+        b.ConfigureProducts();
     }
 
     public static void Seed(AppDbContext db)
     {
+        CategorySeed.Run(db);
         if (db.SellerFieldConfigs.Any()) return;
         static string Opts(params string[] o) => JsonSerializer.Serialize(o);
         db.SellerFieldConfigs.AddRange(
