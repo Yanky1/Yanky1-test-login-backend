@@ -29,16 +29,21 @@ public static class PhoneAccountEndpoints
     /// Step-up for changing/removing the number or setting the PIN: the password on password accounts; otherwise a 6-digit code texted to the CURRENT verified number.
     /// Returns null when satisfied, otherwise the response to send (202 = code sent / 400 = wrong).
     /// </summary>
-    private static async Task<IResult?> StepUpAsync(AppUser user, string? password, string? code, UserManager<AppUser> users, OneTimeCodeService codes, SmsService sms, IOptions<PhoneOptions> po)
+    private static async Task<IResult?> StepUpAsync(AppUser user, string? password, string? code, UserManager<AppUser> users, OneTimeCodeService codes, SmsService sms, IOptions<PhoneOptions> po, Mailer mailer)
     {
         if (user.HasPassword)
             return !string.IsNullOrEmpty(password) && await users.CheckPasswordAsync(user, password) ? null : Bad("Your current password isn't correct.", "wrong_password");
         if (string.IsNullOrWhiteSpace(code))
         {
-            if (user.PhoneNumber is null || !user.PhoneNumberConfirmed) return Bad("Confirm your identity with a passkey or by adding a phone number first.", "stepup_unavailable");
             var issued = await codes.IssueAsync(user.Id, StepUpPurpose);
-            if (issued.Code is not null) await sms.SendAsync(user.PhoneNumber, $"{po.Value.BrandName} confirmation code: {issued.Code}. Never share it.");
-            return Results.Json(new { stepUpRequired = true, message = "We texted a confirmation code to your current number." }, statusCode: 202);
+            if (user.PhoneNumber is not null && user.PhoneNumberConfirmed)
+            {
+                if (issued.Code is not null) await sms.SendAsync(user.PhoneNumber, $"{po.Value.BrandName} confirmation code: {issued.Code}. Never share it.");
+                return Results.Json(new { stepUpRequired = true, message = "We texted a confirmation code to your current number." }, statusCode: 202);
+            }
+            // No number yet (adding the first one): a stolen session alone must not be able to attach an attacker's number, so the code goes to the account's EMAIL.
+            if (issued.Code is not null) await mailer.SendAsync(PhoneTemplates.StepUpEmail(user.Email!, issued.Code));
+            return Results.Json(new { stepUpRequired = true, message = "We emailed a confirmation code to your address." }, statusCode: 202);
         }
         var (o, _) = await codes.VerifyAsync(user.Id, StepUpPurpose, code);
         return o == OneTimeCodeService.VerifyOutcome.Ok ? null : Bad("That confirmation code isn't right.", "stepup_failed");
@@ -58,14 +63,14 @@ public static class PhoneAccountEndpoints
 
         // Add (first number) or change (needs step-up). A code is texted to the NEW number.
         a.MapPost("/start", async (PhoneStartRequest r, ClaimsPrincipal p, UserManager<AppUser> users, OneTimeCodeService codes, SmsService sms, AppDbContext db,
-            IOptions<PhoneOptions> po) =>
+            IOptions<PhoneOptions> po, Mailer mailer) =>
         {
             var u = await users.FindByIdAsync(p.UserId().ToString());
             if (u is null) return Results.Unauthorized();
             var number = PhoneFormat.Normalize(r.PhoneNumber, po.Value.DefaultRegion);
             if (number is null) return Validation.Invalid("phoneNumber", "Enter a valid mobile number, including the country code if it isn't local.");
             if (u.PhoneNumberConfirmed && u.PhoneNumber == number) return Validation.Invalid("phoneNumber", "That is already your number.");
-            if (u.PhoneNumberConfirmed && await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po) is { } su) return su;
+            if (await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po, mailer) is { } su) return su;
             // A number that belongs to another account is not revealed: same answer, nothing sent.
             var taken = await db.Users.AnyAsync(x => x.PhoneNumber == number && x.Id != u.Id);
             if (!taken)
@@ -94,15 +99,16 @@ public static class PhoneAccountEndpoints
 
         // Texts a step-up code for accounts without a password (the web card calls this before remove/PIN when there is no password).
         a.MapPost("/remove", async (PhoneStepUpRequest r, ClaimsPrincipal p, UserManager<AppUser> users, OneTimeCodeService codes, SmsService sms, PinService pins,
-            Mailer mailer, IAuditLog audit, IOptions<PhoneOptions> po) =>
+            Mailer mailer, IAuditLog audit, IOptions<PhoneOptions> po, AppDbContext db) =>
         {
             var u = await users.FindByIdAsync(p.UserId().ToString());
             if (u is null) return Results.Unauthorized();
             if (!u.PhoneNumberConfirmed) return Results.NoContent();
-            if (await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po) is { } su) return su;
+            if (await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po, mailer) is { } su) return su;
             u.PhoneNumber = null; u.PhoneNumberConfirmed = false;
             await users.UpdateAsync(u);
             await pins.RemoveAsync(u.Id);
+            await db.PhoneStates.Where(x => x.UserId == u.Id).ExecuteDeleteAsync(); // phone/SMS sessions end with the number
             await mailer.SendAsync(PhoneTemplates.PhoneRemoved(u.Email!));
             await audit.WriteAsync("phone.removed", u.Id, u.Email);
             return Results.NoContent();
@@ -115,7 +121,7 @@ public static class PhoneAccountEndpoints
             if (u is null) return Results.Unauthorized();
             if (!u.PhoneNumberConfirmed) return Bad("Add and verify a phone number first.", "no_phone");
             if (PinRules.Weakness(r.Pin) is { } weak) return Validation.Invalid("pin", weak);
-            if (await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po) is { } su) return su;
+            if (await StepUpAsync(u, r.CurrentPassword, r.StepUpCode, users, codes, sms, po, mailer) is { } su) return su;
             await pins.SetAsync(u.Id, r.Pin!);
             await mailer.SendAsync(PhoneTemplates.PinChanged(u.Email!));
             await audit.WriteAsync("phone.pin_changed", u.Id, u.Email, "channel=web");

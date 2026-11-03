@@ -16,6 +16,10 @@ public class AccountSecurityService(UserManager<AppUser> users, SessionService s
 
     public async Task WipeCredentialsAsync(AppUser user, bool removePassword)
     {
+        // A phone number / PIN planted on an unverified account must die with the other credentials (see Phone/PendingPhone).
+        user.PhoneNumber = null; user.PhoneNumberConfirmed = false;
+        await db.PhoneCredentials.Where(c => c.UserId == user.Id).ExecuteDeleteAsync();
+        await db.PhoneLinks.Where(l => l.UserId == user.Id).ExecuteDeleteAsync();
         foreach (var p in await users.GetPasskeysAsync(user)) await users.RemovePasskeyAsync(user, p.CredentialId);
         foreach (var l in await users.GetLoginsAsync(user)) await users.RemoveLoginAsync(user, l.LoginProvider, l.ProviderKey);
         if (removePassword && await users.HasPasswordAsync(user)) await users.RemovePasswordAsync(user);
@@ -36,6 +40,8 @@ public class AccountSecurityService(UserManager<AppUser> users, SessionService s
         await db.Memberships.Where(m => m.UserId == user.Id).ExecuteDeleteAsync();
         await db.Sellers.Where(s => s.UserId == user.Id).ExecuteDeleteAsync();
         await db.OneTimeCodes.Where(c => c.UserId == user.Id).ExecuteDeleteAsync();
+        await db.PhoneCredentials.Where(c => c.UserId == user.Id).ExecuteDeleteAsync();
+        await db.PhoneLinks.Where(l => l.UserId == user.Id).ExecuteDeleteAsync();
         await users.DeleteAsync(user);
         await audit.WriteAsync("account.unverified_replaced", null, user.Email);
     }

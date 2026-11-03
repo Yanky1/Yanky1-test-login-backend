@@ -81,6 +81,17 @@ public class Phones(PhoneApiFactory f)
     }
 
     public Task<string> Start(string sid, string from) => Call(sid, from);
+
+    /// <summary>Full voice sign-in as a stranger/anyone: press 1, the account's number, the texted code, the PIN. Returns the last TwiML.</summary>
+    public async Task<string> SignIn(string sid, string caller, string account, string pin, string? code = null)
+    {
+        f.Time.Advance(TimeSpan.FromSeconds(61)); // the texted code has a 60 s resend cool-down
+        await Start(sid, caller);
+        await Press(sid, caller, "1");
+        await Call(sid, caller, digits: account.TrimStart('+'));
+        var afterCode = await Press(sid, caller, code ?? f.LastSmsCode(account));
+        return HungUp(afterCode) ? afterCode : await Press(sid, caller, pin); // a locked account hangs up at the code step
+    }
     public Task<string> Press(string sid, string from, string digits) => Call(sid, from, digits: digits);
     public string NextAction(string sid) => _next[sid];
 

@@ -32,6 +32,7 @@ public static class PhoneModule
         s.AddScoped<SmsService>();
         s.AddScoped<PhoneIdentityService>();
         s.AddScoped<PhoneLinkService>();
+        s.AddScoped<PendingPhoneService>();
         s.AddScoped<PhoneEngine>();
         s.AddScoped<IWebhookSignatureValidator, LamlSignatureValidator>();
         s.AddSingleton<IVoiceResponseBuilder, VoiceResponseBuilder>();
@@ -148,7 +149,7 @@ public static class PhoneWebhooks
         }).RequireRateLimiting("sensitive");
 
         c.MapPost("/links/complete-signup", async (CompleteSignupRequest r, PhoneLinkService links, PinService pins, UserManager<AppUser> users, AuthFlows flows,
-            OneTimeCodeService codes, Mailer mailer, AccountSecurityService security, IAuditLog audit, IOptions<AppOptions> app, AppDbContext db) =>
+            OneTimeCodeService codes, Mailer mailer, AccountSecurityService security, IAuditLog audit, IOptions<AppOptions> app, AppDbContext db, PendingPhoneService pending) =>
         {
             var l = await links.FindAsync(r.Token);
             if (l is null || l.Purpose != "signup") return Results.Problem("This link is invalid or has expired.", statusCode: 400, extensions: new Dictionary<string, object?> { ["code"] = "invalid_link" });
@@ -172,16 +173,9 @@ public static class PhoneWebhooks
                 try
                 {
                     user = await flows.CreateSellerUserAsync(email, r.Password, false, true);
-                    user.PhoneNumber = l.Phone; user.PhoneNumberConfirmed = true;
-                    try
-                    {
-                        var upd = await users.UpdateAsync(user);
-                        if (!upd.Succeeded) throw new DbUpdateException("phone");
-                    }
-                    catch (DbUpdateException) { db.ChangeTracker.Clear(); var stale = await users.FindByEmailAsync(email); if (stale is not null) await security.DeleteUnverifiedAsync(stale); return Results.Accepted(value: AuthEndpoints.SignupAccepted); } // number meanwhile taken: same generic answer
                 }
                 catch (AccountCreationException ex) { return Validation.Invalid("password", ex.Errors); }
-                if (links.Unprotect(l) is { } pinHash) await pins.SetHashAsync(user.Id, pinHash);
+                if (links.Unprotect(l) is { } pinHash && l.Phone is not null) await pending.HoldAsync(user.Id, l.Phone, pinHash); // attached when the emailed code is entered
                 var issued = await codes.IssueAsync(user.Id, "verify-email");
                 if (issued.Code is not null) await mailer.SendAsync(Templates.VerifyCode(email, issued.Code));
                 await audit.WriteAsync("signup.created", user.Id, email, "method=phone-link");
@@ -214,13 +208,19 @@ public static class PhoneWebhooks
         var conv = new Conv(st, Chan.Voice);
         Turn turn;
         var seqOk = int.TryParse(ctx.Request.Query["seq"], out var seq) && seq == st.Seq;
+        if (step && !fresh && seqOk)
+        {
+            // Claim the step atomically: of two parallel webhooks carrying the same seq only one wins; the other is treated as a stale replay.
+            var next = seq + 1;
+            seqOk = await db.PhoneStates.Where(s => s.Key == key && s.Seq == seq).ExecuteUpdateAsync(s => s.SetProperty(x => x.Seq, next)) == 1;
+            if (seqOk) st.Seq = next;
+        }
         if (!step || fresh || !seqOk)
             turn = engine.Open(conv); // new call, replayed "incoming", or a stale/replayed step: just repeat the current prompt, nothing is processed
         else
         {
             var digits = F(f, "Digits"); var speech = F(f, "SpeechResult");
             turn = await engine.HandleAsync(conv, digits.Length > 0 ? digits : speech, dtmf: digits.Length > 0, ctx.RequestAborted);
-            st.Seq++;
         }
         st.ExpiresAt = now.AddMinutes(o.CallStateMinutes);
         conv.Save();

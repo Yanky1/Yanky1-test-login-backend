@@ -59,7 +59,7 @@ public class Conv(PhoneState st, Chan chan)
 /// THE deterministic state machine for both channels. It owns every decision: code/PIN validity, lockout, which account, and what is allowed in the current state.
 /// The AI only proposes an action from a fixed allowlist (see <see cref="AiActions"/>); each proposal is validated against the current step here.
 /// </summary>
-public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService sms, PhoneLinkService links, UserManager<AppUser> users, AppDbContext db,
+public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending, PinService pins, SmsService sms, PhoneLinkService links, UserManager<AppUser> users, AppDbContext db,
     OneTimeCodeService codes, SessionService sessions, AuthFlows flows, AccountSecurityService security, Mailer mailer, IAuditLog audit, Crypto crypto,
     IConversationAi ai, IOptions<PhoneOptions> po, IOptions<AppOptions> app, TimeProvider time, ILogger<PhoneEngine> log)
 {
@@ -296,12 +296,14 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
         string? say = null;
         if (action is null)
         {
-            string[] allowed = [AiActions.StartSignup, AiActions.StartSignin, AiActions.TalkToHuman, AiActions.Repeat, AiActions.End, AiActions.Chat];
+            string[] allowed = c.Voice
+                ? [AiActions.StartSignup, AiActions.StartSignin, AiActions.TalkToHuman, AiActions.Repeat, AiActions.End, AiActions.Chat]
+                : [AiActions.StartSignup, AiActions.StartSignin, AiActions.RequestResetLink, AiActions.TalkToHuman, AiActions.Repeat, AiActions.End, AiActions.Chat];
             var (r, failed) = await AskAiAsync(c, text, allowed, [], ct);
             if (failed) return AiDown(c, t);
             if (r is not null && allowed.Contains(r.Action)) { action = r.Action; say = r.Action == AiActions.Chat ? SafeSay(r.Say) : null; }
             else if (r is not null && AiActions.All.Contains(r.Action) && r.Action != AiActions.Unclear)
-                action = r.Action; // a real action that isn't allowed in this state: handled (and refused) below, never executed
+                return Prompt(c, t.Add(V(c, "Please sign in first.", "Please sign in first: reply LOGIN."))); // real action, not allowed in this state: refused, never executed
         }
         switch (action)
         {
@@ -344,8 +346,8 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
         c.D.Target = c.St.Phone;
         if (c.Voice)
         {
-            var known = c.St.Phone.Length > 0 ? await ident.FindByPhoneAsync(c.St.Phone) : null;
-            c.Step = known is not null ? "si_pin" : "si_phone"; // caller ID only decides which question to ask; it never signs anybody in
+            // Every caller is asked for the account's number first (caller ID is spoofable: a different first prompt for registered numbers would reveal them).
+            c.Step = "si_phone";
             return Prompt(c, t);
         }
         var user = await ident.FindByPhoneAsync(c.St.Phone);
@@ -526,10 +528,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
             {
                 if (existing is not null) await security.DeleteUnverifiedAsync(existing);
                 var user = await flows.CreateSellerUserAsync(email, null, false, true);
-                user.PhoneNumber = c.D.Target; user.PhoneNumberConfirmed = true;
-                var upd = await users.UpdateAsync(user);
-                if (!upd.Succeeded) throw new AccountCreationException(["phone"]);
-                await pins.SetHashAsync(user.Id, c.D.PinHash!);
+                await pending.HoldAsync(user.Id, c.D.Target!, c.D.PinHash!); // attached only when the emailed code proves the mailbox
                 var issued = await codes.IssueAsync(user.Id, "verify-email");
                 if (issued.Code is not null) await mailer.SendAsync(Templates.VerifyCode(email, issued.Code));
                 c.D.NewUser = user.Id;
@@ -562,6 +561,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
         var seller = await db.Sellers.FirstOrDefaultAsync(s => s.UserId == user.Id);
         if (seller is not null && seller.DraftStep < 3) { seller.DraftStep = 3; await db.SaveChangesAsync(); }
         await audit.WriteAsync("email.verified", user.Id, user.Email, "channel=phone");
+        await pending.AttachAsync(user);
         c.St.UserId = user.Id; c.St.AuthUntil = time.UtcNow().AddMinutes(c.Voice ? O.PhoneSessionMinutes : O.SmsSessionMinutes);
         c.D.Field = 0; c.D.Biz = []; c.St.Retries = 0; c.Step = "biz";
         return Prompt(c, t.Add("Your email is verified.", "Now a few details about your business."));
@@ -627,7 +627,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
             await audit.WriteAsync("seller.business_by_phone", user.Id, null, $"fields={c.D.Biz.Count}");
         }
         var url = await links.CreateResetAsync(users, user);
-        var sent = await sms.SendAsync(user.PhoneNumber!, $"Finish your {O.BrandName} application (kosher certificate, Seller Agreement) and set your password. Link valid {O.SignupLinkMinutes} minutes, works once: {url}");
+        var sent = user.PhoneNumber is not null && await sms.SendAsync(user.PhoneNumber, $"Finish your {O.BrandName} application (kosher certificate, Seller Agreement) and set your password. Link valid {O.SignupLinkMinutes} minutes, works once: {url}");
         c.D.Biz = []; c.D.Field = 0; c.St.UserId = null; c.St.AuthUntil = null;
         return Goodbye(c, t, sent ? "Thanks. We texted you a link to finish your application on the web." : "Thanks. Your details are saved. Please finish your application on the website.");
     }
@@ -694,7 +694,8 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
                 await sessions.RevokeAllAsync(user!.Id, "phone-logout-all");
                 await audit.WriteAsync("logout.all", user.Id, null, "channel=" + c.Chan);
                 await mailer.SendAsync(PhoneTemplates.SignedOutAll(user.Email!));
-                return Prompt(c, t.Add("You've been signed out of all devices."));
+                c.St.UserId = null; c.St.AuthUntil = null; // this phone/SMS session ends too
+                return Goodbye(c, t, "You've been signed out of all devices.");
             case AiActions.TalkToHuman: return Human(c, t);
             case AiActions.End:
                 c.St.UserId = null; c.St.AuthUntil = null;

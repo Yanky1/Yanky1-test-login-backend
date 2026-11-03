@@ -162,6 +162,8 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         var toks = await db.RefreshTokens.Where(t => ids.Contains(t.SessionId) && t.RevokedAt == null).ToListAsync();
         foreach (var t in toks) t.RevokedAt = now;
         await db.SaveChangesAsync();
+        // phone/SMS sessions (phone_states) end with every other session: lockout, password reset/change, sign-out-everywhere, account claims
+        await db.PhoneStates.Where(p => p.UserId == userId).ExecuteUpdateAsync(p => p.SetProperty(x => x.UserId, (Guid?)null).SetProperty(x => x.AuthUntil, (DateTime?)null));
     }
 
     /// <summary>Validates sid claim: session exists, not revoked, not idle. Touches activity.</summary>

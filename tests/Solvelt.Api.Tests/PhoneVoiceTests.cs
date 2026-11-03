@@ -35,43 +35,53 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
         Assert.Equal("speech dtmf", g.Attribute("input")!.Value);
         Assert.Equal("#", g.Attribute("finishOnKey")!.Value);
         Assert.Equal("true", g.Attribute("actionOnEmptyResult")!.Value);
-        var known = await f.SellerWithPhone();
-        var sid2 = Sid();
-        await p.Start(sid2, known.Phone);
-        var pinPrompt = await p.Press(sid2, known.Phone, "1");
-        Assert.Equal("dtmf", Phones.Gather(pinPrompt)!.Attribute("input")!.Value); // PIN: keypad only, never transcribed
+        var next = await p.Press(sid, phone, "1");
+        Assert.Equal("dtmf", Phones.Gather(next)!.Attribute("input")!.Value); // account number, code and PIN: keypad only, never transcribed
     }
 
     [Fact]
-    public async Task Known_caller_signs_in_with_PIN_and_hears_status()
+    public async Task Sign_in_by_account_number_code_and_PIN_then_hear_status()
     {
-        var (email, phone) = await f.SellerWithPhone("739204");
+        var (_, phone) = await f.SellerWithPhone("739204");
         var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone);
-        await p.Press(sid, phone, "1");
-        var menu = await p.Press(sid, phone, "739204");
+        var menu = await p.SignIn(sid, phone, phone, "739204");
         Assert.Contains("signed in", Phones.Says(menu));
         var status = await p.Press(sid, phone, "1");
         Assert.Contains("not yet submitted", Phones.Says(status));
-        var bye = await p.Press(sid, phone, "0");
-        Assert.True(Phones.HungUp(bye));
-        Assert.NotNull(email);
+        Assert.True(Phones.HungUp(await p.Press(sid, phone, "0")));
     }
 
     [Fact]
-    public async Task Spoofed_caller_id_cannot_sign_in_without_the_PIN()
+    public async Task First_sign_in_prompts_are_identical_for_registered_and_unregistered_caller_ids()
+    {
+        var (_, known) = await f.SellerWithPhone("739204");
+        var unknown = PhoneApiFactory.NewNumber();
+        var a = new Phones(f); var b = new Phones(f);
+        var ta = Phones.Says(await a.Start(Sid(), known)) + "|"; var tb = Phones.Says(await b.Start(Sid(), unknown)) + "|";
+        var sa = Sid(); var sb = Sid();
+        await a.Start(sa, known); await b.Start(sb, unknown);
+        var xa = await a.Press(sa, known, "1"); var xb = await b.Press(sb, unknown, "1");
+        Assert.Equal(ta, tb);
+        Assert.Equal(Phones.Says(xa), Phones.Says(xb));
+        Assert.Equal(Phones.Gather(xa)!.Attribute("input")!.Value, Phones.Gather(xb)!.Attribute("input")!.Value);
+        Assert.Equal(Phones.Gather(xa)!.Attribute("numDigits")?.Value, Phones.Gather(xb)!.Attribute("numDigits")?.Value);
+    }
+
+    [Fact]
+    public async Task Spoofed_caller_id_cannot_sign_in_without_the_code_and_PIN()
     {
         var (_, phone) = await f.SellerWithPhone("739204");
         var attacker = new Phones(f); var sid = Sid();
-        await attacker.Start(sid, phone); // caller ID == victim's number
-        await attacker.Press(sid, phone, "1");
-        var r = await attacker.Press(sid, phone, "111222");
+        // caller ID == victim's number, the attacker knows the number but not the code (it goes to the victim) or the PIN
+        var r = await attacker.SignIn(sid, phone, phone, "111222", code: "000000");
         Assert.DoesNotContain("signed in", Phones.Says(r));
         Assert.Contains("didn't match", Phones.Says(r));
-        // and no status/reset menu is reachable: pressing 1 now is the sign-in choice again, not "status"
         var r2 = await attacker.Press(sid, phone, "1");
         Assert.DoesNotContain("application", Phones.Says(r2));
         Assert.DoesNotContain(f.Sms.To(phone), m => m.Text.Contains("reset"));
+        // even with the right PIN a wrong code fails
+        var r3 = await new Phones(f).SignIn(Sid(), phone, phone, "739204", code: "000000");
+        Assert.DoesNotContain("signed in", Phones.Says(r3));
     }
 
     [Fact]
@@ -121,26 +131,17 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     {
         var (email, phone) = await f.SellerWithPhone("615283");
         var web = new Api(f);
-        // two web failures + the phone failures continue the same counter
         for (var i = 0; i < 2; i++) Assert.Equal(HttpStatusCode.Unauthorized, (await web.Post("/api/v1/auth/login", new { email, password = "Wrong-Passw0rd!x" }, false)).StatusCode);
-        var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone);
-        await p.Press(sid, phone, "1");
-        var third = await p.Press(sid, phone, "111222"); // 3rd failure overall
+        var p = new Phones(f);
+        var third = await p.SignIn(Sid(), phone, phone, "111222"); // 3rd failure overall
         Assert.Contains("2 tries left", Phones.Says(third));
-        await p.Press(sid, phone, "1");
-        var fourth = await p.Press(sid, phone, "111222");
-        Assert.Contains("Last try", Phones.Says(fourth));
-        await p.Press(sid, phone, "1");
-        var fifth = await p.Press(sid, phone, "111222");
+        Assert.Contains("Last try", Phones.Says(await p.SignIn(Sid(), phone, phone, "111222")));
+        var fifth = await p.SignIn(Sid(), phone, phone, "111222");
         Assert.Contains("Too many attempts", Phones.Says(fifth));
         Assert.True(Phones.HungUp(fifth));
         Assert.Single(f.Mails(email, "locked"));
-        // the correct password on the web is refused while locked, and the correct PIN by phone too
         Assert.Equal(HttpStatusCode.Unauthorized, (await new Api(f).Post("/api/v1/auth/login", new { email, password = ApiFactory.Strong }, false)).StatusCode);
-        var sid2 = Sid();
-        await p.Start(sid2, phone); await p.Press(sid2, phone, "1");
-        var locked = await p.Press(sid2, phone, "615283");
+        var locked = await p.SignIn(Sid(), phone, phone, "615283");
         Assert.DoesNotContain("signed in", Phones.Says(locked));
         Assert.Contains("Too many attempts", Phones.Says(locked));
     }
@@ -151,9 +152,7 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
         var (email, phone) = await f.SellerWithPhone("615283");
         var web = new Api(f);
         for (var i = 0; i < 3; i++) await web.Post("/api/v1/auth/login", new { email, password = "Wrong-Passw0rd!x" }, false);
-        var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone); await p.Press(sid, phone, "1");
-        Assert.Contains("Last try", Phones.Says(await p.Press(sid, phone, "111222")));
+        Assert.Contains("Last try", Phones.Says(await new Phones(f).SignIn(Sid(), phone, phone, "111222")));
     }
 
     [Fact]
@@ -192,8 +191,7 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     {
         var (_, phone) = await f.SellerWithPhone("615283");
         var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone); await p.Press(sid, phone, "1");
-        Assert.Contains("signed in", Phones.Says(await p.Press(sid, phone, "615283")));
+        Assert.Contains("signed in", Phones.Says(await p.SignIn(sid, phone, phone, "615283")));
         f.Time.Advance(TimeSpan.FromMinutes(9)); // < call state 10 min: still the same call
         Assert.Contains("application", Phones.Says(await p.Press(sid, phone, "1")));
         f.Time.Advance(TimeSpan.FromMinutes(11));
@@ -206,7 +204,7 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     {
         var (email, phone) = await f.SellerWithPhone("615283");
         var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone); await p.Press(sid, phone, "1"); await p.Press(sid, phone, "615283");
+        await p.SignIn(sid, phone, phone, "615283");
         var before = f.Sms.To(phone).Count;
         Assert.Contains("texted a reset link", Phones.Says(await p.Press(sid, phone, "2")));
         Assert.Equal(before + 1, f.Sms.To(phone).Count);
@@ -225,30 +223,36 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     }
 
     [Fact]
-    public async Task Change_PIN_and_sign_out_everywhere_and_transfer()
+    public async Task Change_PIN_then_sign_out_everywhere_ends_web_and_phone_sessions()
     {
         var (email, phone) = await f.SellerWithPhone("615283");
         var web = new Api(f); await web.LoginAs(email, ApiFactory.Strong);
         Assert.Equal(HttpStatusCode.OK, (await web.Get("/api/v1/account/me")).StatusCode);
         var p = new Phones(f); var sid = Sid();
-        await p.Start(sid, phone); await p.Press(sid, phone, "1"); await p.Press(sid, phone, "615283");
-        // change PIN: weak PIN rejected, then accepted
+        await p.SignIn(sid, phone, phone, "615283");
         await p.Press(sid, phone, "3");
         Assert.Contains("sequence", Phones.Says(await p.Press(sid, phone, "123456")));
         await p.Press(sid, phone, "802957");
         Assert.Contains("PIN was changed", Phones.Says(await p.Press(sid, phone, "802957")));
         Assert.Single(f.Mails(email, "phone-pin-changed"));
-        // sign out of all devices
-        Assert.Contains("signed out of all devices", Phones.Says(await p.Press(sid, phone, "4")));
+        var out4 = await p.Press(sid, phone, "4");
+        Assert.Contains("signed out of all devices", Phones.Says(out4));
+        Assert.True(Phones.HungUp(out4));                       // the phone session ends with them
         Assert.Equal(HttpStatusCode.Unauthorized, (await web.Get("/api/v1/account/me")).StatusCode);
-        // transfer to support
+        Assert.DoesNotContain("application", Phones.Says(await p.Press(sid, phone, "1")));
+        // the old PIN no longer works; the new one does
+        Assert.DoesNotContain("signed in", Phones.Says(await new Phones(f).SignIn(Sid(), phone, phone, "615283")));
+        Assert.Contains("signed in", Phones.Says(await new Phones(f).SignIn(Sid(), phone, phone, "802957")));
+    }
+
+    [Fact]
+    public async Task Signed_in_caller_can_be_transferred_to_support()
+    {
+        var (_, phone) = await f.SellerWithPhone("615283");
+        var p = new Phones(f); var sid = Sid();
+        await p.SignIn(sid, phone, phone, "615283");
         var dial = await p.Press(sid, phone, "5");
         Assert.Equal(PhoneApiFactory.Support, XDocument.Parse(dial).Descendants("Dial").Single().Value);
-        // the old PIN no longer works; the new one does
-        var sid2 = Sid(); await p.Start(sid2, phone); await p.Press(sid2, phone, "1");
-        Assert.Contains("didn't match", Phones.Says(await p.Press(sid2, phone, "615283")));
-        await p.Press(sid2, phone, "1");
-        Assert.Contains("signed in", Phones.Says(await p.Press(sid2, phone, "802957")));
     }
 
     [Fact]
@@ -279,9 +283,8 @@ public class PhoneVoiceTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, (await api.Post("/api/v1/channels/links/complete-signup", new { token, email = Api.NewEmail(), password = ApiFactory.Strong, acceptTerms = true }, false)).StatusCode); // single use
         var verify = await api.Post("/api/v1/auth/verify-email", new { email, code = f.LastCode(email) }, false);
         Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
-        // the account now has the pre-verified number and the PIN chosen on the phone
-        var sid2 = Sid(); await p.Start(sid2, phone); await p.Press(sid2, phone, "1");
-        Assert.Contains("signed in", Phones.Says(await p.Press(sid2, phone, "739204")));
+        // the account now has the pre-verified number and the PIN chosen on the phone (attached when the email was verified)
+        Assert.Contains("signed in", Phones.Says(await new Phones(f).SignIn(Sid(), phone, phone, "739204")));
     }
 
     [Fact]

@@ -8,7 +8,7 @@ namespace Solvelt.Api.Tests;
 
 public class PhoneAccountTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
 {
-    private async Task AddNumber(Api api, string phone, string? stepUp = null)
+    private async Task AddNumber(Api api, string phone, string? stepUp = ApiFactory.Strong)
     {
         var s = await api.Post("/api/v1/account/phone/start", new { phoneNumber = phone, currentPassword = stepUp });
         Assert.Equal(HttpStatusCode.Accepted, s.StatusCode);
@@ -39,8 +39,7 @@ public class PhoneAccountTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactor
         Assert.DoesNotContain("739204", f.WithDb(db => db.PhoneCredentials.Select(c => c.PinHash).ToList()));
         // the new credentials work on the phone channel
         var p = new Phones(f); var sid = "CA" + Guid.NewGuid().ToString("N");
-        await p.Start(sid, phone); await p.Press(sid, phone, "1");
-        Assert.Contains("signed in", Phones.Says(await p.Press(sid, phone, "739204")));
+        Assert.Contains("signed in", Phones.Says(await p.SignIn(sid, phone, phone, "739204")));
     }
 
     [Fact]
@@ -49,7 +48,7 @@ public class PhoneAccountTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactor
         var (_, phone) = await f.SellerWithPhone();
         var other = new Api(f); await other.SignupVerified();
         var before = f.Sms.To(phone).Count;
-        var s = await other.Post("/api/v1/account/phone/start", new { phoneNumber = phone });
+        var s = await other.Post("/api/v1/account/phone/start", new { phoneNumber = phone, currentPassword = ApiFactory.Strong });
         Assert.Equal(HttpStatusCode.Accepted, s.StatusCode);                      // same answer as for a free number
         Assert.Equal(before, f.Sms.To(phone).Count);                              // but nothing is sent
         Assert.Equal(HttpStatusCode.BadRequest, (await other.Post("/api/v1/account/phone/verify", new { code = "123456" })).StatusCode);
@@ -86,8 +85,7 @@ public class PhoneAccountTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactor
         Assert.Single(f.Mails(email, "phone-removed"));
         Assert.False((await api.JsonBody(await api.Get("/api/v1/account/phone"))).GetProperty("hasNumber").GetBoolean());
         var p = new Phones(f); var sid = "CA" + Guid.NewGuid().ToString("N");
-        await p.Start(sid, phone); await p.Press(sid, phone, "1");
-        Assert.DoesNotContain("signed in", Phones.Says(await p.Press(sid, phone, "482915")));
+        Assert.DoesNotContain("signed in", Phones.Says(await p.SignIn(sid, phone, phone, "482915", code: "000000")));
     }
 
     [Fact]
@@ -133,7 +131,6 @@ public class PhoneAccountTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactor
         var id = seller.Session!.SellerId;
         Assert.True((await admin.Post($"/api/v1/admin/sellers/{id}/status", new { status = "Rejected" })).IsSuccessStatusCode);
         var p = new Phones(f); var sid = "CA" + Guid.NewGuid().ToString("N");
-        await p.Start(sid, phone); await p.Press(sid, phone, "1");
-        Assert.DoesNotContain("signed in", Phones.Says(await p.Press(sid, phone, "615283")));
+        Assert.DoesNotContain("signed in", Phones.Says(await p.SignIn(sid, phone, phone, "615283")));
     }
 }

@@ -10,7 +10,9 @@ public static partial class Redactor
 {
     [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")] private static partial Regex EmailRx();
     [GeneratedRegex(@"https?://\S+|www\.\S+")] private static partial Regex UrlRx();
-    [GeneratedRegex(@"\+?\d(?:[\s\-.()]?\d){3,}")] private static partial Regex NumberRx();
+    [GeneratedRegex(@"\+?\d(?:[^\p{L}\d]{0,3}\d){3,}")] private static partial Regex NumberRx();
+    // Spoken digits ("seven three nine two zero four"): 4+ in a row.
+    [GeneratedRegex(@"\b(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)(?:[\s,.\-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)){3,}\b", RegexOptions.IgnoreCase)] private static partial Regex SpokenDigitsRx();
     [GeneratedRegex(@"\b[A-Za-z0-9_\-]{24,}\b")] private static partial Regex TokenRx();
 
     public static string Redact(string? text)
@@ -20,6 +22,7 @@ public static partial class Redactor
         t = UrlRx().Replace(t, "[link]");
         t = EmailRx().Replace(t, "[email]");
         t = NumberRx().Replace(t, "[number]");
+        t = SpokenDigitsRx().Replace(t, "[number]");
         t = TokenRx().Replace(t, "[token]");
         return t;
     }

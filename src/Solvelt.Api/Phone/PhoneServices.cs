@@ -115,19 +115,58 @@ public class PhoneIdentityService(UserManager<AppUser> users, AppDbContext db, P
         : h.Message ?? "";
 }
 
+/// <summary>
+/// A number + PIN chosen during a phone/link sign-up are only HELD (protected, in phone_links) until the mailbox is proven. They attach to the account
+/// when its email is verified, so nobody can plant a login number on an account whose email they do not control (pre-hijacking).
+/// </summary>
+public class PendingPhoneService(AppDbContext db, PhoneLinkService links, UserManager<AppUser> users, PinService pins, TimeProvider time, IAuditLog audit)
+{
+    public const string Purpose = "phone-pending";
+
+    public async Task HoldAsync(Guid userId, string phone, string pinHash)
+    {
+        await db.PhoneLinks.Where(l => l.UserId == userId && l.Purpose == Purpose).ExecuteDeleteAsync();
+        await links.CreateAsync(Purpose, userId, phone, pinHash, minutes: 24 * 60);
+    }
+
+    /// <summary>Returns true when the number was attached. Fails quietly (the account just has no phone) when the number was taken meanwhile.</summary>
+    public async Task<bool> AttachAsync(AppUser user)
+    {
+        var now = time.UtcNow();
+        var row = await db.PhoneLinks.FirstOrDefaultAsync(l => l.UserId == user.Id && l.Purpose == Purpose && l.UsedAt == null && l.ExpiresAt > now);
+        if (row is null || row.Phone is null) return false;
+        if (!await links.ConsumeAsync(row)) return false;
+        var pinHash = links.Unprotect(row);
+        user.PhoneNumber = row.Phone; user.PhoneNumberConfirmed = true;
+        try
+        {
+            if (!(await users.UpdateAsync(user)).Succeeded) throw new DbUpdateException("phone");
+        }
+        catch (DbUpdateException)
+        {
+            db.ChangeTracker.Clear();
+            user.PhoneNumber = null; user.PhoneNumberConfirmed = false;
+            return false;
+        }
+        if (pinHash is not null) await pins.SetHashAsync(user.Id, pinHash);
+        await audit.WriteAsync("phone.attached", user.Id, null, $"phone={PhoneFormat.Mask(row.Phone)}");
+        return true;
+    }
+}
+
 public class PhoneLinkService(AppDbContext db, TimeProvider time, IDataProtectionProvider dp, IOptions<AppOptions> app, IOptions<PhoneOptions> po)
 {
     private IDataProtector P => dp.CreateProtector("solvelt.phone.link");
     public IDataProtector StateProtector => dp.CreateProtector("solvelt.phone.state");
 
     /// <summary>Returns the URL to text. The token is 192 random bits, stored only as a hash, single use, expiring after SignupLinkMinutes.</summary>
-    public async Task<string> CreateAsync(string purpose, Guid? userId, string? phone, string? payload)
+    public async Task<string> CreateAsync(string purpose, Guid? userId, string? phone, string? payload, int? minutes = null)
     {
         var token = Crypto.RandomToken(24);
         db.PhoneLinks.Add(new PhoneLink
         {
             TokenHash = Crypto.Sha256(token), Purpose = purpose, UserId = userId, Phone = phone,
-            Payload = payload is null ? null : P.Protect(payload), ExpiresAt = time.UtcNow().AddMinutes(po.Value.SignupLinkMinutes)
+            Payload = payload is null ? null : P.Protect(payload), ExpiresAt = time.UtcNow().AddMinutes(minutes ?? po.Value.SignupLinkMinutes)
         });
         await db.SaveChangesAsync();
         return $"{app.Value.FrontendBaseUrl.TrimEnd('/')}/l/{token}";
@@ -171,6 +210,9 @@ public static class PhoneTemplates
     public static EmailMessage PhoneAdded(string to, string masked) => M(to, "phone-added", "A phone number was added to your account", $"The mobile number ending in {masked[^4..]} was added to your account.{Tail}");
     public static EmailMessage PhoneChanged(string to, string masked) => M(to, "phone-changed", "Your account's phone number was changed", $"The mobile number on your account was changed to one ending in {masked[^4..]}.{Tail}");
     public static EmailMessage PhoneRemoved(string to) => M(to, "phone-removed", "The phone number was removed from your account", "The mobile number and phone PIN were removed from your account." + Tail);
+    public static EmailMessage StepUpEmail(string to, string code) => new(to, "phone-stepup-code", "Confirm it's you",
+        $"<!doctype html><html><body style=\"font-family:Arial,sans-serif\"><p><b>Solvelt</b></p><p>Someone asked to add a phone number to your account. Enter this code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password.</p><p style=\"font-size:28px;letter-spacing:6px\"><b>{WebUtility.HtmlEncode(code)}</b></p></body></html>",
+        $"Solvelt\n\nSomeone asked to add a phone number to your account. Enter this code to continue (10 minutes). If this wasn't you, ignore this email and reset your password.\n\n{code}\n");
     public static EmailMessage PinChanged(string to) => M(to, "phone-pin-changed", "Your phone PIN was changed", "The PIN used to sign in by phone was set or changed." + Tail);
     public static EmailMessage SignedOutAll(string to) => M(to, "phone-signout-all", "You were signed out of all devices", "A phone session signed you out of all devices." + Tail);
     public static EmailMessage ResetByText(string to) => M(to, "phone-reset-link", "A password reset link was texted to you", "A password reset link was sent to the mobile number on your account." + Tail);

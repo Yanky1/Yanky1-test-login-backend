@@ -46,7 +46,7 @@ public class VoiceResponse(string voice, string language)
 
     public override string ToString()
     {
-        var sb = new StringBuilder();
+        var sb = new Utf8StringWriter();
         using (var w = XmlWriter.Create(sb, new XmlWriterSettings { OmitXmlDeclaration = false, Encoding = new UTF8Encoding(false), Indent = false }))
         {
             w.WriteStartDocument();
@@ -63,7 +63,7 @@ public class VoiceResponse(string voice, string language)
     /// <summary>SMS reply document (inline TwiML). Empty text gives an empty response (nothing is sent).</summary>
     public static string Message(string? text)
     {
-        var sb = new StringBuilder();
+        var sb = new Utf8StringWriter();
         using (var w = XmlWriter.Create(sb, new XmlWriterSettings { Encoding = new UTF8Encoding(false) }))
         {
             w.WriteStartDocument();
@@ -74,6 +74,9 @@ public class VoiceResponse(string voice, string language)
         return sb.ToString();
     }
 }
+
+/// <summary>XmlWriter takes the declared encoding from the writer: a plain StringWriter says utf-16 although we send UTF-8.</summary>
+internal sealed class Utf8StringWriter : StringWriter { public override Encoding Encoding => new UTF8Encoding(false); }
 
 public class VoiceResponseBuilder(IOptions<PhoneOptions> opt) : IVoiceResponseBuilder
 {
