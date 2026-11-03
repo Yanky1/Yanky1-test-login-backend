@@ -40,6 +40,9 @@ public class SellerOrder
     public string? ShipRegion { get; set; }
     public string ShipPostalCode { get; set; } = "";
     public string ShipCountry { get; set; } = "";
+    /// <summary>Optional coordinates of the shipping address (sent by the marketplace); used by local delivery zones and routes.</summary>
+    public double? ShipLat { get; set; }
+    public double? ShipLng { get; set; }
     public string ShippingMethod { get; set; } = "standard";
     public string ShippingSpeed { get; set; } = "standard";
     public string? GiftMessage { get; set; }
@@ -119,6 +122,12 @@ public class Shipment
     public DateTime ShippedAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
     public DateTime CreatedAt { get; set; }
+    /// <summary>carrier | local (shared with workstream K's shipments).</summary>
+    public string Method { get; set; } = "carrier";
+    /// <summary>Normalized tracking status (see <see cref="TrackingStatus"/>); null for shipments nobody tracks.</summary>
+    public string? TrackingStatus { get; set; }
+    public DateTime? TrackingStatusAt { get; set; }
+    public DateTime? Eta { get; set; }
     public List<ShipmentLine> Lines { get; set; } = [];
 }
 

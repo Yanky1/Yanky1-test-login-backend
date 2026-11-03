@@ -117,7 +117,7 @@ public static class MessageEndpoints
             var assignees = new List<object>();
             if (canAssign)
             {
-                var ms = await db.Memberships.AsNoTracking().Where(m => m.SellerId == a.SellerId && m.Status == MembershipStatus.Active && m.Role != AccountRole.Viewer).ToListAsync();
+                var ms = await db.Memberships.AsNoTracking().Where(m => m.SellerId == a.SellerId && m.Status == MembershipStatus.Active && m.Role > AccountRole.Viewer).ToListAsync();
                 var scoped = await db.MembershipBrands.AsNoTracking().Where(b => b.BrandId == c.BrandId).Select(b => b.MembershipId).ToListAsync();
                 var ok = ms.Where(m => m.AllBrands || m.Role >= AccountRole.Admin || scoped.Contains(m.Id)).ToList();
                 var uids = ok.Select(m => m.UserId).ToList();
@@ -212,7 +212,7 @@ public static class MessageEndpoints
                 // the assignee must be an active member of THIS account who can see the brand
                 var m = await db.Memberships.AsNoTracking().FirstOrDefaultAsync(x => x.SellerId == a.SellerId && x.UserId == uid && x.Status == MembershipStatus.Active);
                 var scoped = m is not null && (m.AllBrands || m.Role >= AccountRole.Admin || await db.MembershipBrands.AnyAsync(b => b.MembershipId == m.Id && b.BrandId == c.BrandId));
-                if (!scoped || m!.Role == AccountRole.Viewer) return Validation.Invalid("userId", "Choose a team member who can work on this brand.");
+                if (!scoped || m!.Role <= AccountRole.Viewer) return Validation.Invalid("userId", "Choose a team member who can work on this brand.");
             }
             c.AssignedUserId = req.UserId;
             await db.SaveChangesAsync();
