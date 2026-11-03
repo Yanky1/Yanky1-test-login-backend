@@ -77,7 +77,11 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         { db.ChangeTracker.Clear(); return new(400, "invalid_event"); }
         db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "stripe", EventId = id, Type = type, ReceivedAt = time.UtcNow(), Outcome = outcome });
-        if (!await ledger.SaveAsync()) return new(200, "duplicate");
+        if (!await ledger.SaveAsync())
+        {
+            if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "stripe" && p.EventId == id)) return new(200, "duplicate");
+            return new(409, "concurrent_update");   // not acknowledged: Stripe retries the delivery
+        }
         await ingest.AfterAsync();
         foreach (var m in mails) await m();
         return new(200, "ok", outcome);
@@ -144,16 +148,22 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         if (t.EventAt is { } last && created < last) return "stale_ignored";
         t.EventAt = created; t.UpdatedAt = time.UtcNow();
         t.StripeTransferId ??= sid;
-        var reversed = type == "transfer.reversed" || Bool(o, "reversed");
-        if (reversed && t.Status != TransferStatus.Reversed)
+        // Stripe sends transfer.reversed for PARTIAL reversals too (reversed=false, amount_reversed < amount): credit only the not-yet-credited part of amount_reversed
+        // (running total, idempotent per total) and close the transfer only when it is fully reversed.
+        var fully = Bool(o, "reversed");
+        var reversedTotal = Long(o, "amount_reversed") ?? (fully || type == "transfer.reversed" && !o.TryGetProperty("amount_reversed", out _) ? t.AmountCents : 0);
+        reversedTotal = Math.Clamp(reversedTotal, 0, t.AmountCents);
+        if (reversedTotal >= t.AmountCents) fully = true;
+        if (t.Status is TransferStatus.Created or TransferStatus.Pending && reversedTotal > 0)
         {
-            // money came back from the connected account: it is the seller's again (available), and the transfer is closed
-            if (t.Status is TransferStatus.Created or TransferStatus.Pending)
-                await ledger.PostAsync(t.SellerId, t.Currency, "transfer_reversed", $"transfer-reversed:{t.Id}", "Transfer reversed",
-                    [new(LedgerAccount.Settled, -t.AmountCents, "transfer"), new(LedgerAccount.Available, t.AmountCents, "transfer")], sourceRef: t.StripeTransferId);
-            t.Status = TransferStatus.Reversed;
+            var credited = await db.LedgerJournals.Where(j => j.Type == "transfer_reversed" && j.SourceRef == t.Id.ToString()).SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.Available).SumAsync(e => (long?)e.AmountCents) ?? 0;
+            var delta = reversedTotal - credited;
+            if (delta > 0)
+                await ledger.PostAsync(t.SellerId, t.Currency, "transfer_reversed", $"transfer-reversed:{t.Id}:{reversedTotal}", "Transfer reversed",
+                    [new(LedgerAccount.Settled, -delta, "transfer"), new(LedgerAccount.Available, delta, "transfer")], sourceRef: t.Id.ToString());
         }
-        else if (!reversed && t.Status == TransferStatus.Pending) { t.Status = TransferStatus.Created; t.LastError = null; }
+        if (fully && t.Status != TransferStatus.Reversed && t.Status != TransferStatus.Failed) t.Status = TransferStatus.Reversed;
+        else if (!fully && t.Status == TransferStatus.Pending) { t.Status = TransferStatus.Created; t.LastError = null; }
         return "applied";
     }
 
@@ -191,8 +201,9 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         var existing = await db.PaymentDisputes.FirstOrDefaultAsync(d => d.ExternalId == did);
         var amount = Long(o, "amount") ?? 0; var cur = (Str(o, "currency") ?? "usd").ToUpperInvariant();
         var raw = (Str(o, "status") ?? "needs_response").ToLowerInvariant();
-        var status = raw switch { "warning_needs_response" => "needs_response", "warning_under_review" => "under_review", "charge_refunded" => "warning_closed", _ => raw };
-        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed")) status = "needs_response";
+        // Stripe inquiries (warning_*) are early warnings that move no money: kept as "inquiry" without a debit or fee
+        var status = raw switch { "warning_needs_response" or "warning_under_review" => "inquiry", "charge_refunded" => "warning_closed", _ => raw };
+        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry")) status = "needs_response";
         var due = o.TryGetProperty("evidence_details", out var ev) ? Unix(ev, "due_by") : null;
         Guid seller; Guid? orderId = existing?.OrderId, bookingId = existing?.BookingId; string currency = existing?.Currency ?? cur;
         if (existing is not null) seller = existing.SellerId;

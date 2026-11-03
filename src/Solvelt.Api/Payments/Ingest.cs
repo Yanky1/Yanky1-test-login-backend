@@ -32,6 +32,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (ev.Data.ValueKind != JsonValueKind.Object) return IngestResult.Err(422, "invalid_event", "data must be an object.");
         if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "marketplace" && p.EventId == ev.EventId)) return IngestResult.Ok(duplicate: true);
         IngestResult r;
+        // refunds and disputes read balances (pending left, existing debits) and write against them: serializable, so a release committing at the same moment can not
+        // leave an order's Pending negative; on PostgreSQL the loser gets a serialization failure -> 409 and the sender retries
+        await using var tx = ev.Type is "refund.processed" or "dispute.created" or "dispute.updated" or "dispute.closed"
+            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable) : null;
         try
         {
             r = ev.Type switch
@@ -45,7 +49,17 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         catch (JsonException) { db.ChangeTracker.Clear(); return IngestResult.Err(422, "invalid_event", "data does not have the expected shape."); }
         if (r.Status != 200) { db.ChangeTracker.Clear(); return r; }
         db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "marketplace", EventId = ev.EventId, Type = ev.Type!, ReceivedAt = time.UtcNow() });
-        if (!await ledger.SaveAsync()) return IngestResult.Ok(duplicate: true); // a concurrent delivery of the same event won; nothing was applied twice
+        bool saved;
+        try { saved = await ledger.SaveAsync(); }
+        catch (DbUpdateException) { db.ChangeTracker.Clear(); return IngestResult.Err(409, "concurrent_update", "A concurrent change prevented this event from being stored. Retry it."); }
+        if (saved && tx is not null) await tx.CommitAsync();
+        if (!saved)
+        {
+            // only a conflict on the processed-event key means "another delivery of this very event won"; any other unique conflict (e.g. a dispute created by a concurrent event)
+            // is NOT acknowledged: the sender gets a retryable 409 and re-sends, so the event is never lost
+            if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "marketplace" && p.EventId == ev.EventId)) return IngestResult.Ok(duplicate: true);
+            return IngestResult.Err(409, "concurrent_update", "A concurrent change prevented this event from being stored. Retry it.");
+        }
         await AfterAsync();
         return r;
     }
@@ -242,7 +256,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (fee < 0 || fee > MaxCents) return IngestResult.Err(422, "invalid_amount", "feeCents must be a non-negative integer.");
         var status = (d.Status ?? (ev.Type == "dispute.created" ? "needs_response" : existing?.Status ?? "needs_response")).ToLowerInvariant();
         if (ev.Type == "dispute.closed" && status is not ("won" or "lost" or "warning_closed")) return IngestResult.Err(422, "invalid_status", "A closed dispute is won, lost or warning_closed.");
-        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed")) return IngestResult.Err(422, "invalid_status", "Unknown dispute status.");
+        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry")) return IngestResult.Err(422, "invalid_status", "Unknown dispute status.");
         var now = time.UtcNow();
         var evAt = d.CreatedAt ?? now;
         await ApplyDisputeAsync(existing, d.DisputeId, seller, currency, orderId, bookingId, amount, fee, status, d.Reason, d.EvidenceDueBy, evAt, now);
@@ -261,21 +275,30 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             db.PaymentDisputes.Add(row);
         }
         var closedAlready = row.Status is "won" or "lost" or "warning_closed";
-        if (eventAt >= row.EventAt && !(closedAlready && status is "needs_response" or "under_review"))
+        if (eventAt >= row.EventAt && !(closedAlready && status is "needs_response" or "under_review" or "inquiry"))
         {
             row.Status = status; row.EventAt = eventAt; row.UpdatedAt = now;
             if (reason is not null) row.Reason = reason;
             if (evidenceDue is not null) row.EvidenceDueBy = evidenceDue;
             if (status is "won" or "lost" or "warning_closed") row.ClosedAt ??= now;
         }
-        if (isNew) await TrackNegativeAsync(seller, currency);
-        var sref = externalId;
-        await ledger.PostAsync(seller, currency, "dispute", $"dispute:{externalId}", "Dispute", [new(LedgerAccount.Platform, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, sref);
-        await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, sref);
+        // An inquiry (Stripe warning_*) moves no money at Stripe, so nothing is debited for it or for its warning_closed; the debit + fee are posted once,
+        // the first time the dispute reaches a state in which money moves (escalation to needs_response, or a marketplace event that is already past that).
+        var moves = row.Status is not ("inquiry" or "warning_closed");
+        if (moves)
+        {
+            if (isNew || !await ledger.ExistsAsync($"dispute:{externalId}")) await TrackNegativeAsync(seller, currency);
+            await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, row.Status);
+        }
+        if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
+    }
+
+    private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string status)
+    {
+        await ledger.PostAsync(seller, currency, "dispute", $"dispute:{externalId}", "Dispute", [new(LedgerAccount.Platform, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, externalId);
+        await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId);
         if (status == "won")
-            await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, sref);
-        if (isNew || status == "needs_response")
-            _disputeMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
+            await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
     }
 
     private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _disputeMails = [];

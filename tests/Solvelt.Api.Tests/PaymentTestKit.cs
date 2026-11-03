@@ -19,6 +19,7 @@ public class PayFactory : OrdersFactory
         Extra["Stripe:WebhookSecret"] = HookSecret;
         Extra["Payments:NewSellerReservePercent"] = "0";
         Extra["Payments:ReleaseDays"] = "7";
+        Extra["Payments:RequireReturnWindowClosed"] = "false";   // the product default is true: tests that need it use StrictFactory
         Extra["Payments:MinTransferCents"] = "500";
         Extra["Payments:TransferBackoffSeconds"] = "60";
         Extra["RateLimit:PaymentsPerMinute"] = "100000";

@@ -9,7 +9,7 @@ public record AccountSnapshot(string Id, bool DetailsSubmitted, bool ChargesEnab
     string? DisabledReason, DateTime? Deadline, string? PayoutInterval, int? PayoutDelayDays, string? BankLast4, string? BankName);
 public record LinkResult(string Url, DateTime ExpiresAt);
 public record TransferRequest(long AmountCents, string Currency, string DestinationAccountId, string IdempotencyKey, string TransferGroup, Guid TransferId);
-public record TransferResult(string Id, string Status, long AmountCents, string Currency, string Destination);
+public record TransferResult(string Id, string Status, long AmountCents, string Currency, string Destination, long ReversedCents = 0);
 public class ProviderException(string message, bool transient) : Exception(message) { public bool Transient { get; } = transient; }
 public sealed class UnconfiguredException() : ProviderException("Payments are not configured on this server.", false);
 
@@ -170,7 +170,7 @@ public class StripePaymentProvider(IOptions<StripeOptions> opt) : IPaymentProvid
                 Amount = r.AmountCents, Currency = r.Currency.ToLowerInvariant(), Destination = r.DestinationAccountId, TransferGroup = r.TransferGroup,
                 Metadata = new Dictionary<string, string> { ["transferId"] = r.TransferId.ToString() }
             }, new RequestOptions { IdempotencyKey = r.IdempotencyKey }, ct);
-            return new TransferResult(t.Id, t.Reversed ? "reversed" : "paid", t.Amount, t.Currency.ToUpperInvariant(), r.DestinationAccountId);
+            return new TransferResult(t.Id, t.Reversed ? "reversed" : "paid", t.Amount, t.Currency.ToUpperInvariant(), r.DestinationAccountId, t.AmountReversed);
         }
         catch (StripeException ex) { throw Wrap(ex); }
     }
@@ -180,7 +180,7 @@ public class StripePaymentProvider(IOptions<StripeOptions> opt) : IPaymentProvid
         try
         {
             var t = await Client.V1.Transfers.GetAsync(transferId, null, null, ct);
-            return new TransferResult(t.Id, t.Reversed ? "reversed" : "paid", t.Amount, t.Currency.ToUpperInvariant(), t.DestinationId);
+            return new TransferResult(t.Id, t.Reversed ? "reversed" : "paid", t.Amount, t.Currency.ToUpperInvariant(), t.DestinationId, t.AmountReversed);
         }
         catch (StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound) { return null; }
         catch (StripeException ex) { throw Wrap(ex); }

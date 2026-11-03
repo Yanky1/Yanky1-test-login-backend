@@ -33,6 +33,7 @@ public static class PaymentsModule
         else if (dev) { builder.Services.AddSingleton<FakePaymentProvider>(); builder.Services.AddSingleton<IPaymentProvider>(sp => sp.GetRequiredService<FakePaymentProvider>()); }
         else builder.Services.AddSingleton<IPaymentProvider, UnconfiguredPaymentProvider>();
 
+        builder.Services.AddSingleton<PaymentTestHooks>();
         builder.Services.AddScoped<LedgerService>();
         builder.Services.AddScoped<PaymentNotifier>();
         builder.Services.AddScoped<PaymentIngestService>();

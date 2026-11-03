@@ -121,7 +121,7 @@ public static class PaymentAdminEndpoints
             if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
             var (ok, code) = await svc.RetryAsync(id);
             if (code == "not_found") return Results.NotFound();
-            if (!ok) return AdminHttp.Err(409, code, code switch { "not_failed" => "Only failed transfers can be retried.", "insufficient_available" => "The seller's available balance no longer covers this transfer.", _ => "The transfer changed at the same time. Reload." });
+            if (!ok) return AdminHttp.Err(409, code, code switch { "not_failed" => "Only failed transfers can be retried.", "insufficient_available" => "The seller's available balance no longer covers this transfer.", "busy" => "The transfer job is running right now. Try again in a minute.", _ => "The transfer changed at the same time. Reload." });
             await audit.WriteAsync(ctx.Staff(), "payments.transfer_retried", "transfer", id, reason);
             return Results.Ok(new { queued = true });
         }, StaffPermission.PaymentsRetry);

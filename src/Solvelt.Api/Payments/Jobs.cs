@@ -25,9 +25,10 @@ public class JobLeaseService(AppDbContext db, TimeProvider time, IOptions<Paymen
 public record ReleaseSummary(int Released, int ReserveReleased, long ReleasedCents);
 
 /// <summary>Moves funds Pending -> Available (and Reserved) once the release rules are met, and Reserved -> Available after the reserve period.</summary>
-public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<PaymentOptions> opt, IOptions<OrderOptions> orders, TimeProvider time)
+public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<PaymentOptions> opt, IOptions<OrderOptions> orders, TimeProvider time, PaymentTestHooks hooks)
 {
-    private static readonly OrderStatus[] ReleasableOrder = [OrderStatus.Delivered, OrderStatus.Completed];
+    // Refunded included: a refund after a received return (or a goodwill refund) moves the order to Refunded even when only part of it was refunded; the kept items' money must still release
+    private static readonly OrderStatus[] ReleasableOrder = [OrderStatus.Delivered, OrderStatus.Completed, OrderStatus.Refunded];
     private static readonly BookingStatus[] ReleasableBooking = [BookingStatus.Completed, BookingStatus.NoShow, BookingStatus.CancelledByBuyer, BookingStatus.CancelledBySeller];
 
     public async Task<ReleaseSummary> RunAsync(CancellationToken ct = default)
@@ -42,7 +43,8 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         {
             var ord = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == p.Id, ct);
             if (ord is null || !Eligible(ord, now)) continue;
-            if (await ReleaseAsync(ord.SellerId, ord.Currency, p.Id, null, p.Sum, p.Max, ord.Number, ct)) { released++; cents += p.Sum; }
+            if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
+            if (await ReleaseAsync(ord.SellerId, ord.Currency, p.Id, null, ord.Number, ct) is { } got) { released++; cents += got; }
         }
         var pendingBookings = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && e.BookingId != null)
             .GroupBy(e => e.BookingId!.Value).Select(g => new { Id = g.Key, Sum = g.Sum(x => x.AmountCents), Max = g.Max(x => x.Id), Cur = g.Max(x => x.Currency)! }).Where(x => x.Sum > 0).ToListAsync(ct);
@@ -52,7 +54,8 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             if (b is null || !ReleasableBooking.Contains(b.Status)) continue;
             var anchor = b.Status == BookingStatus.Completed ? b.CompletedAt ?? b.UpdatedAt : b.UpdatedAt;
             if (anchor.AddDays(o.ReleaseDays) > now) continue;
-            if (await ReleaseAsync(b.SellerId, p.Cur, null, p.Id, p.Sum, p.Max, b.Number, ct)) { released++; cents += p.Sum; }
+            if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
+            if (await ReleaseAsync(b.SellerId, p.Cur, null, p.Id, b.Number, ct) is { } got) { released++; cents += got; }
         }
         return new(released, await ReleaseReservesAsync(ct), cents);
     }
@@ -65,17 +68,34 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         return d.AddDays(days) <= now;
     }
 
-    private async Task<bool> ReleaseAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long lastEntryId, string number, CancellationToken ct)
+    /// <summary>
+    /// Releases what is pending for one order/booking RIGHT NOW. The pending sum is re-read inside a serializable transaction together with the write, so a refund
+    /// that commits between the candidate scan and this call is part of the amount (never a negative Pending); on PostgreSQL a concurrent writer makes one of the two
+    /// transactions fail with a serialization error and the release simply runs again next time.
+    /// </summary>
+    private async Task<long?> ReleaseAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, string number, CancellationToken ct)
     {
         var o = opt.Value;
         var sellerRow = await db.Sellers.AsNoTracking().Where(s => s.Id == seller).Select(s => new { s.CreatedAt }).FirstOrDefaultAsync(ct);
         var isNew = sellerRow is not null && o.NewSellerReservePercent > 0 && sellerRow.CreatedAt.AddDays(o.NewSellerDays) > time.UtcNow();
-        var reserve = isNew ? LedgerService.RoundHalfUp(amount * o.NewSellerReservePercent, 100) : 0;
-        var key = $"release:{orderId ?? bookingId}:{lastEntryId}";
-        var j = await ledger.PostAsync(seller, currency, "release", key, $"Released {number}", [
-            new(LedgerAccount.Pending, -amount, "release"), new(LedgerAccount.Available, amount - reserve, "release"), new(LedgerAccount.Reserved, reserve, "reserve")],
-            orderId, bookingId);
-        return j is not null && await ledger.SaveAsync(ct);
+        try
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+            var rows = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && (orderId != null ? e.OrderId == orderId : e.BookingId == bookingId))
+                .Select(e => new { e.AmountCents, e.Id }).ToListAsync(ct);
+            var amount = rows.Sum(r => r.AmountCents);
+            if (amount <= 0) return null;
+            var reserve = isNew ? LedgerService.RoundHalfUp(amount * o.NewSellerReservePercent, 100) : 0;
+            var key = $"release:{orderId ?? bookingId}:{rows.Max(r => r.Id)}";
+            var j = await ledger.PostAsync(seller, currency, "release", key, $"Released {number}", [
+                new(LedgerAccount.Pending, -amount, "release"), new(LedgerAccount.Available, amount - reserve, "release"), new(LedgerAccount.Reserved, reserve, "reserve")],
+                orderId, bookingId);
+            if (j is null) return null;
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return amount;
+        }
+        catch (DbUpdateException) { db.ChangeTracker.Clear(); return null; }   // lost a race (unique key or serialization failure): the next run re-reads
     }
 
     private async Task<int> ReleaseReservesAsync(CancellationToken ct)
@@ -101,7 +121,7 @@ public record TransferSummary(int Created, int Sent, int Failed, int Paused, int
 /// The funds are moved Available -> Settled in the SAME transaction that creates the transfer row, so they can never be sent twice or spent twice.
 /// </summary>
 public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProvider provider, IOptions<PaymentOptions> opt, TimeProvider time,
-    PaymentNotifier notifier, ILogger<TransferService> log)
+    PaymentNotifier notifier, JobLeaseService leases, ILogger<TransferService> log)
 {
     public const string JobName = "payments-transfers";
 
@@ -212,23 +232,34 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
 
     private static string Trunc(string s) => s.Length > 300 ? s[..300] : s;
 
-    /// <summary>Staff retry of a Failed transfer: re-moves the funds Available -> Settled and queues the send again (distinct journal key + Stripe key per retry).</summary>
+    /// <summary>
+    /// Staff retry of a Failed transfer: re-moves the funds Available -> Settled and queues the send again (distinct journal key + Stripe key per retry).
+    /// Serialised with the daily batch by the job lease and atomic: the status change and the journal commit in ONE transaction (a crash leaves a Failed transfer, never
+    /// a Pending one without its debit, and a retry can not race the batch into sending money twice).
+    /// </summary>
     public async Task<(bool Ok, string Code)> RetryAsync(Guid transferId)
     {
-        var t = await db.PaymentTransfers.FirstOrDefaultAsync(x => x.Id == transferId);
-        if (t is null) return (false, "not_found");
-        if (t.Status != TransferStatus.Failed) return (false, "not_failed");
-        var avail = (await ledger.BalanceAsync(t.SellerId, t.Currency)).Available;
-        if (avail < t.AmountCents) return (false, "insufficient_available");
-        var claimed = await db.PaymentTransfers.Where(x => x.Id == transferId && x.Status == TransferStatus.Failed && x.Retries == t.Retries)
-            .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, TransferStatus.Pending).SetProperty(x => x.Retries, t.Retries + 1).SetProperty(x => x.Attempts, 0)
-                .SetProperty(x => x.NextAttemptAt, time.UtcNow()).SetProperty(x => x.LastError, (string?)null).SetProperty(x => x.UpdatedAt, time.UtcNow()));
-        if (claimed != 1) return (false, "conflict");
-        db.ChangeTracker.Clear();
-        await ledger.PostAsync(t.SellerId, t.Currency, "transfer", $"transfer-retry:{t.Id}:{t.Retries + 1}", "Transfer retried",
-            [new(LedgerAccount.Available, -t.AmountCents, "transfer"), new(LedgerAccount.Settled, t.AmountCents, "transfer")], sourceRef: t.Id.ToString());
-        await ledger.SaveAsync();
-        return (true, "ok");
+        if (!await leases.TryAcquireAsync(JobName)) return (false, "busy");
+        try
+        {
+            var t = await db.PaymentTransfers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == transferId);
+            if (t is null) return (false, "not_found");
+            if (t.Status != TransferStatus.Failed) return (false, "not_failed");
+            if ((await ledger.BalanceAsync(t.SellerId, t.Currency)).Available < t.AmountCents) return (false, "insufficient_available");
+            await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            var claimed = await db.PaymentTransfers.Where(x => x.Id == transferId && x.Status == TransferStatus.Failed && x.Retries == t.Retries)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, TransferStatus.Pending).SetProperty(x => x.Retries, t.Retries + 1).SetProperty(x => x.Attempts, 0)
+                    .SetProperty(x => x.NextAttemptAt, time.UtcNow()).SetProperty(x => x.LastError, (string?)null).SetProperty(x => x.UpdatedAt, time.UtcNow()));
+            if (claimed != 1) return (false, "conflict");
+            var j = await ledger.PostAsync(t.SellerId, t.Currency, "transfer", $"transfer-retry:{t.Id}:{t.Retries + 1}", "Transfer retried",
+                [new(LedgerAccount.Available, -t.AmountCents, "transfer"), new(LedgerAccount.Settled, t.AmountCents, "transfer")], sourceRef: t.Id.ToString());
+            if (j is null) { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return (false, "conflict"); }   // status change rolled back with it
+            await db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return (true, "ok");
+        }
+        catch (DbUpdateException) { db.ChangeTracker.Clear(); return (false, "conflict"); }
+        finally { await leases.ReleaseAsync(JobName); }
     }
 }
 
@@ -237,6 +268,9 @@ public record ReconcileSummary(int Checked, int Flagged);
 /// <summary>Compares the ledger's transfers with Stripe (the fake provider in tests) and flags mismatches for staff. Re-running never duplicates an open flag.</summary>
 public class ReconciliationService(AppDbContext db, IPaymentProvider provider, TimeProvider time)
 {
+    private async Task<long> CreditedAsync(Guid transferId) =>
+        await db.LedgerJournals.Where(j => j.Type == "transfer_reversed" && j.SourceRef == transferId.ToString()).SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.Available).SumAsync(e => (long?)e.AmountCents) ?? 0;
+
     public async Task<ReconcileSummary> RunAsync(CancellationToken ct = default)
     {
         var now = time.UtcNow(); int checkedN = 0, flagged = 0;
@@ -253,6 +287,7 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
                 else if (r.AmountCents != t.AmountCents || r.Currency != t.Currency) problem = $"amount differs: ledger {t.AmountCents} {t.Currency}, Stripe {r.AmountCents} {r.Currency}";
                 else if (r.Destination != t.DestinationAccountId) problem = "destination account differs";
                 else if (r.Status == "reversed" && t.Status != TransferStatus.Reversed) problem = "Stripe reversed the transfer but the ledger did not";
+                else if (r.ReversedCents != await CreditedAsync(t.Id)) problem = $"reversed amount differs: ledger {await CreditedAsync(t.Id)}, Stripe {r.ReversedCents}";
             }
             if (problem is null) continue;
             var kind = "transfer_mismatch";
