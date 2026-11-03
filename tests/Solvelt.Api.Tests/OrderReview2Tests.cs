@@ -148,4 +148,42 @@ public class OrderReconcileTests(FlakyFactory f) : IClassFixture<FlakyFactory>
         Assert.Equal(1, (await Detail(s.Owner, keep)) is { } d && (int)d["lines"]![0]!["reservedQty"]! > 0 ? 1 : 0);
         Assert.Equal(0, (await Run()).ReservationsRepaired);   // nothing more to repair
     }
+
+    [Fact]
+    public async Task The_reconciler_never_wipes_the_hold_of_an_ingest_that_is_still_running()
+    {
+        var s = await NewShop(f, stock: 10);
+        FlakyInventory.Gate = new(TaskCreationOptions.RunContinuationsAsynchronously); FlakyInventory.Reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = FlakyInventory.Gate; var mid = Mid();
+        Task<HttpResponseMessage> ingest;
+        try
+        {
+            ingest = Task.Run(() => Inbound(f, "/api/internal/v1/orders", OrderBody(f, mid, [Line(s.Seller, s.Brand, s.Product, 2, lid: "L1")])));
+            await FlakyInventory.Reached.Task.WaitAsync(TimeSpan.FromSeconds(20));       // stock is reserved, the order is not saved yet
+            Assert.Equal((10L, 2L), Stock(f, s.Product));
+            await Run(); f.Time.Advance(TimeSpan.FromMinutes(3)); await Run(); f.Time.Advance(TimeSpan.FromMinutes(3));
+            Assert.Equal(0, (await Run()).ReservationsRepaired);
+            Assert.Equal((10L, 2L), Stock(f, s.Product));                                // the legitimate hold survived two stalled runs
+        }
+        finally { FlakyInventory.Gate = null; FlakyInventory.Reached = null; gate.TrySetResult(); }
+        var r = await ingest;
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        var id = Guid.Parse((string)(await Node(r))["orders"]![0]!["sellerOrderId"]!);
+        Assert.Equal((10L, 2L), Stock(f, s.Product));
+        Assert.Equal(2, (int)(await Detail(s.Owner, id))["lines"]![0]!["reservedQty"]!);
+        await Ok(Act(s.Owner, id, "accept")); var shipped = await Ok(Act(s.Owner, id, "ship", Ship()));
+        Assert.Equal((8L, 0L), Stock(f, s.Product)); Assert.False((bool)shipped["stockMismatch"]!);
+    }
+
+    [Fact]
+    public async Task A_commit_that_fails_on_ship_is_flagged_as_a_stock_mismatch()
+    {
+        var s = await NewShop(f, stock: 10);
+        var (_, id, _, _) = await Place(s, qty: 2);
+        f.WithDb(db => { db.Products.Where(p => p.Id == s.Product).ExecuteUpdate(u => u.SetProperty(p => p.Reserved, 0)); return 0; });   // the hold vanished
+        await Ok(Act(s.Owner, id, "accept"));
+        var shipped = await Ok(Act(s.Owner, id, "ship", Ship()));
+        Assert.True((bool)shipped["stockMismatch"]!);
+        Assert.Contains("could not be consumed", (string)shipped["timeline"]!.AsArray().First(e => (string)e!["type"]! == "stock.mismatch")!["text"]!);
+    }
 }

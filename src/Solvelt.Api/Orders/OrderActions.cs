@@ -154,7 +154,12 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             ship.Lines.Add(new ShipmentLine { ShipmentId = ship.Id, OrderLineId = line.Id, Quantity = w.Quantity });
             line.ShippedQty += w.Quantity;
             var consume = Math.Min(w.Quantity, line.ReservedQty);
-            if (consume > 0) { await inventory.CommitAsync(o.SellerId, line.ProductId, line.VariantId, consume); line.ReservedQty -= consume; }
+            if (consume > 0)
+            {
+                var c = await inventory.CommitAsync(o.SellerId, line.ProductId, line.VariantId, consume);
+                if (!c.Ok) mismatches.Add($"{line.Sku ?? line.Title}: {consume} reserved unit(s) could not be consumed from stock");
+                line.ReservedQty -= consume;
+            }
             // units that were never reserved (oversold, stock added later) still leave on-hand stock when they ship (best effort: never below zero)
             var unreserved = w.Quantity - consume;
             if (unreserved > 0)
@@ -269,7 +274,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         refund.AmountCents = refund.Lines.Sum(x => x.AmountCents);
         db.Refunds.Add(refund);
         o.RefundedCents += refund.AmountCents;
-        if (o.Status == OrderStatus.OnHold) { o.Status = OrderStatus.PartiallyShipped; o.HeldFrom = null; }
+        if (o.Status == OrderStatus.OnHold) { OrderStateMachine.Move(o, OrderStatus.PartiallyShipped); o.HeldFrom = null; }
         OrderStateMachine.Move(o, OrderStatus.Shipped);       // nothing left to ship
         o.ShippedAt = o.Shipments.Max(sh => sh.ShippedAt);
         db.AddEvent(o.Id, "order.remainder_cancelled", Party.Seller, actor, reason, now);

@@ -10,7 +10,7 @@ namespace Solvelt.Api.Orders;
 /// Periodic jobs (hosted worker + callable from tests): auto-accept, delivered -> completed after the return window, PII redaction after retention,
 /// overdue-reply notifications, replay-table cleanup.
 /// </summary>
-public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<OrderOptions> opt, TimeProvider time, IFileStorage storage, OrderNotifier notifier, ReservationDrift drift)
+public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<OrderOptions> opt, TimeProvider time, IFileStorage storage, OrderNotifier notifier, ReservationDrift drift, InflightHolds inflight)
 {
     public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved, int ReservationsRepaired = 0);
 
@@ -61,7 +61,7 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             await db.Cancellations.Where(c => c.OrderId == x.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.Note, (string?)null).SetProperty(c => c.DecisionNote, (string?)null), ct);
             await db.OrderNotes.Where(n => n.OrderId == x.Id).ExecuteDeleteAsync(ct);
             var mid = x.MarketplaceOrderId;
-            var quotedMid = "\"marketplaceOrderId\":\"" + mid + "\"";   // delimited, so MP-1 never matches MP-10
+            var quotedMid = "\"marketplaceOrderId\":" + System.Text.Json.JsonSerializer.Serialize(mid, OrderJson.Opts);   // delimited, so MP-1 never matches MP-10
             if (!await db.Orders.AnyAsync(y => y.MarketplaceOrderId == mid && y.PiiRedactedAt == null && y.Id != x.Id, ct))
                 await db.Outbox.Where(ob => (ob.AggregateId == mid || ob.PayloadJson.Contains(quotedMid)) && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             db.AddEvent(x.Id, "order.pii_redacted", Party.System, null, "Buyer details removed after the retention period", now);
@@ -118,7 +118,8 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         var repaired = 0; var seen = new HashSet<Guid>();
         foreach (var (id, productId, isVariant, reserved) in held)
         {
-            var expected = sums.GetValueOrDefault((productId, isVariant ? (Guid?)id : null));
+            // holds of ingests that are running right now (reserved, not saved yet) are legitimate even though no order line shows them yet
+            var expected = sums.GetValueOrDefault((productId, isVariant ? (Guid?)id : null)) + inflight.Sum(productId, isVariant ? id : null);
             seen.Add(id);
             if (reserved <= expected) { drift.Forget(id); continue; }           // only leaks (more held than any order explains) are repaired
             if (!drift.Confirm(id, reserved, expected, now)) continue;
@@ -150,4 +151,23 @@ public class ReservationDrift
     }
     public void Forget(Guid id) { lock (_l) _seen.Remove(id); }
     public void Prune(HashSet<Guid> still) { lock (_l) foreach (var k in _seen.Keys.Where(k => !still.Contains(k)).ToList()) _seen.Remove(k); }
+}
+
+/// <summary>
+/// Stock holds of ingests that are running right now (this process): reserved but the order is not saved yet. The reconciler counts them as expected, so it can
+/// never wipe a legitimate hold of a slow request. (Another instance's in-flight holds are covered by the reconciler's grace period.)
+/// </summary>
+public class InflightHolds
+{
+    private readonly Dictionary<Guid, List<(Guid ProductId, Guid? VariantId, int Qty)>> _active = [];
+    private readonly object _l = new();
+
+    public sealed class Scope(InflightHolds owner, Guid id) : IDisposable
+    {
+        public void Add(Guid productId, Guid? variantId, int qty) { lock (owner._l) owner._active[id].Add((productId, variantId, qty)); }
+        public void Dispose() { lock (owner._l) owner._active.Remove(id); }
+    }
+
+    public Scope Begin() { var id = Guid.NewGuid(); lock (_l) _active[id] = []; return new Scope(this, id); }
+    public int Sum(Guid productId, Guid? variantId) { lock (_l) return _active.Values.SelectMany(x => x).Where(h => h.ProductId == productId && h.VariantId == variantId).Sum(h => h.Qty); }
 }

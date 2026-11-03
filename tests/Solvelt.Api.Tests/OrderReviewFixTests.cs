@@ -17,10 +17,14 @@ public class FlakyInventory(IInventoryService inner) : IInventoryService
     public static int Counter;
     public static volatile int FailReleaseNumber;   // 0 = never
     public static int ReleaseCounter;
+    public static volatile TaskCompletionSource? Gate;      // when set, a successful reservation waits here (simulates a stalled ingest)
+    public static volatile TaskCompletionSource? Reached;
     public async Task<InventoryResult> ReserveAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default)
     {
         if (FailOnReserveNumber > 0 && Interlocked.Increment(ref Counter) == FailOnReserveNumber) throw new InvalidOperationException("boom");
-        return await inner.ReserveAsync(s, p, v, q, ct);
+        var res = await inner.ReserveAsync(s, p, v, q, ct);
+        if (res.Ok && Gate is { } g) { Reached?.TrySetResult(); await g.Task; }
+        return res;
     }
     public Task<InventoryResult> ReleaseAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default) =>
         FailReleaseNumber > 0 && Interlocked.Increment(ref ReleaseCounter) == FailReleaseNumber ? throw new InvalidOperationException("release failed") : inner.ReleaseAsync(s, p, v, q, ct);
