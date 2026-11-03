@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Delivery;
 using Solvelt.Api.Assistant;
 using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
@@ -49,6 +50,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     // orders + messaging (see Orders/)
     public DbSet<SellerOrder> Orders => Set<SellerOrder>();
     public DbSet<OrderLine> OrderLines => Set<OrderLine>();
+    public DbSet<DeliverySetting> DeliverySettings => Set<DeliverySetting>();
+    public DbSet<DeliveryZone> DeliveryZones => Set<DeliveryZone>();
+    public DbSet<DeliveryWindow> DeliveryWindows => Set<DeliveryWindow>();
+    public DbSet<DeliveryWindowUsage> DeliveryWindowUsage => Set<DeliveryWindowUsage>();
+    public DbSet<LocalDelivery> LocalDeliveries => Set<LocalDelivery>();
+    public DbSet<DeliveryRoute> DeliveryRoutes => Set<DeliveryRoute>();
+    public DbSet<DeliveryAttempt> DeliveryAttempts => Set<DeliveryAttempt>();
+    public DbSet<DeliveryProof> DeliveryProofs => Set<DeliveryProof>();
+    public DbSet<DeliveryClientEvent> DeliveryClientEvents => Set<DeliveryClientEvent>();
+    public DbSet<DriverLocation> DriverLocations => Set<DriverLocation>();
+    public DbSet<DriverConsent> DriverConsents => Set<DriverConsent>();
+    public DbSet<TrackingEvent> TrackingEvents => Set<TrackingEvent>();
     public DbSet<Shipment> Shipments => Set<Shipment>();
     public DbSet<ShipmentLine> ShipmentLines => Set<ShipmentLine>();
     public DbSet<OrderCancellation> Cancellations => Set<OrderCancellation>();
@@ -162,6 +175,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureAssistant();
         b.ConfigureAdmin();
         b.ConfigurePayments();
+        b.ConfigureLocalDelivery();
     }
 
     public static void Seed(AppDbContext db)
