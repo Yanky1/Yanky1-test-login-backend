@@ -29,8 +29,8 @@ public class PhoneRateLimiter(TimeProvider time)
 public record AttemptOutcome(AttemptsHint Hint, bool Locked);
 
 /// <summary>Phone sign-in rules on top of the web's identity services: same account, same lockout counter (3/4/5), same lockout email.</summary>
-public class PhoneIdentityService(UserManager<AppUser> users, AppDbContext db, PinService pins, LoginThrottleService throttle, OneTimeCodeService codes,
-    SessionService sessions, Mailer mailer, SmsService sms, IAuditLog audit, IOptions<LockoutSettings> lo, IOptions<PhoneOptions> po)
+public class PhoneIdentityService(UserManager<AppUser> users, PinService pins, LoginThrottleService throttle, OneTimeCodeService codes,
+    SessionService sessions, Mailer mailer, SmsService sms, IAuditLog audit, IOptions<LockoutSettings> lo, IOptions<PhoneOptions> po, AuthFlows flows)
 {
     public const string SignInPurpose = "phone-signin";
 
@@ -38,13 +38,7 @@ public class PhoneIdentityService(UserManager<AppUser> users, AppDbContext db, P
         users.Users.FirstOrDefaultAsync(u => u.PhoneNumber == e164 && u.PhoneNumberConfirmed);
 
     /// <summary>Same eligibility as the web login: verified email, and not a rejected/suspended seller (admins excepted).</summary>
-    public async Task<bool> CanSignInAsync(AppUser u)
-    {
-        if (!u.EmailConfirmed) return false;
-        if (await users.IsInRoleAsync(u, "Admin")) return true;
-        var s = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == u.Id);
-        return s is not null && s.Status is not (SellerStatus.Rejected or SellerStatus.Suspended);
-    }
+    public async Task<bool> CanSignInAsync(AppUser u) => u.EmailConfirmed && await flows.CanSignInAsync(u);
 
     /// <summary>The counter is shared with the web login (keyed by the account email). Numbers without an account get their own key so the behaviour is identical.</summary>
     public static string Key(string phone, AppUser? user) => user?.Email ?? "phone:" + phone;

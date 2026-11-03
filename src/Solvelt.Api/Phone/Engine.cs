@@ -38,6 +38,10 @@ public class ConvData
     public string? EmailProt { get; set; }
     public string? EmailMask { get; set; }
     public Guid? NewUser { get; set; }
+    /// <summary>Accounts offered by the "which account?" question (seller ids, most recently used first).</summary>
+    public List<Guid> Pick { get; set; } = [];
+    /// <summary>The account chosen earlier in this phone/SMS session.</summary>
+    public Guid? Account { get; set; }
     public int Field { get; set; }
     public Dictionary<string, string> Biz { get; set; } = [];
     public bool Greeted { get; set; }
@@ -61,7 +65,7 @@ public class Conv(PhoneState st, Chan chan)
 /// </summary>
 public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending, PinService pins, SmsService sms, PhoneLinkService links, UserManager<AppUser> users, AppDbContext db,
     OneTimeCodeService codes, SessionService sessions, AuthFlows flows, AccountSecurityService security, Mailer mailer, IAuditLog audit, Crypto crypto,
-    IConversationAi ai, IOptions<PhoneOptions> po, IOptions<AppOptions> app, TimeProvider time, ILogger<PhoneEngine> log)
+    IConversationAi ai, Teams.AccountContextService accountCtx, IOptions<PhoneOptions> po, IOptions<AppOptions> app, TimeProvider time, ILogger<PhoneEngine> log)
 {
     private PhoneOptions O => po.Value;
     internal const string Internal = "change_pin";
@@ -89,7 +93,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
         var text = (rawText ?? "").Trim();
         var t = new Turn();
         var now = time.UtcNow();
-        if (c.Step is "auth_menu" or "pin_new" or "pin_new2" or "biz" && (c.St.UserId is null || c.St.AuthUntil is null || c.St.AuthUntil <= now)
+        if (c.Step is "auth_menu" or "acct_pick" or "pin_new" or "pin_new2" or "biz" && (c.St.UserId is null || c.St.AuthUntil is null || c.St.AuthUntil <= now)
             && !(c.Step == "biz" && c.D.NewUser is not null && c.St.UserId is not null && c.St.AuthUntil > now))
         {
             c.St.UserId = null; c.St.AuthUntil = null; c.Step = "menu";
@@ -119,6 +123,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
             "su_emailcode" => await SignUpEmailCodeAsync(c, t, text),
             "biz" => await BizAsync(c, t, text, dtmf, ct),
             "auth_menu" => await AuthMenuAsync(c, t, text, dtmf, ct),
+            "acct_pick" => await AccountPickAsync(c, t, text),
             "pin_new" => PinNew1(c, t, text),
             "pin_new2" => await PinNew2Async(c, t, text),
             _ => ResetToMenu(c, t)
@@ -168,12 +173,20 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
                          + (string.IsNullOrEmpty(O.SupportNumber) ? "" : "Press 5 to speak to support. ") + "Press 9 to repeat, or 0 to hang up.",
                            "Signed in. Reply STATUS, RESET (password link), LOGOUT or LOGOUT ALL. HELP for help."));
                 t.Ask = new(speech, 1); break;
+            case "acct_pick":
+            {
+                var names = string.Join(" ", c.D.Pick.Select((id, i) => $"{(c.Voice ? "Press" : "Reply")} {i + 1} for {AccountName(c, id)}."));
+                t.Add("Which account?", names); t.Ask = new(false, c.Voice ? 1 : null); break;
+            }
             case "pin_new": t.Add("Enter your new 6 digit PIN, then press pound."); t.Ask = new(false, null); break;
             case "pin_new2": t.Add("Enter it again to confirm, then press pound."); t.Ask = new(false, null); break;
             default: c.Step = "menu"; return Prompt(c, t);
         }
         return t;
     }
+
+    private string AccountName(Conv c, Guid id) =>
+        db.Sellers.AsNoTracking().Where(s => s.Id == id).Select(s => s.VendorName).FirstOrDefault() is { Length: > 0 } n ? n : "your account";
 
     // ---- shared helpers -----------------------------------------------------------------------------------------------------------------
 
@@ -668,12 +681,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
         switch (action)
         {
             case AiActions.Repeat: return Prompt(c, t);
-            case AiActions.RequestStatus:
-            {
-                var s = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == user!.Id);
-                t.Add(s is null ? "There is no seller application on this account." : $"Your application is {StatusText(s.Status)}.");
-                return Prompt(c, t);
-            }
+            case AiActions.RequestStatus: return await StatusAsync(c, t, user!);
             case AiActions.RequestResetLink:
             {
                 if (user!.PhoneNumber is { } to && await MayTextAsync(to))
@@ -703,6 +711,42 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
             default: return Prompt(c, t);
         }
     }
+
+    /// <summary>
+    /// Status of the user's seller account(s) via memberships (docs/TEAMS.md): one account answers directly, several ask a short "which account?" first.
+    /// Only accounts where the role has <see cref="Teams.Permission.AccountRead"/> are offered.
+    /// </summary>
+    private async Task<Turn> StatusAsync(Conv c, Turn t, AppUser user)
+    {
+        var list = new List<Teams.AccountContextService.AccountSummary>();
+        foreach (var a in await accountCtx.ListAsync(user.Id, user.LastAccountId))
+            if (await accountCtx.ResolveAsync(user.Id, a.SellerId) is { } acc && Teams.Permissions.Has(acc.Role, Teams.Permission.AccountRead)) list.Add(a);
+        if (list.Count == 0) return Prompt(c, t.Add("There is no seller application on this account."));
+        if (c.D.Account is { } chosen && list.FirstOrDefault(a => a.SellerId == chosen) is { } known) return Prompt(c, t.Add(StatusLine(known)));
+        if (list.Count == 1) return Prompt(c, t.Add(StatusLine(list[0])));
+        c.D.Pick = list.Take(9).Select(a => a.SellerId).ToList();
+        c.St.Retries = 0; c.Step = "acct_pick";
+        return Prompt(c, t);
+    }
+
+    private static string StatusLine(Teams.AccountContextService.AccountSummary a) =>
+        $"{(string.IsNullOrWhiteSpace(a.VendorName) ? "Your application" : a.VendorName)} is {StatusText(Enum.Parse<SellerStatus>(a.AccountStatus))}.";
+
+    private async Task<Turn> AccountPickAsync(Conv c, Turn t, string text)
+    {
+        var (user, bad) = await AuthedUserAsync(c, t);
+        if (bad is not null) return bad;
+        var d = Redactor.AsDigits(text);
+        if (d is not { Length: 1 } || d[0] == '0' || d[0] - '0' > c.D.Pick.Count) return Invalid(c, t, "Please choose one of the numbers.");
+        var id = c.D.Pick[d[0] - '1'];
+        var summary = (await accountCtx.ListAsync(user!.Id, user.LastAccountId)).FirstOrDefault(a => a.SellerId == id);
+        if (summary is null || await accountCtx.ResolveAsync(user.Id, id) is not { } acc || !Teams.Permissions.Has(acc.Role, Teams.Permission.AccountRead))
+            return Prompt(c, ResetAuth(c, t.Add("That account isn't available.")));
+        c.D.Account = id; c.D.Pick = []; c.St.Retries = 0; c.Step = "auth_menu";
+        return Prompt(c, t.Add(StatusLine(summary)));
+    }
+
+    private static Turn ResetAuth(Conv c, Turn t) { c.D.Pick = []; c.Step = "auth_menu"; return t; }
 
     private Turn PinNew1(Conv c, Turn t, string text)
     {

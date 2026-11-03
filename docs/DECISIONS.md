@@ -59,3 +59,4 @@
 | 55 | Phone sessions follow web session revocation | `SessionService.RevokeAllAsync` also clears `phone_states.UserId/AuthUntil`; number removal deletes the user's phone states; the phone "sign out of all devices" ends the phone session too. | |
 | 56 | Voice step claim | `UPDATE … WHERE Seq = @seq` claims a step atomically before the engine runs; parallel duplicates become stale replays. | |
 | 57 | TwiML is UTF-8 | The XML declaration says utf-8 (writer over a UTF-8 `StringWriter`), matching the bytes sent. | |
+| 58 | Phone/SMS and teams | Phone identity (number, PIN, lockout) stays per user. Post-sign-in account data (status) resolves through `AccountContextService` memberships + `Permissions.Has(role, AccountRead)`; a user with several usable accounts gets a one-digit "which account?" choice, remembered per phone/SMS session. Sign-in eligibility reuses the web's `AuthFlows.CanSignInAsync`. | TEAMS integration notes |
