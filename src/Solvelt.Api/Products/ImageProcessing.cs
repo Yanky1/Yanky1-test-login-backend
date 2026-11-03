@@ -57,12 +57,21 @@ public static class ImageProcessing
             var drop = m is 0xE1 or 0xED or 0xFE || (m >= 0xE3 && m <= 0xEF); // keep APP0 (JFIF) and APP2 (ICC); drop EXIF/XMP, Photoshop/IPTC, comments, other APPn
             if (!drop) o.Write(d, i, 2 + len);
             i += 2 + len;
-            if (m == 0xDA) { o.Write(d, i, d.Length - i); i = d.Length; break; } // entropy-coded data until EOF
+            if (m == 0xDA)
+            {
+                // entropy-coded data up to and including the end-of-image marker; anything after it (e.g. an appended script) is dropped.
+                // Inside scan data every 0xFF is followed by 0x00 (stuffing) or a marker, so the first FF D9 is the real EOI.
+                var eoi = -1;
+                for (var k = i; k + 1 < d.Length; k++) if (d[k] == 0xFF && d[k + 1] == 0xD9) { eoi = k + 2; break; }
+                if (eoi < 0) return null;
+                o.Write(d, i, eoi - i); i = d.Length; break;
+            }
         }
         return w > 0 && h > 0 ? new("image/jpeg", o.ToArray(), w, h) : null;
     }
 
-    private static readonly HashSet<string> DropPng = ["eXIf", "tEXt", "zTXt", "iTXt", "tIME"];
+    /// <summary>Only chunks needed to display the image survive (allow-list); everything else, including unknown/private chunks, is dropped.</summary>
+    private static readonly HashSet<string> KeepPng = ["IHDR", "PLTE", "tRNS", "IDAT", "IEND", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT", "pHYs", "bKGD", "hIST", "acTL", "fcTL", "fdAT"];
 
     private static Result? Png(byte[] d)
     {
@@ -75,7 +84,7 @@ public static class ImageProcessing
             if (len < 0 || i + 12 + len > d.Length) return null;
             var name = System.Text.Encoding.ASCII.GetString(d, i + 4, 4);
             if (first) { if (name != "IHDR" || len != 13) return null; w = (int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(i + 8)); h = (int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(i + 12)); first = false; }
-            if (!DropPng.Contains(name)) o.Write(d, i, 12 + len);
+            if (KeepPng.Contains(name)) o.Write(d, i, 12 + len);
             i += 12 + len;
             if (name == "IEND") { sawEnd = true; break; }
         }

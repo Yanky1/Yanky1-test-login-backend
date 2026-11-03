@@ -38,6 +38,7 @@ public static class ProductModel
             e.Property(x => x.Handle).HasMaxLength(120);
             e.Property(x => x.Barcode).HasMaxLength(20);
             e.Property(x => x.Version).IsConcurrencyToken();
+            e.Property(x => x.ImageSeq).IsConcurrencyToken();
             e.HasOne<SellerAccount>().WithMany().HasForeignKey(x => x.SellerId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne<Brand>().WithMany().HasForeignKey(x => x.BrandId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<Category>().WithMany().HasForeignKey(x => x.CategoryId).OnDelete(DeleteBehavior.SetNull);
@@ -46,6 +47,14 @@ public static class ProductModel
             e.HasMany(x => x.Images).WithOne().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
             e.HasMany(x => x.Attributes).WithOne().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
             e.HasMany(x => x.Faqs).WithOne().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
+        });
+        b.Entity<SkuClaim>(e =>
+        {
+            e.ToTable("sku_claims");
+            e.HasIndex(x => new { x.SellerId, x.Sku }).IsUnique();
+            e.HasIndex(x => x.ProductId);
+            e.Property(x => x.Sku).HasMaxLength(64);
+            e.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
         });
         b.Entity<ProductOption>(e => { e.ToTable("product_options"); e.Property(x => x.Name).HasMaxLength(40); });
         b.Entity<ProductVariant>(e =>

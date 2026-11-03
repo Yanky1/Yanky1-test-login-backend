@@ -79,3 +79,8 @@
 | 75 | Invites never change a membership | Accepting an invitation when the user already has a membership (e.g. their email changed to the invited one, or they are Suspended) answers `409 already_member`, resolves the invite and changes nothing. Duplicate brand names that lose a race answer 400 with a field error. | Integrity |
 | 76 | Close account | Owner-only (`AccountClose`), step-up re-authentication, `SellerStatus.Closed` (no transitions in or out; the platform admin API cannot reopen it). Closed accounts disappear from members' account lists, cannot be opened or acted on (`403 no_active_account`), sessions drop them, Owners are emailed, data is retained; members' own logins are unaffected. | Spec: Owner-only close |
 | 77 | Admin read access | Admins may READ business/legal details (`GET /seller/application`); only Owners may EDIT them or accept the seller agreement. Admins may manage other Admins (not Owners). | Spec clarification |
+| 72 | SKU claims table | Case-insensitive, race-safe SKU uniqueness across products and variations via `sku_claims` + unique index (check-then-insert and per-table case-sensitive indexes were not enough). | Review finding |
+| 73 | Save error mapping | Only concurrency failures are 409; unique violations are 400; everything else surfaces as a 500. A false "version conflict" hid real bugs. | Review finding |
+| 74 | Image count race | `ImageSeq` concurrency token instead of locks: portable (SQLite/PostgreSQL), no in-process state. | Review finding |
+| 75 | Stock floor | On-hand >= Reserved enforced inside the atomic UPDATE and pre-checked in the API for a helpful message (orders rely on it). | Review finding |
+

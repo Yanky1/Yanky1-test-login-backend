@@ -11,6 +11,7 @@ namespace Solvelt.Api.Tests;
 public class ProductApiTests(ApiFactory f) : IClassFixture<ApiFactory>
 {
     private static Guid Id(JsonNode n) => Guid.Parse((string)n["id"]!);
+    private static async Task<int> Ver(Api api, Guid id) => (int)(await ProdApi.Get(api, id))["version"]!;
 
     [Fact]
     public async Task Categories_are_seeded_with_data_driven_attributes()
@@ -279,7 +280,8 @@ public class ProductApiTests(ApiFactory f) : IClassFixture<ApiFactory>
           variants = new[] { new { values = new[] { "S", "Red" }, sku = "MUG-S-R", price = 18.5, quantity = 9, barcode = (string?)null, enabled = true } } }));
         Assert.Equal(9, (int)again["variants"]![0]!["quantity"]!);
         Assert.Equal(HttpStatusCode.OK, await api.Post($"/api/v1/seller/products/{id}/status", new { status = "active" }).Code());
-        // dropping an option value removes its variants and their images
+        // dropping an option value removes its variants and their images (a live listing may not become incomplete, so deactivate first)
+        Assert.Equal(HttpStatusCode.OK, await api.Post($"/api/v1/seller/products/{id}/status", new { status = "inactive" }).Code());
         var shrink = await api.Put($"/api/v1/seller/products/{id}/variants", new { hasVariants = true, options = new[] { new { name = "Size", values = new[] { "M" } }, new { name = "Color", values = new[] { "Red" } } }, variants = Array.Empty<object>() });
         Assert.Equal(HttpStatusCode.OK, shrink.StatusCode);
         Assert.Empty(f.WithDb(db => db.ProductImages.Where(x => x.VariantId == vid).ToList()));
@@ -329,13 +331,13 @@ public class ProductApiTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, await api.Get("/api/v1/seller/products?status=bogus").Code());
 
         // inline quick edit of price and stock; the sale price must stay below the price
-        var q = await api.Patch($"/api/v1/seller/products/{b}/quick", new { price = 24.5, quantity = 0 });
+        var q = await api.Patch($"/api/v1/seller/products/{b}/quick", new { version = await Ver(api, b), price = 24.5, quantity = 0 });
         Assert.Equal(HttpStatusCode.OK, q.StatusCode);
         var db1 = await ProdApi.Get(api, b);
         Assert.Equal(24.5, (double)db1["price"]!); Assert.Equal(0, (int)db1["available"]!);
         Assert.Equal(1, (await List("?filter=outofstock")).GetProperty("items").EnumerateArray().Count(i => i.GetProperty("id").GetGuid() == b));
-        Assert.Equal(HttpStatusCode.BadRequest, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { price = 0 })).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { version = await Ver(api, b), price = 0 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { version = await Ver(api, b) })).StatusCode);
 
         // duplicate: new draft, no SKU, images copied
         var dup = await api.Post($"/api/v1/seller/products/{a}/duplicate");
@@ -347,7 +349,7 @@ public class ProductApiTests(ApiFactory f) : IClassFixture<ApiFactory>
         var keys = f.WithDb(x => x.ProductImages.Where(i => i.ProductId == a || i.ProductId == Id(dd)).Select(i => i.StorageKey).ToList());
         Assert.Equal(2, keys.Distinct().Count());
 
-        Assert.Equal(HttpStatusCode.OK, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { quantity = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await api.Patch($"/api/v1/seller/products/{b}/quick", new { version = await Ver(api, b), quantity = 3 })).StatusCode);
         // bulk status: b is ready (activate), c isn't (reported as failed), unknown id reported
         var bulk = await api.JsonBody(await api.Post("/api/v1/seller/products/bulk-status", new { ids = new[] { b, c, Guid.NewGuid() }, status = "active" }));
         Assert.Equal(1, bulk.GetProperty("updated").GetInt32()); Assert.Equal(2, bulk.GetProperty("failed").GetArrayLength());

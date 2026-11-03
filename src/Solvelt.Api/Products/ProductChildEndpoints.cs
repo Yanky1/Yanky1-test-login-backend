@@ -67,7 +67,7 @@ public static class ProductChildEndpoints
                 SortOrder = prod.Images.Where(i => i.VariantId == variantId).Select(i => i.SortOrder + 1).DefaultIfEmpty(0).Max()
             };
             row.IsMain = row.SortOrder == 0;
-            db.ProductImages.Add(row); prod.Images.Add(row);
+            db.ProductImages.Add(row); prod.Images.Add(row); prod.ImageSeq++; // token: a parallel upload that also passed the count check fails on save
             var res = await Touch(db, cats, prod, time, new { image = ProductService.ImageDto(row), qualityScore = prod.QualityScore, canPublish = prod.IsReady }, 201);
             if (res is IStatusCodeHttpResult { StatusCode: 409 }) await storage.DeleteAsync(key);
             return res;
@@ -107,7 +107,7 @@ public static class ProductChildEndpoints
             if (prod is null || im is null) return Results.NotFound();
             if (prod.Status == ProductStatus.Active && im.VariantId is null && prod.Images.Count(i => i.VariantId == null) == 1)
                 return ProductEndpoints.Problem(422, "not_publishable", "An active listing needs at least one photo. Add another one first, or deactivate the listing.");
-            prod.Images.Remove(im); db.ProductImages.Remove(im);
+            prod.Images.Remove(im); db.ProductImages.Remove(im); prod.ImageSeq++;
             Renumber(prod.Images.Where(x => x.VariantId == im.VariantId));
             var res = await Touch(db, cats, prod, time, new { images = prod.Images.OrderBy(i => i.VariantId == null ? 0 : 1).ThenBy(i => i.SortOrder).Select(ProductService.ImageDto), qualityScore = prod.QualityScore });
             if (res is not IStatusCodeHttpResult { StatusCode: 409 }) await storage.DeleteAsync(im.StorageKey);
@@ -160,7 +160,8 @@ public static class ProductChildEndpoints
                 else if (sku is not null && !skuSeen.Add(sku)) errors[field + ".sku"] = ["Each variation needs its own SKU."];
                 if (v.Price is { } pr && (pr < 0.01m || pr > 999_999.99m || decimal.Round(pr, 2) != pr)) errors[field + ".price"] = ["Enter an amount between 0.01 and 999,999.99."];
                 if (v.Quantity is { } q && (q < 0 || q > InventoryService.MaxStock)) errors[field + ".quantity"] = ["Enter a quantity between 0 and 1,000,000."];
-                if (Barcode.Strip(v.Barcode).Length > 30) errors[field + ".barcode"] = ["Too long."];
+                else if (v.Quantity is { } q2 && prod.Variants.FirstOrDefault(x => x.ComboKey == key) is { } cur && q2 < cur.Reserved) errors[field + ".quantity"] = [$"{cur.Reserved} unit(s) are reserved by open orders, so the quantity can't go below {cur.Reserved}."];
+                if (Barcode.Strip(v.Barcode).Length > 20) errors[field + ".barcode"] = ["A barcode has at most 20 characters."];
                 else if (prod.Status == ProductStatus.Active && Barcode.Strip(v.Barcode) is { Length: > 0 } bc && !Barcode.Check(bc).Valid) errors[field + ".barcode"] = [Barcode.Check(bc).Error!];
                 if (errors.ContainsKey(field + ".sku") || sku is null) continue;
                 var existing = prod.Variants.FirstOrDefault(x => x.ComboKey == key);
@@ -201,6 +202,13 @@ public static class ProductChildEndpoints
                 }
             }
             prod.HasVariants = r.HasVariants;
+            if (await ProductService.SyncSkuClaimsAsync(db, prod) is { } claimErr) { db.ChangeTracker.Clear(); return Validation.Invalid("variants", claimErr); }
+            if (prod.Status == ProductStatus.Active)
+            {
+                // a live listing must stay publishable: evaluate the would-be state before anything is saved
+                var would = ProductRules.Evaluate(prod, await cats.AttributesAsync(prod.CategoryId));
+                if (!would.CanPublish) { db.ChangeTracker.Clear(); return ProductEndpoints.Problem(422, "not_publishable", "Active listings must stay complete. Fix the items below, or set the listing to inactive first.", would.Issues); }
+            }
             prod.Version++;
             var res = await Touch(db, cats, prod, time);
             if (res is IStatusCodeHttpResult { StatusCode: 409 }) return res;

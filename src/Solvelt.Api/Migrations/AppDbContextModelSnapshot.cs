@@ -837,6 +837,10 @@ namespace Solvelt.Api.Migrations
                     b.Property<int?>("HeightMm")
                         .HasColumnType("integer");
 
+                    b.Property<int>("ImageSeq")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer");
+
                     b.Property<bool>("IsReady")
                         .HasColumnType("boolean");
 
@@ -1402,6 +1406,36 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("SellerFiles");
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.SkuClaim", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Sku")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("VariantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("SellerId", "Sku")
+                        .IsUnique();
+
+                    b.ToTable("sku_claims", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.UserSession", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1664,6 +1698,15 @@ namespace Solvelt.Api.Migrations
                 {
                     b.HasOne("Solvelt.Api.Domain.Product", null)
                         .WithMany("Variants")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.SkuClaim", b =>
+                {
+                    b.HasOne("Solvelt.Api.Domain.Product", null)
+                        .WithMany()
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

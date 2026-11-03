@@ -40,6 +40,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<ProductAttributeValue> ProductAttributeValues => Set<ProductAttributeValue>();
     public DbSet<ProductFaq> ProductFaqs => Set<ProductFaq>();
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
+    public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

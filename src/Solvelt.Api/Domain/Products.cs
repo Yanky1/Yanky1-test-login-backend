@@ -81,6 +81,8 @@ public class Product
     public bool IsReady { get; set; }
     /// <summary>Optimistic concurrency token (incremented by the application on every main-document save; portable across SQLite/PostgreSQL).</summary>
     public int Version { get; set; } = 1;
+    /// <summary>Concurrency token bumped by every image add/remove: parallel uploads can't both pass the 9-image check.</summary>
+    public int ImageSeq { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     public DateTime? PublishedAt { get; set; }
@@ -168,4 +170,17 @@ public class ProductQuestion
     public DateTime AskedAt { get; set; }
     public DateTime? AnsweredAt { get; set; }
     public Guid? AnsweredBy { get; set; }
+}
+
+/// <summary>
+/// One row per SKU in use inside a seller account (products AND variations share the namespace, compared case-insensitively).
+/// The unique index (SellerId, Sku) is what makes SKU uniqueness race-safe; <see cref="Sku"/> is stored trimmed + lower-cased.
+/// </summary>
+public class SkuClaim
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid SellerId { get; set; }
+    public string Sku { get; set; } = "";
+    public Guid ProductId { get; set; }
+    public Guid? VariantId { get; set; }
 }

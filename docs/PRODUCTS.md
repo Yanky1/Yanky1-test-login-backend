@@ -61,3 +61,13 @@ Columns: `sku,title,brand,category,condition,price,compare_at_price,quantity,bar
 
 ## Customer questions
 `ProductQuestion` rows are created by the future buyer site; until then by `POST /api/dev/questions {productId, askerName, text}`, mapped only in Testing/Development. States: Pending (unanswered or unpublished answer), Published, Hidden.
+
+## Review fixes (fix/products-review)
+* **Live listings stay publishable everywhere:** `PUT /{id}/variants` evaluates the would-be state for Active listings and answers `422 not_publishable` (nothing saved), like the main PUT.
+* **Barcodes** are validated to ≤ 20 characters (the column size) on the product and on every variation. `TrySaveAsync` maps only optimistic-concurrency failures to `409 version_conflict`; a unique-index violation becomes a `400` field error (`sku`); any other database error is a real 500 (logged).
+* **SKUs:** one table `sku_claims (SellerId, Sku normalised = trim + lower-case)` with a unique index is the single source of truth for products AND variations (same namespace). The pre-check gives a friendly message, the unique index makes parallel requests safe (exactly one wins, the rest get 400). A product cannot reuse one of its own variations' SKUs. The migration backfills existing SKUs.
+* **Images:** `Product.ImageSeq` is a concurrency token bumped on every image add/remove, so parallel uploads can't both pass the 9-image check (the loser gets 409 and can retry).
+* **Inventory:** on-hand can never drop below `Reserved`: `AdjustAsync`/`SetOnHandAsync` return `below_reserved` (with the counts); the product form, quick edit and variation grid answer 400 "N units are reserved by open orders".
+* **Quick edit** requires `version` (400 otherwise).
+* **Images:** JPEG output ends at the first end-of-image marker (appended bytes are dropped; a JPEG without one is rejected); PNG keeps only an allow-list of chunks.
+* **CSV import** saves row by row; a SKU taken in the meantime is reported as a row error instead of a 500.

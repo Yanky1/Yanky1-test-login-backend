@@ -204,21 +204,32 @@ public class InventoryService(AppDbContext db) : IInventoryService
 
     public async Task<InventoryResult> AdjustAsync(Guid sellerId, Guid productId, Guid? variantId, int delta, CancellationToken ct = default)
     {
+        // on-hand may never drop below what open orders have reserved (nor below 0, nor above the cap)
         var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Stock + delta >= 0 && v.Stock + delta <= MaxStock)
+            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Stock + delta >= v.Reserved && v.Stock + delta >= 0 && v.Stock + delta <= MaxStock)
                 .ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, v => v.Stock + delta), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Stock + delta >= 0 && p.Stock + delta <= MaxStock)
+            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Stock + delta >= p.Reserved && p.Stock + delta >= 0 && p.Stock + delta <= MaxStock)
                 .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock + delta), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "out_of_range");
+        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, null, ct);
     }
 
     public async Task<InventoryResult> SetOnHandAsync(Guid sellerId, Guid productId, Guid? variantId, int onHand, CancellationToken ct = default)
     {
         if (onHand is < 0 or > MaxStock) return new(false, "out_of_range");
         var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId).ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, onHand), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId).ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, onHand), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "not_found");
+            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && onHand >= v.Reserved).ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, onHand), ct)
+            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && onHand >= p.Reserved).ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, onHand), ct);
+        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, onHand, ct);
+    }
+
+    /// <summary>Explains a refused stock change: not found, below what open orders reserved ("below_reserved", with the counts), or out of range.</summary>
+    private async Task<InventoryResult> WhyNotAsync(Guid productId, Guid? variantId, int? target, CancellationToken ct)
+    {
+        var snap = variantId is { } vid
+            ? await db.Variants.AsNoTracking().Where(x => x.Id == vid && x.ProductId == productId).Select(x => new { x.Stock, x.Reserved }).FirstOrDefaultAsync(ct)
+            : await db.Products.AsNoTracking().Where(x => x.Id == productId).Select(x => new { x.Stock, x.Reserved }).FirstOrDefaultAsync(ct);
+        if (snap is null) return new(false, "not_found");
+        return target is { } t && t < snap.Reserved || target is null ? new(false, "below_reserved", snap.Stock, snap.Reserved) : new(false, "out_of_range", snap.Stock, snap.Reserved);
     }
 
     public async Task<(Guid ProductId, Guid? VariantId)?> FindBySkuAsync(Guid sellerId, string sku, CancellationToken ct = default)

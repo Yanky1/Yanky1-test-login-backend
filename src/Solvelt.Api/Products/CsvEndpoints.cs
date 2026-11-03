@@ -185,7 +185,7 @@ public static class CsvEndpoints
             var (parsed, err, _) = await ParseFileAsync(file, ctx, db);
             if (err is not null) return err;
             var rows = parsed!;
-            var now = time.UtcNow(); var created = new List<object>();
+            var now = time.UtcNow(); var created = new List<object>(); var failed = new List<CsvRow>();
             foreach (var r in rows.Where(r => r.Row.Ok))
             {
                 var w = r.Write!;
@@ -193,11 +193,17 @@ public static class CsvEndpoints
                 ProductService.Apply(p, w, null);
                 await ProductRules.RefreshAsync(db, cats, p);
                 db.Products.Add(p);
-                created.Add(new { id = p.Id, row = r.Row.Row, title = p.Title });
+                await ProductService.SyncSkuClaimsAsync(db, p);
+                try { await db.SaveChangesAsync(); created.Add(new { id = p.Id, row = r.Row.Row, title = p.Title }); }
+                catch (DbUpdateException e) when (ProductEndpoints.IsUniqueViolation(e))
+                {
+                    // a parallel request took the SKU between validation and save: report it on the row instead of failing the whole import
+                    db.ChangeTracker.Clear();
+                    failed.Add(r.Row with { Ok = false, Errors = [new CsvRowError("sku", "You already use this SKU.")] });
+                }
             }
-            await db.SaveChangesAsync();
             await audit.WriteAsync("product.csv_imported", a.UserId, null, $"seller={a.SellerId};imported={created.Count};skipped={rows.Count - created.Count}");
-            return Results.Json(new { imported = created.Count, skipped = rows.Count(r => !r.Row.Ok), created, rows = rows.Where(r => !r.Row.Ok).Select(r => r.Row) }, ProductJson.Opts, statusCode: 201);
+            return Results.Json(new { imported = created.Count, skipped = rows.Count - created.Count, created, rows = rows.Where(r => !r.Row.Ok).Select(r => r.Row).Concat(failed) }, ProductJson.Opts, statusCode: 201);
         }).RequirePermission(Permission.BrandWorkWrite).DisableAntiforgery();
 
         c.MapGet("/export", async (HttpContext ctx, AppDbContext db, Guid? brandId) =>

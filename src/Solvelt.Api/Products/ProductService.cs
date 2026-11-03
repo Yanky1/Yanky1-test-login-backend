@@ -122,7 +122,7 @@ public static partial class ProductService
         if (r.SaleStart is { } ss && r.SaleEnd is { } se && se <= ss) Err("saleEnd", "The sale must end after it starts.");
         Int("quantity", r.Quantity, 0, InventoryService.MaxStock, "Quantity"); Int("lowStockAlert", r.LowStockAlert, 0, InventoryService.MaxStock, "Low-stock alert");
         Int("maxPerOrder", r.MaxPerOrder, 1, 1000, "Max per order");
-        if ((r.Barcode?.Length ?? 0) > 30) Err("barcode", "Too long.");
+        if (Barcode.Strip(r.Barcode).Length > 20) Err("barcode", "A barcode has at most 20 characters.");
         if (r.Bullets is { Count: > 5 }) Err("bullets", "Up to 5 key features.");
         else if (r.Bullets?.Any(b => b.Trim().Length > 500) == true) Err("bullets", "Each feature can have up to 500 characters.");
         if ((r.Description?.Length ?? 0) > 10_000) Err("description", "Maximum 10,000 characters.");
@@ -190,13 +190,28 @@ public static partial class ProductService
 
     public static string Slugify(string s) => CategorySeed.Slugify(s);
 
+    public static string? NormSku(string? sku) => string.IsNullOrWhiteSpace(sku) ? null : sku.Trim().ToLowerInvariant();
+
+    /// <summary>Friendly pre-check (the unique index on <see cref="SkuClaim"/> is the real guard): is the SKU used by another product or any variation of another product?</summary>
     public static async Task<string?> SkuConflictAsync(AppDbContext db, Guid sellerId, string? sku, Guid? exceptProduct, Guid? exceptVariant = null)
     {
-        if (sku is null) return null;
-        var l = sku.ToLower();
-        if (await db.Products.AnyAsync(p => p.SellerId == sellerId && p.Sku != null && p.Sku.ToLower() == l && p.Id != exceptProduct)) return "You already use this SKU.";
-        if (await db.Variants.AnyAsync(v => v.SellerId == sellerId && v.Sku != null && v.Sku.ToLower() == l && v.Id != exceptVariant && (exceptProduct == null || v.ProductId != exceptProduct)))
-            return "You already use this SKU.";
+        var n = NormSku(sku);
+        if (n is null) return null;
+        var taken = await db.SkuClaims.AnyAsync(c => c.SellerId == sellerId && c.Sku == n && c.ProductId != exceptProduct);
+        return taken ? "You already use this SKU." : null;
+    }
+
+    /// <summary>Makes the claim rows of one product match its current SKU + variation SKUs. A SKU used twice inside the product is a validation error (returned).</summary>
+    public static async Task<string?> SyncSkuClaimsAsync(AppDbContext db, Product p)
+    {
+        var want = new List<(string Sku, Guid? Variant)>();
+        if (NormSku(p.Sku) is { } ps) want.Add((ps, null));
+        foreach (var v in p.Variants) if (NormSku(v.Sku) is { } vs) want.Add((vs, v.Id));
+        if (want.Select(w => w.Sku).Distinct().Count() != want.Count) return "Each SKU can be used only once: the product and its variations all need different SKUs.";
+        var have = await db.SkuClaims.Where(c => c.ProductId == p.Id).ToListAsync();
+        foreach (var c in have.Where(c => !want.Any(w => w.Sku == c.Sku && w.Variant == c.VariantId))) db.SkuClaims.Remove(c);
+        foreach (var w in want.Where(w => !have.Any(c => c.Sku == w.Sku && c.VariantId == w.Variant)))
+            db.SkuClaims.Add(new SkuClaim { SellerId = p.SellerId, ProductId = p.Id, Sku = w.Sku, VariantId = w.Variant });
         return null;
     }
 

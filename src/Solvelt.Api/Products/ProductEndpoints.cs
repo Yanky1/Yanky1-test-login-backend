@@ -31,12 +31,24 @@ public static class ProductEndpoints
         return Results.Json(ProductService.Detail(p, r, time.UtcNow(), await BrandNameAsync(db, p.BrandId), attrs), ProductJson.Opts, statusCode: status);
     }
 
-    /// <summary>Saves, translating a lost optimistic-concurrency race into 409.</summary>
+    internal sealed class DuplicateValueException : Exception { }
+
+    internal static bool IsUniqueViolation(DbUpdateException e) => e.InnerException switch
+    {
+        Microsoft.Data.Sqlite.SqliteException se => se.SqliteExtendedErrorCode is 2067 or 1555,
+        Npgsql.PostgresException pe => pe.SqlState == "23505",
+        _ => false
+    };
+
+    /// <summary>
+    /// Saves. A lost optimistic-concurrency race returns false (the caller answers 409). A unique-index hit (SKU taken by a parallel request)
+    /// throws <see cref="DuplicateValueException"/>, which the group filter turns into a 400 field error. Anything else is a real failure (500, logged).
+    /// </summary>
     internal static async Task<bool> TrySaveAsync(AppDbContext db)
     {
         try { await db.SaveChangesAsync(); return true; }
         catch (DbUpdateConcurrencyException) { db.ChangeTracker.Clear(); return false; }
-        catch (DbUpdateException) { db.ChangeTracker.Clear(); return false; }
+        catch (DbUpdateException e) when (IsUniqueViolation(e)) { db.ChangeTracker.Clear(); throw new DuplicateValueException(); }
     }
 
     private static async Task<(Brand? Brand, IResult? Error)> ResolveBrandAsync(AppDbContext db, AccountAccess a, Guid? requested)
@@ -53,7 +65,12 @@ public static class ProductEndpoints
 
     public static void MapProductEndpoints(this RouteGroupBuilder g)
     {
-        var p = g.MapGroup("/seller/products").RequireAuthorization("Seller").RequireAuthorization("VerifiedEmail").RequireRateLimiting("catalog");
+        var p = g.MapGroup("/seller/products").RequireAuthorization("Seller").RequireAuthorization("VerifiedEmail").RequireRateLimiting("catalog")
+            .AddEndpointFilter(async (ctx, next) =>
+            {
+                try { return await next(ctx); }
+                catch (DuplicateValueException) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["sku"] = ["You already use this SKU."] }); }
+            });
 
         // ---- list --------------------------------------------------------------------------------------------------------
         p.MapGet("", async (HttpContext ctx, AppDbContext db, TimeProvider time, string? q, string? status, string? filter, Guid? brandId, Guid? categoryId,
@@ -193,7 +210,7 @@ public static class ProductEndpoints
             // barcode: format/length always; check digits are a publish rule while drafting (so autosave never loses typing), enforced on live listings
             var bc = Barcode.Strip(r.Barcode);
             if (prod.Status == ProductStatus.Active && bc.Length > 0 && !Barcode.Check(bc).Valid) errors["barcode"] = [Barcode.Check(bc).Error!];
-            if (r.Quantity is not null && r.HasVariants) { /* quantity is ignored while variations are on */ }
+            if (!r.HasVariants && r.Quantity is { } qtyNew && qtyNew < prod.Reserved) errors["quantity"] = [$"{prod.Reserved} unit{(prod.Reserved == 1 ? " is" : "s are")} reserved by open orders, so the quantity can't go below {prod.Reserved}."];
             if (errors.Count > 0) return Results.ValidationProblem(errors);
 
             var saleCents = Money.ToCents(r.SalePrice);
@@ -218,6 +235,7 @@ public static class ProductEndpoints
             db.ProductAttributeValues.RemoveRange(prod.Attributes);
             prod.Attributes = attrValues.Select(kv => new ProductAttributeValue { ProductId = prod.Id, Key = kv.Key, ValueJson = kv.Value }).ToList();
             foreach (var av in prod.Attributes) db.Entry(av).State = EntityState.Added;
+            if (await ProductService.SyncSkuClaimsAsync(db, prod) is { } claimErr) { db.ChangeTracker.Clear(); return Validation.Invalid("sku", claimErr); }
             await ProductRules.RefreshAsync(db, cats, prod);
             prod.Version++; prod.UpdatedAt = time.UtcNow();
             // stock goes through the inventory service (atomic), never by assigning the column while orders may be reserving
@@ -237,7 +255,8 @@ public static class ProductEndpoints
             var a = ctx.GetAccess()!;
             var prod = await db.LoadAsync(a, id, write: true);
             if (prod is null) return Results.NotFound();
-            if (r.Version is { } v && v != prod.Version) return Conflict();
+            if (r.Version is not { } v) return Validation.Invalid("version", "Send the version you loaded so we can detect changes made elsewhere.");
+            if (v != prod.Version) return Conflict();
             if (r.Price is null && r.Quantity is null) return Validation.Invalid("price", "Nothing to change.");
             if (r.Price is { } price)
             {
@@ -251,6 +270,7 @@ public static class ProductEndpoints
             {
                 if (q is < 0 or > InventoryService.MaxStock) return Validation.Invalid("quantity", "Enter a quantity between 0 and 1,000,000.");
                 if (prod.HasVariants) return Validation.Invalid("quantity", "This listing has variations: edit the quantity of each variation.");
+                if (q < prod.Reserved) return Validation.Invalid("quantity", $"{prod.Reserved} unit{(prod.Reserved == 1 ? " is" : "s are")} reserved by open orders, so the quantity can't go below {prod.Reserved}.");
             }
             await ProductRules.RefreshAsync(db, cats, prod);
             prod.Version++; prod.UpdatedAt = time.UtcNow();
