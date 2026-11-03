@@ -365,6 +365,233 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.AssistantConversation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Surface")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId", "UserId", "UpdatedAt");
+
+                    b.ToTable("assistant_conversations", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.AssistantMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActionIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("InputTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("LinksJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("OutputTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Seq")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ToolsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationId", "Seq")
+                        .IsUnique();
+
+                    b.ToTable("assistant_messages", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.AssistantPendingAction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DiffJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ResultCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultMessage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Risk")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Stamp")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("SupersededBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("TargetId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TargetKind")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<string>("TargetLabel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("character varying(48)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConversationId", "Status");
+
+                    b.HasIndex("UserId", "IdempotencyKey");
+
+                    b.ToTable("assistant_actions", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.AssistantUsage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("CostMicros")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Day")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Messages")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId", "UserId", "Day")
+                        .IsUnique();
+
+                    b.ToTable("assistant_usage", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.AuditEvent", b =>
                 {
                     b.Property<long>("Id")

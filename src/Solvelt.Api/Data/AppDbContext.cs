@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Assistant;
 using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
 using Solvelt.Api.Products;
@@ -79,6 +80,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<BookingCounter> BookingCounters => Set<BookingCounter>();
     public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
     public DbSet<BookingMessage> BookingMessages => Set<BookingMessage>();
+    // AI seller assistant (see Assistant/)
+    public DbSet<AssistantConversation> AssistantConversations => Set<AssistantConversation>();
+    public DbSet<AssistantMessage> AssistantMessages => Set<AssistantMessage>();
+    public DbSet<AssistantPendingAction> AssistantActions => Set<AssistantPendingAction>();
+    public DbSet<AssistantUsage> AssistantUsages => Set<AssistantUsage>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -108,6 +114,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureProducts();
         b.ConfigureOrders();
         b.ConfigureBookings();
+        b.ConfigureAssistant();
     }
 
     public static void Seed(AppDbContext db)
