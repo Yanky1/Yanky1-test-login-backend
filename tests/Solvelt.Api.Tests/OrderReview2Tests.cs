@@ -187,3 +187,21 @@ public class OrderReconcileTests(FlakyFactory f) : IClassFixture<FlakyFactory>
         Assert.Contains("could not be consumed", (string)shipped["timeline"]!.AsArray().First(e => (string)e!["type"]! == "stock.mismatch")!["text"]!);
     }
 }
+
+public class OrderServiceListingTests(OrdersFactory f) : IClassFixture<OrdersFactory>
+{
+    [Fact]
+    public async Task A_service_listing_cannot_be_ordered_it_is_booked()
+    {
+        var biz = await Svc.NewBiz(f);                           // an ACTIVE service listing
+        var shop = await NewShop(f);
+        var r = await Inbound(f, "/api/internal/v1/orders", OrderBody(f, Mid(), [Line(biz.Seller, biz.Brand, biz.Service, 1)]));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, r.StatusCode);
+        var err = (await Node(r))["errors"]![0]!;
+        Assert.Equal("not_a_product", (string)err["code"]!); Assert.Equal("Services are booked, not ordered.", (string)err["message"]!);
+        Assert.Equal(0, f.WithDb(db => db.Orders.Count(o => o.SellerId == biz.Seller)));   // nothing created
+        // a normal product order is unaffected
+        var mixed = await Inbound(f, "/api/internal/v1/orders", OrderBody(f, Mid(), [Line(shop.Seller, shop.Brand, shop.Product, 1)]));
+        Assert.Equal(HttpStatusCode.Created, mixed.StatusCode);                              // real products still work
+    }
+}

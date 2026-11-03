@@ -91,6 +91,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
             var prod = await db.Products.AsNoTracking().Include(x => x.Variants).Include(x => x.Options).Include(x => x.Images)
                 .FirstOrDefaultAsync(x => x.Id == pid && x.SellerId == l.SellerId && x.BrandId == l.BrandId, ct);
             if (prod is null) { Err(i, "product", "The product does not belong to that seller account and brand."); continue; }
+            if (prod.Type == ListingType.Service) { Err(i, "not_a_product", "Services are booked, not ordered."); continue; }
             if (prod.Status != ProductStatus.Active) { Err(i, "product_inactive", "The product is not active."); continue; }
             ProductVariant? variant = null;
             if (prod.HasVariants)

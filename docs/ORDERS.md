@@ -132,7 +132,7 @@ Content-Type: application/json
 ```
 * A line names its product by `productId` (+ `variantId` when the product has variants) **or** by `sku` (product or variant SKU of that account).
 * **Splitting:** one `SellerOrder` per distinct (sellerId, brandId); shipping charged is per group via `shipping[]`.
-* **Validation (all-or-nothing):** the seller must be Approved/active; the brand must belong to the account; the product/variant must belong to that account **and brand** and be **Active** (variants Enabled). Money fields are capped (unit price/shipping <= 1,000,000,000 cents; discount/tax proportionally). Any bad line -> `422 invalid_order` with `errors:[{index, code, message}]` (`product`, `brand`, `seller`, `sku`, `variant`, `product_inactive`, `variant_inactive`, `quantity`, `amount`, ...) and **nothing is created or reserved**.
+* **Validation (all-or-nothing):** the seller must be Approved/active; the brand must belong to the account; the product/variant must belong to that account **and brand** and be **Active** (variants Enabled). Money fields are capped (unit price/shipping <= 1,000,000,000 cents; discount/tax proportionally). Any bad line -> `422 invalid_order` with `errors:[{index, code, message}]` (`product`, `brand`, `seller`, `sku`, `variant`, `product_inactive`, `not_a_product` (the listing is a service: "Services are booked, not ordered"), `variant_inactive`, `quantity`, `amount`, ...) and **nothing is created or reserved**.
 * **Response** `201 {created:true, orders:[{sellerOrderId, number, sellerId, brandId, status, oversold, totalCents, feeCents, netCents}]}`; the same `marketplaceOrderId` again -> `200 {created:false, ...}` with the original orders (also when two deliveries race).
 * Stock short -> still `201`, `oversold:true`.
 
