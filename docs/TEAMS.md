@@ -13,7 +13,7 @@ UserSession.ActiveAccountId   AppUser.LastAccountId
 ```
 * `SellerAccount.UserId` is kept as the *primary owner* (legacy code paths, status emails, phone module); it is updated on ownership transfer. It is **no longer unique** and is **not** used for authorization.
 * `Brand`: name (unique per account, case-insensitive), slug, description, contact email/website, logo (JPEG/PNG/WebP ≤ 1 MB, magic-byte checked, random storage key), status Active/Archived, `IsDefault`.
-* **Concurrency:** every membership mutation runs under a per-account lock and reads inside it, so the "≥ 1 Owner" rule holds under parallel requests (in-process semaphore + `FOR UPDATE` on PostgreSQL).
+* **Concurrency:** every membership mutation runs under a per-account lock and reads inside it, so the "≥ 1 Owner" rule holds under parallel requests (in-process semaphore + `FOR UPDATE` on PostgreSQL). The DB-level guarantee exists only on PostgreSQL, so production must use PostgreSQL (SQLite is single-instance dev/test only); the acting member's role is re-read inside the lock.
 * **Backfill** (`TeamService.BackfillAsync`, idempotent, runs at startup after the schema is created/migrated; only for accounts with no membership at all, so removed Owners are never restored): every seller account gets an Owner membership for its `UserId` and a default brand named after `VendorName` (or "Main brand"). New accounts get the same; the default brand follows the vendor name until somebody edits it.
 
 ## Permission matrix

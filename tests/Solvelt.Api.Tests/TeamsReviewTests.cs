@@ -55,6 +55,80 @@ public class TeamsReviewTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, await b.Get("/api/v1/team/members").Code());
     }
 
+    // ---- follow-ups ------------------------------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task Backfill_never_readds_a_legacy_UserId_without_membership_when_other_members_exist()
+    {
+        var (a, aEmail, b, bEmail, seller) = await TwoOwners();
+        var aId = f.WithDb(db => db.Users.Single(u => u.Email == aEmail).Id);
+        Assert.Equal(HttpStatusCode.NoContent, await b.Delete($"/api/v1/team/members/{await MemberId(b, aEmail)}").Code());
+        // simulate a stale pointer to the removed user (legacy rows / older code paths)
+        f.WithDb(db => { db.Sellers.Single(s => s.Id == seller).UserId = aId; db.SaveChanges(); return 0; });
+        using (var scope = f.Services.CreateScope())
+            await TeamService.BackfillAsync(scope.ServiceProvider.GetRequiredService<Solvelt.Api.Data.AppDbContext>(), f.Time);
+        Assert.False(f.WithDb(db => db.Memberships.Any(m => m.SellerId == seller && m.UserId == aId)));
+        Assert.Equal(HttpStatusCode.Forbidden, await a.Get("/api/v1/brands").Code());
+    }
+
+    [Fact]
+    public async Task Status_mails_go_to_active_owners_even_if_UserId_points_at_a_removed_user()
+    {
+        var (a, aEmail, b, bEmail, seller) = await TwoOwners();
+        var aId = f.WithDb(db => db.Users.Single(u => u.Email == aEmail).Id);
+        Assert.Equal(HttpStatusCode.NoContent, await b.Delete($"/api/v1/team/members/{await MemberId(b, aEmail)}").Code());
+        f.WithDb(db => { db.Sellers.Single(s => s.Id == seller).UserId = aId; db.SaveChanges(); return 0; });
+        await b.CompleteApplicationAndSubmit();
+        var admin = new Api(f); await admin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
+        Assert.Equal(HttpStatusCode.OK, await admin.Post($"/api/v1/admin/sellers/{seller}/status", new { status = "Approved" }).Code());
+        Assert.Single(f.Mails(bEmail, "approved"));
+        Assert.Empty(f.Mails(aEmail, "approved"));
+        Assert.Empty(f.Mails(aEmail, "application-received"));
+    }
+
+    [Fact]
+    public async Task An_actor_demoted_a_moment_ago_cannot_finish_an_action_at_the_old_role()
+    {
+        var (owner, _, seller) = await TeamHelpers.NewOwner(f);
+        var (admin, adminEmail) = await TeamHelpers.JoinAs(f, owner, "Admin");
+        var (viewer, viewerEmail) = await TeamHelpers.JoinAs(f, owner, "Viewer");
+        var adminMid = await MemberId(owner, adminEmail); var viewerMid = await MemberId(owner, viewerEmail);
+        var adminUser = f.WithDb(db => db.Users.Single(u => u.Email == adminEmail).Id);
+        // the request started as Admin (stale AccessAccess) ...
+        var stale = new AccountAccess(adminUser, seller, adminMid, AccountRole.Admin, true, new HashSet<Guid>(), SellerStatus.Draft);
+        // ... but the Owner demoted them before the action got the account lock
+        f.WithDb(db => { db.Memberships.Single(m => m.Id == adminMid).Role = AccountRole.Viewer; db.SaveChanges(); return 0; });
+        using var scope = f.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<TeamService>();
+        var r = await svc.RemoveMemberAsync(stale, viewerMid);
+        Assert.False(r.Ok); Assert.Equal(403, r.Status);
+        Assert.True(f.WithDb(db => db.Memberships.Any(m => m.Id == viewerMid)));
+        // and a removed actor is refused too
+        f.WithDb(db => { db.Memberships.Remove(db.Memberships.Single(m => m.Id == adminMid)); db.SaveChanges(); return 0; });
+        var r2 = await svc.ChangeMemberAsync(stale, viewerMid, AccountRole.Manager, null, null, null);
+        Assert.False(r2.Ok); Assert.Equal(403, r2.Status);
+        Assert.Equal(AccountRole.Viewer, f.WithDb(db => db.Memberships.Single(m => m.Id == viewerMid).Role));
+    }
+
+    [Fact]
+    public async Task Closure_email_skips_suspended_owners()
+    {
+        var (a, aEmail, b, bEmail, seller) = await TwoOwners();
+        Assert.Equal(HttpStatusCode.OK, await a.Patch($"/api/v1/team/members/{await MemberId(a, bEmail)}", new { status = "Suspended" }).Code());
+        Assert.Equal(HttpStatusCode.OK, await a.Post("/api/v1/team/close-account", new { currentPassword = ApiFactory.Strong }).Code());
+        Assert.Single(f.Mails(aEmail, "team-account-closed"));
+        Assert.Empty(f.Mails(bEmail, "team-account-closed"));
+    }
+
+    [Fact]
+    public async Task Demoting_the_primary_owner_repoints_UserId_to_an_active_owner()
+    {
+        var (a, aEmail, b, bEmail, seller) = await TwoOwners();
+        var bId = f.WithDb(db => db.Users.Single(u => u.Email == bEmail).Id);
+        Assert.NotEqual(bId, f.WithDb(db => db.Sellers.Single(s => s.Id == seller).UserId)); // A is the primary owner
+        Assert.Equal(HttpStatusCode.OK, await b.Patch($"/api/v1/team/members/{await MemberId(b, aEmail)}", new { role = "Admin" }).Code());
+        Assert.Equal(bId, f.WithDb(db => db.Sellers.Single(s => s.Id == seller).UserId));
+    }
+
     // ---- 3: concurrent mutual demotion / removal never leaves 0 Owners
     [Fact]
     public async Task Parallel_mutual_demotions_and_removals_never_leave_an_account_without_an_owner()

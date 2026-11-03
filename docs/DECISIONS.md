@@ -104,4 +104,5 @@
 | 94 | Oversold shipping | Units that were never reserved still reduce on-hand stock when shipped (best effort, never below zero). | Review E4 |
 | 95 | Conversation matching | Resolve seller/brand/order|product from the payload first, then look up the thread by (seller, marketplace id); mismatch is 422; a first buyer reply joins a seller-started thread. | Review E3 |
 | 96 | Concurrent buyer requests | A concurrency failure is answered `409 version_conflict` (per-order result `retry`) so the idempotent request is resent; never reported as duplicate. | Review E7 |
-
+| 97 | Owner-invariant lock scope | The per-account lock is an in-process semaphore everywhere, and a DB-level `SELECT … FOR UPDATE` transaction on PostgreSQL only. SQLite is single-instance dev/test only; any multi-instance or production deployment MUST use PostgreSQL, otherwise two instances can still race the "≥ 1 Owner" rule. The acting member's own membership and permission are re-read inside the lock, so someone demoted or removed a moment ago cannot finish an action at the old role. | Integrity, deployment |
+| 98 | Primary owner pointer | `SellerAccount.UserId` is re-pointed to another active Owner whenever its user is removed, leaves, is demoted or suspended. The closure email goes to active Owners only. | Least privilege |

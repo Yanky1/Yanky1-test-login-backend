@@ -22,6 +22,7 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 | Info leak | ProblemDetails, no stack traces, security headers (CSP, frame-ancestors, nosniff, Referrer-Policy, HSTS, COOP), `Cache-Control: no-store` on API |
 | Secret leakage | Secrets via user-secrets/env only; logs never include passwords, tokens or codes; codes/tokens stored hashed |
 | Phone/SMS channel abuse | Signed webhooks, replay/seq protection, shared lockout, SMS code + PIN, no enumeration, AI as language layer only with redaction (see `PHONE-SMS.md`) |
+| Owner-invariant races (two Owners removing each other) | Per-account lock around every membership change (in-process; `FOR UPDATE` on PostgreSQL). **Production must run PostgreSQL**: SQLite is single-instance dev/test only. Actor role re-read inside the lock |
 | Privilege escalation | Role policies (`Admin`, `Seller`, `VerifiedEmail`); admin accounts only via seed config |
 
 ## Self-review notes

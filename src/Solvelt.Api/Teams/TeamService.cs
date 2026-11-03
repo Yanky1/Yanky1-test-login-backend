@@ -109,6 +109,29 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
     /// In-process semaphore (SQLite, single instance) plus, on PostgreSQL, a transaction holding a row lock on the account (FOR UPDATE) for multiple instances.
     /// All reads that decide the outcome happen INSIDE the lock.
     /// </summary>
+    /// <summary>
+    /// Like <see cref="LockedAsync{T}"/> but also re-reads the ACTOR's own membership inside the lock and re-checks the required permission against that fresh role,
+    /// so somebody demoted (or removed) a moment ago cannot finish one more action at the role their request started with.
+    /// </summary>
+    private Task<TeamResult> LockedAsActorAsync(AccountAccess actor, Permission needed, Func<AccountAccess, Task<TeamResult>> body) =>
+        LockedAsync(actor.SellerId, async () =>
+        {
+            var m = await db.Memberships.AsNoTracking().FirstOrDefaultAsync(x => x.Id == actor.MembershipId && x.SellerId == actor.SellerId && x.UserId == actor.UserId);
+            if (m is null || m.Status != MembershipStatus.Active) return TeamResult.Fail(403, "no_active_account", "You no longer have access to this account.");
+            if (!Permissions.Has(m.Role, needed)) return TeamResult.Fail(403, "forbidden", "You don't have permission to do this.");
+            return await body(actor with { Role = m.Role, AllBrands = m.AllBrands || m.Role >= AccountRole.Admin });
+        });
+
+    /// <summary>SellerAccount.UserId is the primary owner (legacy paths): when that user loses Owner status (removed, left, demoted, suspended) point it at another active Owner.</summary>
+    private async Task RepointPrimaryOwnerAsync(Guid sellerId, Guid losingUserId, Guid exceptMembershipId)
+    {
+        var acct = await AccountAsync(sellerId);
+        if (acct is null || acct.UserId != losingUserId) return;
+        var next = await db.Memberships.Where(x => x.SellerId == sellerId && x.Id != exceptMembershipId && x.Role == AccountRole.Owner && x.Status == MembershipStatus.Active)
+            .OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.UserId).FirstOrDefaultAsync();
+        if (next is { } n) acct.UserId = n;
+    }
+
     private async Task<T> LockedAsync<T>(Guid sellerId, Func<Task<T>> body)
     {
         var sem = AccountLocks.GetOrAdd(sellerId, _ => new SemaphoreSlim(1, 1));
@@ -177,7 +200,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
     }
 
     public Task<TeamResult> ChangeMemberAsync(AccountAccess actor, Guid memberId, AccountRole? newRole, bool? allBrands, IEnumerable<Guid>? brandIds, MembershipStatus? status) =>
-        LockedAsync(actor.SellerId, () => ChangeMemberCoreAsync(actor, memberId, newRole, allBrands, brandIds, status));
+        LockedAsActorAsync(actor, Permission.MembersManage, a => ChangeMemberCoreAsync(a, memberId, newRole, allBrands, brandIds, status));
 
     private async Task<TeamResult> ChangeMemberCoreAsync(AccountAccess actor, Guid memberId, AccountRole? newRole, bool? allBrands, IEnumerable<Guid>? brandIds, MembershipStatus? status)
     {
@@ -198,6 +221,8 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
         var (err, all, ids) = await NormalizeScopeAsync(actor.SellerId, role, allBrands, brandIds);
         if (err is not null) return err;
         var changedRole = role != m.Role;
+        if (m.Role == AccountRole.Owner && (role != AccountRole.Owner || newStatus != MembershipStatus.Active))
+            await RepointPrimaryOwnerAsync(actor.SellerId, m.UserId, m.Id); // the last-Owner check above guarantees another active Owner exists
         var oldScope = (m.AllBrands, m.Brands.Select(b => b.BrandId).OrderBy(x => x).ToList());
         m.Role = role; m.Status = newStatus; m.AllBrands = all; m.UpdatedAt = time.UtcNow();
         db.MembershipBrands.RemoveRange(m.Brands);
@@ -212,7 +237,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
         return TeamResult.Success(new { id = m.Id, role = role.ToString(), status = newStatus.ToString(), allBrands = all, brandIds = ids });
     }
 
-    public Task<TeamResult> RemoveMemberAsync(AccountAccess actor, Guid memberId) => LockedAsync(actor.SellerId, () => RemoveMemberCoreAsync(actor, memberId));
+    public Task<TeamResult> RemoveMemberAsync(AccountAccess actor, Guid memberId) => LockedAsActorAsync(actor, Permission.MembersManage, a => RemoveMemberCoreAsync(a, memberId));
 
     private async Task<TeamResult> RemoveMemberCoreAsync(AccountAccess actor, Guid memberId)
     {
@@ -238,13 +263,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
         if (m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active && await ActiveOwnersAsync(m.SellerId) <= 1)
             return TeamResult.Fail(409, "last_owner", "An account must always have at least one Owner. Transfer ownership first.");
         db.Memberships.Remove(m);
-        // SellerAccount.UserId is the primary owner (legacy paths, notifications): never leave it pointing at somebody who just lost access.
-        if (await AccountAsync(m.SellerId) is { } acct && acct.UserId == m.UserId)
-        {
-            var next = await db.Memberships.Where(x => x.SellerId == m.SellerId && x.Id != m.Id && x.Role == AccountRole.Owner && x.Status == MembershipStatus.Active)
-                .OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.UserId).FirstOrDefaultAsync();
-            if (next is { } n) acct.UserId = n;
-        }
+        await RepointPrimaryOwnerAsync(m.SellerId, m.UserId, m.Id);
         // Access to THIS account ends immediately: sessions acting on it lose the active account (checked again on every request anyway).
         await db.Sessions.Where(s => s.UserId == m.UserId && s.ActiveAccountId == m.SellerId).ExecuteUpdateAsync(s => s.SetProperty(x => x.ActiveAccountId, (Guid?)null));
         await db.Users.Where(u => u.Id == m.UserId && u.LastAccountId == m.SellerId).ExecuteUpdateAsync(u => u.SetProperty(x => x.LastAccountId, (Guid?)null));
@@ -255,7 +274,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
         return TeamResult.Success();
     }
 
-    public Task<TeamResult> TransferOwnershipAsync(AccountAccess actor, Guid memberId) => LockedAsync(actor.SellerId, () => TransferOwnershipCoreAsync(actor, memberId));
+    public Task<TeamResult> TransferOwnershipAsync(AccountAccess actor, Guid memberId) => LockedAsActorAsync(actor, Permission.OwnershipTransfer, a => TransferOwnershipCoreAsync(a, memberId));
 
     private async Task<TeamResult> TransferOwnershipCoreAsync(AccountAccess actor, Guid memberId)
     {
@@ -282,7 +301,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
     // ------------------------------------------------------------------ close account (Owner only)
 
     /// <summary>Closes the account: it becomes unusable for everyone (no member can act on it or see it), data is retained, Owners are emailed.</summary>
-    public Task<TeamResult> CloseAccountAsync(AccountAccess actor) => LockedAsync(actor.SellerId, async () =>
+    public Task<TeamResult> CloseAccountAsync(AccountAccess actor) => LockedAsActorAsync(actor, Permission.AccountClose, async actor =>
     {
         var acc = await AccountAsync(actor.SellerId);
         if (acc is null || acc.Status == SellerStatus.Closed) return TeamResult.Fail(404, "not_found", "Account not found.");
@@ -292,7 +311,7 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
         await db.Users.Where(u => u.LastAccountId == acc.Id).ExecuteUpdateAsync(u => u.SetProperty(x => x.LastAccountId, (Guid?)null));
         await db.SaveChangesAsync();
         await audit.WriteAsync("account.closed", actor.UserId, null, $"account={acc.Id};from={from}");
-        var owners = await db.Memberships.Where(m => m.SellerId == acc.Id && m.Role == AccountRole.Owner).Select(m => m.UserId).ToListAsync();
+        var owners = await db.Memberships.Where(m => m.SellerId == acc.Id && m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active).Select(m => m.UserId).ToListAsync();
         foreach (var uid in owners)
             if ((await users.FindByIdAsync(uid.ToString()))?.Email is { } e) await mailer.SendAsync(TeamTemplates.AccountClosed(e, AccountName(acc)));
         return TeamResult.Success(new { closed = true });
