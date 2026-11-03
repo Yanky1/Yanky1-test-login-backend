@@ -21,23 +21,26 @@ public class VoiceResponse(string voice, string language)
     public VoiceResponse Reject() { _verbs.Add(w => { w.WriteStartElement("Reject"); w.WriteAttributeString("reason", "rejected"); w.WriteEndElement(); }); return this; }
     public VoiceResponse Dial(string number) { _verbs.Add(w => { w.WriteStartElement("Dial"); w.WriteString(number); w.WriteEndElement(); }); return this; }
 
-    /// <summary>Keypad input (DTMF only). '#' submits, so it never appears in Digits. Without input the provider posts an empty Digits to the same action.</summary>
-    public VoiceResponse Gather(string action, string prompt, int? numDigits = null, int timeoutSeconds = 6)
+    /// <summary>
+    /// Prompt + input. Secret steps (PIN, codes) use keypad only (input="dtmf"), so they are never transcribed; other steps use input="speech dtmf" so the keypad always works too.
+    /// '#' submits. Without input the provider still posts to the action (actionOnEmptyResult), so silence is handled server-side.
+    /// </summary>
+    public VoiceResponse Gather(string action, IEnumerable<string> lines, bool speech, int? numDigits = null, int timeoutSeconds = 6)
     {
         _verbs.Add(w =>
         {
             w.WriteStartElement("Gather");
-            w.WriteAttributeString("input", "dtmf");
+            w.WriteAttributeString("input", speech ? "speech dtmf" : "dtmf");
             w.WriteAttributeString("action", action);
             w.WriteAttributeString("method", "POST");
             w.WriteAttributeString("timeout", timeoutSeconds.ToString());
             w.WriteAttributeString("finishOnKey", "#");
             w.WriteAttributeString("actionOnEmptyResult", "true");
+            if (speech) { w.WriteAttributeString("speechTimeout", "auto"); w.WriteAttributeString("language", language); }
             if (numDigits is { } n) w.WriteAttributeString("numDigits", n.ToString());
-            w.WriteStartElement("Say"); w.WriteAttributeString("voice", voice); w.WriteAttributeString("language", language); w.WriteString(prompt); w.WriteEndElement();
+            foreach (var line in lines) { w.WriteStartElement("Say"); w.WriteAttributeString("voice", voice); w.WriteAttributeString("language", language); w.WriteString(line); w.WriteEndElement(); }
             w.WriteEndElement();
         });
-        _verbs.Add(w => { w.WriteStartElement("Redirect"); w.WriteAttributeString("method", "POST"); w.WriteString(action); w.WriteEndElement(); });
         return this;
     }
 

@@ -18,6 +18,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<LoginThrottle> LoginThrottles => Set<LoginThrottle>();
     public DbSet<ExternalExchange> ExternalExchanges => Set<ExternalExchange>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    // phone/SMS channel (see Domain/PhoneEntities.cs)
+    public DbSet<PhoneCredential> PhoneCredentials => Set<PhoneCredential>();
+    public DbSet<PhoneState> PhoneStates => Set<PhoneState>();
+    public DbSet<PhoneOptOut> PhoneOptOuts => Set<PhoneOptOut>();
+    public DbSet<PhoneLink> PhoneLinks => Set<PhoneLink>();
+    public DbSet<PhoneSeen> PhoneSeen => Set<PhoneSeen>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -42,6 +48,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.Entity<LoginThrottle>().HasKey(x => x.KeyHash);
         b.Entity<ExternalExchange>().HasIndex(x => x.CodeHash).IsUnique();
         b.Entity<AuditEvent>().HasIndex(x => x.At);
+        b.ConfigurePhone();
     }
 
     public static void Seed(AppDbContext db)

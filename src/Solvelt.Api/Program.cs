@@ -15,6 +15,7 @@ using Solvelt.Api.Domain;
 using Solvelt.Api.Email;
 using Solvelt.Api.Endpoints;
 using Solvelt.Api.Options;
+using Solvelt.Api.Phone;
 using Solvelt.Api.Security;
 using Solvelt.Api.Services;
 
@@ -177,6 +178,8 @@ builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 6 * 10
 if (cfg.GetValue<bool>("Turnstile:UseTestStub") && !env.IsEnvironment("Testing"))
     throw new InvalidOperationException("Turnstile:UseTestStub may only be enabled in the Testing environment.");
 
+builder.AddPhoneChannels();
+
 var app = builder.Build();
 
 var appOpts = app.Services.GetRequiredService<IOptions<AppOptions>>().Value;
@@ -219,6 +222,7 @@ v1.MapPasskeyEndpoints();
 v1.MapAccountEndpoints();
 v1.MapSellerEndpoints();
 v1.MapAdminEndpoints();
+app.MapPhoneChannels(v1);
 if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
 
 app.Run();
