@@ -19,15 +19,15 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
     /// <summary>Turns buyer-reported and contact-flagged order messages into queue rows (idempotent; one row per message and kind).</summary>
     public async Task SyncAsync()
     {
-        var existing = await db.ModerationReports.AsNoTracking().Where(r => r.Kind == "message" || r.Kind == "contact_warning").Select(r => r.Kind + ":" + r.TargetId).ToListAsync();
-        var seen = existing.ToHashSet();
+        var existing = await db.ModerationReports.AsNoTracking().Where(r => r.Kind == "message" || r.Kind == "contact_warning").Select(r => new { r.Kind, r.TargetId }).ToListAsync();
+        var seen = existing.Select(x => (x.Kind, x.TargetId)).ToHashSet();
         var msgs = await db.Messages.AsNoTracking().Where(m => m.Reported || m.ContactWarning)
             .OrderByDescending(m => m.CreatedAt).Take(500).Select(m => new { m.Id, m.SellerId, m.Reported, m.ReportReason, m.Text, m.CreatedAt }).ToListAsync();
         var now = time.UtcNow();
         foreach (var m in msgs)
         {
             var kind = m.Reported ? "message" : "contact_warning";
-            if (!seen.Add(kind + ":" + m.Id)) continue;
+            if (!seen.Add((kind, m.Id))) continue;
             db.ModerationReports.Add(new ModerationReport
             {
                 Kind = kind, TargetId = m.Id, SellerId = m.SellerId, ReporterKind = m.Reported ? "buyer" : "system",

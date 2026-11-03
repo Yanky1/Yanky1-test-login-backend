@@ -36,7 +36,7 @@ public static class AuditEndpoints
         }
         if (!string.IsNullOrWhiteSpace(target)) { var t = target.Trim(); q = q.Where(e => e.TargetId == t); }
         if (!string.IsNullOrWhiteSpace(targetType)) q = q.Where(e => e.TargetType == targetType);
-        if (!string.IsNullOrWhiteSpace(action)) { var a = action.Trim(); q = q.Where(e => e.Type == a || e.Type == "admin." + a || e.Type.StartsWith(a)); }
+        if (!string.IsNullOrWhiteSpace(action)) { var a = action.Trim(); q = q.Where(e => e.Type.StartsWith(a) || e.Type.StartsWith("admin." + a)); }
         if (from is { } f) q = q.Where(e => e.At >= f);
         if (to is { } tt) q = q.Where(e => e.At < tt);
         return q;
