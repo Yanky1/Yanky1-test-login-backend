@@ -229,7 +229,7 @@ public class InboundNonce
     public DateTime ExpiresAt { get; set; }
 }
 
-public enum OutboxStatus { Pending, Delivered, Dead }
+public enum OutboxStatus { Pending, Delivered, Dead, Discarded }
 
 /// <summary>Transactional outbox: written in the same SaveChanges as the state change it reports, delivered (signed) to the marketplace webhook.</summary>
 public class OutboxMessage

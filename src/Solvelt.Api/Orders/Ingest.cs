@@ -143,7 +143,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     else order.Oversold = true;
                     order.Lines.Add(line);
                 }
-                OrderSupport.Recalculate(order, o.FeeBasisPoints);
+                OrderSupport.Recalculate(order, await Solvelt.Api.Admin.PlatformSettings.FeeAsync(db, o.FeeBasisPoints));
                 order.Number = await OrderSupport.NextNumberAsync(db, now);
                 db.AddEvent(order.Id, "order.placed", Party.Buyer, null, "Order placed", now);
                 if (order.Oversold) db.AddEvent(order.Id, "order.oversold", Party.System, null, "Not enough stock for every item: needs attention", now);

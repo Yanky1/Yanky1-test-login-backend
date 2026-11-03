@@ -57,10 +57,10 @@ public static partial class SellerEndpoints
 
     public static void MapSellerEndpoints(this RouteGroupBuilder g)
     {
-        g.MapGet("/public-config", (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts) => Results.Ok(new
+        g.MapGet("/public-config", async (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts, AppDbContext db) => Results.Ok(new
         {
-            marketplaceUrl = app.Value.MarketplaceUrl, termsVersion = app.Value.TermsVersion,
-            sellerAgreementVersion = app.Value.SellerAgreementVersion, smsWordingVersion = app.Value.SmsWordingVersion,
+            marketplaceUrl = app.Value.MarketplaceUrl, termsVersion = await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion),
+            sellerAgreementVersion = await Solvelt.Api.Admin.PlatformSettings.AgreementAsync(db, app.Value.SellerAgreementVersion), smsWordingVersion = app.Value.SmsWordingVersion,
             smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey
         }));
 
@@ -199,7 +199,7 @@ public static partial class SellerEndpoints
                 errors["business"] = ["Complete the business step."];
             foreach (var (key, msg) in await k.ValidateForSubmitAsync(sel)) errors[key] = [msg];
             if (errors.Count > 0) return Results.ValidationProblem(errors);
-            sel.SellerAgreementVersion = app.Value.SellerAgreementVersion; sel.SellerAgreementAcceptedAt = time.UtcNow();
+            sel.SellerAgreementVersion = await Solvelt.Api.Admin.PlatformSettings.AgreementAsync(db, app.Value.SellerAgreementVersion); sel.SellerAgreementAcceptedAt = time.UtcNow();
             var (ok, err) = await status.ChangeAsync(sel, SellerStatus.PendingReview, null, null);
             return ok ? Results.Ok(await Dto(db, sel, app)) : Results.Problem(err, statusCode: 409);
         });

@@ -38,6 +38,11 @@ public class Product
     public ProductStatus Status { get; set; } = ProductStatus.Draft;
     /// <summary>Product (default) or Service (workstream F: service details live in <see cref="ServiceDetails"/>).</summary>
     public ListingType Type { get; set; } = ListingType.Product;
+    /// <summary>Set while Solvelt staff keep the listing hidden; the seller sees the reason and cannot reactivate it.</summary>
+    public DateTime? ModeratedAt { get; set; }
+    public string? ModerationReason { get; set; }
+    public Guid? ModeratedBy { get; set; }
+    public ProductStatus? ModerationPrevStatus { get; set; }
     public string Title { get; set; } = "";
     public string? Handle { get; set; }
     public ProductCondition Condition { get; set; } = ProductCondition.New;

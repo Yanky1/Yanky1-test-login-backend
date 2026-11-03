@@ -95,6 +95,16 @@ public class UserSession
     public string? Method { get; set; }
     /// <summary>Seller account this session currently acts on (validated against the membership on every request).</summary>
     public Guid? ActiveAccountId { get; set; }
+    /// <summary>"seller" (default) or "staff": a staff session never carries a seller account and is the only kind admin endpoints accept.</summary>
+    public string Kind { get; set; } = "seller";
+    /// <summary>When the second factor (TOTP/recovery code) was proven for this session; staff endpoints refuse sessions without it.</summary>
+    public DateTime? MfaAt { get; set; }
+    /// <summary>Last step-up re-authentication (sensitive staff actions need a recent one).</summary>
+    public DateTime? StepUpAt { get; set; }
+    /// <summary>Per-session idle limit (staff sessions are shorter than seller sessions); null: the global Session:IdleTimeoutMinutes.</summary>
+    public int? IdleLimitMinutes { get; set; }
+    /// <summary>Absolute end of the session (staff sessions); null: only refresh-token expiry applies.</summary>
+    public DateTime? ExpiresAt { get; set; }
 }
 
 public class RefreshToken
@@ -137,4 +147,9 @@ public class AuditEvent
     public string? IpAddress { get; set; }
     public string? Detail { get; set; }
     public DateTime At { get; set; }
+    // staff-admin audit trail (null for ordinary events)
+    public string? TargetType { get; set; }
+    public string? TargetId { get; set; }
+    public string? Reason { get; set; }
+    public string? ActorRole { get; set; }
 }

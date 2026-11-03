@@ -127,5 +127,6 @@ public static class Seeder
                 else app.Logger.LogError("Admin seed failed: {Errors}", string.Join("; ", res.Errors.Select(e => e.Code)));
             }
         }
+        await Solvelt.Api.Admin.AdminModule.SeedAsync(sp, sp.GetRequiredService<TimeProvider>()); // legacy "Admin" role => Super admin
     }
 }

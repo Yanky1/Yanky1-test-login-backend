@@ -93,7 +93,7 @@ public class AuthFlows(AppDbContext db, UserManager<AppUser> users, IOptions<Ses
         if (!res.Succeeded) throw new AccountCreationException(res.Errors.Select(e => e.Description).ToArray());
         await users.AddToRoleAsync(user, "Seller");
         var now = time.UtcNow();
-        team.NewAccount(user.Id, emailConfirmed ? 3 : 2, termsAccepted ? app.Value.TermsVersion : null, termsAccepted ? now : null);
+        team.NewAccount(user.Id, emailConfirmed ? 3 : 2, termsAccepted ? await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion) : null, termsAccepted ? now : null);
         await db.SaveChangesAsync();
         return user;
     }

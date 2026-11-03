@@ -57,7 +57,7 @@ public static partial class ProductService
         var sh = ProductJson.Shipping(p);
         return new
         {
-            id = p.Id, type = p.Type.ToString(), service = p.Service is null ? null : Bookings.ServiceView.Detail(p.Service), brandId = p.BrandId, brandName, categoryId = p.CategoryId, status = p.Status.ToString(), version = p.Version,
+            id = p.Id, moderation = p.ModeratedAt is null ? null : new { hidden = true, reason = p.ModerationReason, since = p.ModeratedAt }, type = p.Type.ToString(), service = p.Service is null ? null : Bookings.ServiceView.Detail(p.Service), brandId = p.BrandId, brandName, categoryId = p.CategoryId, status = p.Status.ToString(), version = p.Version,
             title = p.Title, handle = p.Handle, condition = p.Condition.ToString(), conditionNote = p.ConditionNote, sku = p.Sku,
             price = Money.FromCents(p.PriceCents), compareAtPrice = Money.FromCents(p.CompareAtCents), salePrice = Money.FromCents(p.SaleCents),
             saleStart = p.SaleStart, saleEnd = p.SaleEnd, cost = Money.FromCents(p.CostCents),

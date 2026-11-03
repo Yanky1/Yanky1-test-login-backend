@@ -117,7 +117,7 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
         seller.Status = to; seller.StatusNote = note; seller.UpdatedAt = time.UtcNow();
         if (to == SellerStatus.PendingReview) seller.SubmittedAt = time.UtcNow();
         await db.SaveChangesAsync();
-        await audit.WriteAsync("seller.status_changed", seller.UserId, null, $"{from}->{to};actor={actor};note={(note is null ? "" : "yes")}");
+        await audit.WriteAsync("seller.status_changed", seller.UserId, null, $"{from}->{to};actor={actor};note={(note is null ? "" : "yes")};seller={seller.Id}");
         // Status mails go to the account's CURRENT active Owners (a removed or departed primary owner hears nothing); legacy accounts without memberships fall back to UserId.
         var ownerIds = await db.Memberships.Where(m => m.SellerId == seller.Id && m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active).Select(m => m.UserId).ToListAsync();
         if (ownerIds.Count == 0 && !await db.Memberships.AnyAsync(m => m.SellerId == seller.Id)) ownerIds.Add(seller.UserId);

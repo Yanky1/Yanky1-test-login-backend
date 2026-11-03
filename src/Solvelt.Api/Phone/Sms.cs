@@ -86,12 +86,21 @@ public class SmsService(AppDbContext db, ISmsSender sender, IServiceScopeFactory
         {
             _ = Task.Run(async () =>
             {
-                try { using var scope = scopes.CreateScope(); await scope.ServiceProvider.GetRequiredService<ISmsSender>().SendAsync(phone, text); }
-                catch (Exception ex) { log.LogError(ex, "Failed to send SMS"); }
+                try { using var scope = scopes.CreateScope(); await scope.ServiceProvider.GetRequiredService<ISmsSender>().SendAsync(phone, text); await scope.ServiceProvider.GetRequiredService<IAuditLog>().WriteAsync("sms.sent", null, null, $"to={PhoneFormat.Mask(phone)};kind={kind}"); }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "Failed to send SMS");
+                    try { using var scope = scopes.CreateScope(); await scope.ServiceProvider.GetRequiredService<IAuditLog>().WriteAsync("sms.failed", null, null, $"to={PhoneFormat.Mask(phone)};kind={kind};error={ex.GetType().Name}"); } catch (Exception) { /* never throws */ }
+                }
             });
             return true;
         }
-        try { await sender.SendAsync(phone, text); return true; }
-        catch (Exception ex) { log.LogError(ex, "Failed to send SMS"); return false; }
+        try { await sender.SendAsync(phone, text); await audit.WriteAsync("sms.sent", null, null, $"to={PhoneFormat.Mask(phone)};kind={kind}"); return true; }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Failed to send SMS");
+            try { await audit.WriteAsync("sms.failed", null, null, $"to={PhoneFormat.Mask(phone)};kind={kind};error={ex.GetType().Name}"); } catch (Exception) { /* never throws */ }
+            return false;
+        }
     }
 }
