@@ -98,7 +98,7 @@ Rules on top of the diagram:
 Quote services cannot be booked directly (`422 quote_required`).
 
 ## 6. Marketplace contract additions
-Same HMAC scheme, replay protection and body cap as `docs/ORDERS.md` section 3.1 (headers `X-Solvelt-Timestamp/Nonce/Signature`, canonical string of 5 lines, `Orders:InboundSecret`). GET requests are signed with an empty body. Rate limits: availability `RateLimit:AvailabilityPerMinute` (600 per **service**: the marketplace is one caller for all shoppers, so a per-IP key would throttle them together), other writes `RateLimit:InternalPerMinute`.
+Same HMAC scheme, replay protection and body cap as `docs/ORDERS.md` section 3.1 (headers `X-Solvelt-Timestamp/Nonce/Signature`, canonical string of 5 lines, `Orders:InboundSecret`). GET requests are signed with an empty body. Rate limits: availability: `RateLimit:AvailabilityPerMinute` (600 per **service**, spent by *signature-verified* requests only; the marketplace is one caller for all shoppers, so a per-IP key would throttle them together) and `RateLimit:AvailabilityFailedPerMinute` (60 per client address for unsigned/forged requests, which therefore can never drain a service's bucket), other writes `RateLimit:InternalPerMinute`.
 
 | Endpoint | Body / query | Result |
 |---|---|---|
@@ -196,7 +196,11 @@ A private, **read-only**, revocable subscription per provider and per account. T
 `GET seller/dev/services/{id}/slots`, `POST seller/dev/bookings {serviceId, start, providerId, location, minutes, mode: hold|confirm|book, addOnIds, intakeAnswers}`, `POST seller/dev/bookings/{marketplaceBookingId}/events {type: cancel|reschedule|accept_proposal|decline_proposal|confirm_hold}`, `POST seller/dev/quotes`, `POST seller/dev/quotes/{marketplaceQuoteId}/accept|decline`. They call the same services as the signed API, scoped to the caller's own services. `scripts/post-signed.sh` can sign real requests.
 
 ## 13. Configuration (`Bookings` section)
-`HoldMinutes` 10, `RedactAfterDays` 30, `DefaultTimeZone` `UTC` (account zone when none was set; `PUT booking-settings` changes it), `MaxAvailabilityDays` 62, `IcsIncludeBuyerName` false, `RunBackgroundJobs` true; `RateLimit:BookingsPerMinute` 300, `RateLimit:AvailabilityPerMinute` 600 (per service).
+`HoldMinutes` 10, `RedactAfterDays` 30, `DefaultTimeZone` `UTC` (account zone when none was set; `PUT booking-settings` changes it), `MaxAvailabilityDays` 62, `IcsIncludeBuyerName` false, `RunBackgroundJobs` true; `RateLimit:BookingsPerMinute` 300, `RateLimit:AvailabilityPerMinute` 600 (per service, verified requests), `RateLimit:AvailabilityFailedPerMinute` 60 (per IP, failed requests).
 
-## 14. Known limits
+## 14. Deploying the review-fix migration (`ServicesReviewFixes`)
+* It adds `bookings.ConfirmedAt` and backfills it: confirmed/started/completed/no-show rows get `CreatedAt`; cancelled/declined/expired rows get the time of their `booking.confirmed` / `booking.approved` / `booking.proposal_accepted` timeline event (never-confirmed ones stay null, so their customer data stays hidden).
+* It adds a **unique index on `bookings.QuoteId`**, which fails if a quote was accepted more than once before the fix. Check first and cancel/merge the extra bookings: `SELECT "QuoteId" FROM bookings WHERE "QuoteId" IS NOT NULL GROUP BY 1 HAVING count(*) > 1;`
+
+## 15. Known limits
 Hold/confirm/reschedule locking relies on the per-provider row lock: PostgreSQL in production (SQLite serialises writers, dev/test only). Round-robin and least-busy are evaluated per request (no fairness guarantee under heavy concurrency). Slot search covers at most 62 days per call. Removing or leaving a member who still has upcoming bookings is `409 has_upcoming_bookings` (extension point `IMemberRemovalGuard`, called by `TeamService`); a suspended member's ICS feed stops working; suspended/closed sellers take no new holds, bookings or quote requests (404). A provider whose last working hours are removed leaves live services without slots (the readiness check flags it; it does not auto-deactivate). Online "auto-created meetings", group classes, recurring bookings, route-optimised travel and external calendar sync: `docs/ROADMAP.md`.

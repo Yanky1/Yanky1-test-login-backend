@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -263,5 +264,75 @@ public class ServiceReviewTests : IClassFixture<SvcFactory>
         for (var i = 0; i < 5; i++) codes.Add(await Ask(b));
         Assert.Contains(HttpStatusCode.TooManyRequests, codes);
         Assert.Equal(HttpStatusCode.OK, await Ask(b2));
+    }
+
+    // ---- second review round ---------------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Forged_availability_requests_cannot_drain_the_signed_bucket()
+    {
+        using var f = new SvcFactory();
+        f.Extra["RateLimit:AvailabilityPerMinute"] = "5"; f.Extra["RateLimit:AvailabilityFailedPerMinute"] = "5";
+        var b = await Svc.NewBiz(f);
+        var wed = Svc.Next(f, DayOfWeek.Wednesday);
+        var url = $"/api/internal/v1/services/{b.Service}/availability?from={Svc.Iso(wed)}&to={Svc.Iso(wed.AddDays(1))}&location=online";
+        var codes = new List<HttpStatusCode>();
+        for (var i = 0; i < 12; i++) codes.Add((await f.NewClient().GetAsync(url)).StatusCode);      // unsigned flood
+        Assert.Contains(HttpStatusCode.Unauthorized, codes);
+        Assert.Contains(HttpStatusCode.TooManyRequests, codes);                                        // ...limited per client address
+        // the marketplace's signed requests still pass (its own bucket is untouched)
+        Assert.Equal(HttpStatusCode.OK, (await f.NewClient().SendAsync(Orders.Signed(f, "GET", url, null))).StatusCode);
+        // and verified requests are still limited per service
+        var signed = new List<HttpStatusCode>();
+        for (var i = 0; i < 8; i++) signed.Add((await f.NewClient().SendAsync(Orders.Signed(f, "GET", url, null))).StatusCode);
+        Assert.Contains(HttpStatusCode.TooManyRequests, signed);
+    }
+
+    [Fact]
+    public async Task A_pending_reschedule_left_on_a_terminal_booking_is_still_refused_by_the_state_machine()
+    {
+        var b = await Svc.NewBiz(_f);
+        var (_, id, start) = await Svc.Book(b, 10, 0);
+        GoTo(start.AddMinutes(1)); await Svc.Act(b.Owner, id, "start"); await Svc.Act(b.Owner, id, "complete", new { actualMinutes = 120 });
+        // simulate a pending request that was NOT cleared (e.g. written by an older version)
+        _f.WithDb(db => db.Bookings.Where(x => x.Id == id).ExecuteUpdate(u => u.SetProperty(x => x.RescheduleRequestedStartUtc, start.AddDays(7)).SetProperty(x => x.RescheduleRequestId, "OLD")));
+        foreach (var a in new[] { "approve-reschedule", "decline-reschedule" })
+            Assert.Equal(HttpStatusCode.Conflict, (await Svc.Act(b.Owner, id, a)).StatusCode);
+        var row = Svc.Row(_f, id);
+        Assert.Equal(BookingStatus.Completed, row.Status); Assert.Equal(start, row.StartUtc);
+    }
+
+    [Fact]
+    public async Task The_conditional_quote_update_alone_stops_a_second_booking_for_the_same_quote()
+    {
+        var b = await Svc.NewBiz(_f, d => { d["pricingModel"] = "quote"; d["price"] = null; d["minMinutes"] = null; d["maxMinutes"] = null; d["incrementMinutes"] = 60; });
+        var qid = "Q-" + Guid.NewGuid().ToString("N")[..10];
+        var created = await Svc.Post(b, "/quote-requests", new { marketplaceQuoteId = qid, serviceId = b.Service, buyer = new { displayName = "J" }, details = "x", location = "online" });
+        var id = Guid.Parse((string)(await Orders.Node(created))["quoteId"]!);
+        var wed = Svc.Next(_f, DayOfWeek.Wednesday);
+        var s1 = Svc.Local(b.Tz, wed, 9);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", new { price = 100m, durationMinutes = 60, slots = new[] { s1 }, providerId = b.OwnerMember, expiresAt = Now.AddDays(3) })).StatusCode);
+        // a caller holding a STALE copy of the quote (still Quoted) while the database says Accepted
+        var stale = _f.WithDb(db => db.QuoteRequests.AsNoTracking().First(x => x.Id == id));
+        _f.WithDb(db => db.QuoteRequests.Where(x => x.Id == id).ExecuteUpdate(u => u.SetProperty(x => x.Status, QuoteStatus.Accepted)));
+        using var scope = _f.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Bookings.BookingService>();
+        var req = new Solvelt.Api.Bookings.BookingIn(Svc.BookingId(), b.Service, b.OwnerMember, s1, null, "online", null, new Solvelt.Api.Bookings.BuyerIn("J", null, null), null, null);
+        var res = await svc.CreateAsync(req, hold: false, quote: stale);
+        Assert.False(res.Ok); Assert.Equal("quote_not_open", res.Code);
+        Assert.Equal(0, _f.WithDb(db => db.Bookings.Count(x => x.QuoteId == id)));
+    }
+
+    [Fact]
+    public async Task The_unique_quote_index_alone_refuses_two_bookings_for_one_quote()
+    {
+        var b = await Svc.NewBiz(_f);
+        var (_, id, _) = await Svc.Book(b, 9, 0);
+        var (_, id2, _) = await Svc.Book(b, 13, 0);
+        var quote = Guid.NewGuid();
+        _f.WithDb(db => db.Bookings.Where(x => x.Id == id).ExecuteUpdate(u => u.SetProperty(x => x.QuoteId, quote)));
+        var ex = Record.Exception(() => _f.WithDb(db => db.Bookings.Where(x => x.Id == id2).ExecuteUpdate(u => u.SetProperty(x => x.QuoteId, quote))));
+        Assert.NotNull(ex);                                                                           // unique index violation
+        Assert.Null(Svc.Row(_f, id2).QuoteId);
     }
 }

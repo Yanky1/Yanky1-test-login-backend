@@ -33,11 +33,12 @@ public class BookingMessagingTests : IClassFixture<SvcFactory>
     {
         var b = await Svc.NewBiz(_f);
         var (mid, id, _) = await Svc.Book(b);
-        var inbound = await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = "M-1", text = "Can you bring a ladder?" });
+        var m1 = "M-" + Guid.NewGuid().ToString("N")[..10];
+        var inbound = await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = m1, text = "Can you bring a ladder?" });
         Assert.Equal(HttpStatusCode.Created, inbound.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = "M-1", text = "Can you bring a ladder?" })).StatusCode);   // duplicate
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = "M-2", text = "" })).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await Svc.Post(b, "/bookings/nope/messages", new { messageId = "M-3", text = "hi" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = m1, text = "Can you bring a ladder?" })).StatusCode);   // duplicate
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = m1 + "-2", text = "" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Svc.Post(b, "/bookings/nope/messages", new { messageId = m1 + "-3", text = "hi" })).StatusCode);
         var thread = await ProdApi.Node(await b.Owner.Get($"/api/v1/seller/bookings/{id}/messages"));
         Assert.Single(thread["messages"]!.AsArray());
         var reply = await b.Owner.Post($"/api/v1/seller/bookings/{id}/messages", new { text = "Yes, I'll bring one." });
@@ -54,7 +55,7 @@ public class BookingMessagingTests : IClassFixture<SvcFactory>
         Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Post($"/api/v1/seller/bookings/{id}/messages", new { text = "x" })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await b.Owner.Post($"/api/v1/seller/bookings/{id}/messages", new { text = " " })).StatusCode);
         // unsigned inbound messages are refused
-        Assert.Equal(HttpStatusCode.Unauthorized, (await _f.NewClient().SendAsync(Orders.Signed(_f, "POST", $"/api/internal/v1/bookings/{mid}/messages", new { messageId = "M-9", text = "x" }, sign: false))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _f.NewClient().SendAsync(Orders.Signed(_f, "POST", $"/api/internal/v1/bookings/{mid}/messages", new { messageId = m1 + "-9", text = "x" }, sign: false))).StatusCode);
     }
 
     [Fact]
