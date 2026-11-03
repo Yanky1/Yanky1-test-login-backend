@@ -209,7 +209,6 @@ public class Api(ApiFactory f)
         Assert.Equal(HttpStatusCode.OK, s.StatusCode);
     }
 
-    public void SetSession(Login l) => Session = l;
     public void SetToken(string accessToken) => Session = Session! with { AccessToken = accessToken };
 
     public async Task<JsonElement> JsonBody(HttpResponseMessage r) => await r.Content.ReadFromJsonAsync<JsonElement>();
