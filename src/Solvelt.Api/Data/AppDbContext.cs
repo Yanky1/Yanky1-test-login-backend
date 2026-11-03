@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
 using Solvelt.Api.Products;
 using Solvelt.Api.Teams;
@@ -65,6 +66,19 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<MessageTemplate> MessageTemplates => Set<MessageTemplate>();
     public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
 
+    // services, calendars, bookings (see Bookings/)
+    public DbSet<ServiceDetails> ServiceDetails => Set<ServiceDetails>();
+    public DbSet<ServiceProviderLink> ServiceProviders => Set<ServiceProviderLink>();
+    public DbSet<ProviderProfile> ProviderProfiles => Set<ProviderProfile>();
+    public DbSet<BookingSettings> BookingSettings => Set<BookingSettings>();
+    public DbSet<WorkingHour> WorkingHours => Set<WorkingHour>();
+    public DbSet<DateOverride> DateOverrides => Set<DateOverride>();
+    public DbSet<CalendarBlock> CalendarBlocks => Set<CalendarBlock>();
+    public DbSet<Booking> Bookings => Set<Booking>();
+    public DbSet<BookingEvent> BookingEvents => Set<BookingEvent>();
+    public DbSet<BookingCounter> BookingCounters => Set<BookingCounter>();
+    public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -92,11 +106,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureTeams();
         b.ConfigureProducts();
         b.ConfigureOrders();
+        b.ConfigureBookings();
     }
 
     public static void Seed(AppDbContext db)
     {
         CategorySeed.Run(db);
+        ServiceCategories.Ensure(db);
         if (db.SellerFieldConfigs.Any()) return;
         static string Opts(params string[] o) => JsonSerializer.Serialize(o);
         db.SellerFieldConfigs.AddRange(

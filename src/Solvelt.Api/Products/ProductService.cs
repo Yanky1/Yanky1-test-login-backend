@@ -28,7 +28,7 @@ public static partial class ProductService
     public static string ImageUrl(Guid productId, Guid imageId) => $"/api/v1/seller/products/{productId}/images/{imageId}/file";
 
     public static IQueryable<Product> WithChildren(this IQueryable<Product> q) =>
-        q.Include(p => p.Options).Include(p => p.Variants).Include(p => p.Images).Include(p => p.Attributes).Include(p => p.Faqs).AsSplitQuery();
+        q.Include(p => p.Options).Include(p => p.Variants).Include(p => p.Images).Include(p => p.Attributes).Include(p => p.Faqs).Include(p => p.Service).AsSplitQuery();
 
     /// <summary>The ONLY way endpoints load a product: account + brand scope + permission checked; null means answer 404 (no IDOR, no existence leak).</summary>
     public static async Task<Product?> LoadAsync(this AppDbContext db, AccountAccess a, Guid id, bool write)
@@ -57,7 +57,7 @@ public static partial class ProductService
         var sh = ProductJson.Shipping(p);
         return new
         {
-            id = p.Id, brandId = p.BrandId, brandName, categoryId = p.CategoryId, status = p.Status.ToString(), version = p.Version,
+            id = p.Id, type = p.Type.ToString(), service = p.Service is null ? null : Bookings.ServiceView.Detail(p.Service), brandId = p.BrandId, brandName, categoryId = p.CategoryId, status = p.Status.ToString(), version = p.Version,
             title = p.Title, handle = p.Handle, condition = p.Condition.ToString(), conditionNote = p.ConditionNote, sku = p.Sku,
             price = Money.FromCents(p.PriceCents), compareAtPrice = Money.FromCents(p.CompareAtCents), salePrice = Money.FromCents(p.SaleCents),
             saleStart = p.SaleStart, saleEnd = p.SaleEnd, cost = Money.FromCents(p.CostCents),

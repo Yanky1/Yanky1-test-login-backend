@@ -9,7 +9,7 @@ using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Products;
 
-public record CreateProductRequest(string? Title, Guid? BrandId, Guid? CategoryId);
+public record CreateProductRequest(string? Title, Guid? BrandId, Guid? CategoryId, string? Type = null);
 public record StatusRequest(string? Status);
 public record BulkStatusRequest(List<Guid>? Ids, string? Status);
 public record QuickEditRequest(int? Version, decimal? Price, int? Quantity);
@@ -74,12 +74,17 @@ public static class ProductEndpoints
 
         // ---- list --------------------------------------------------------------------------------------------------------
         p.MapGet("", async (HttpContext ctx, AppDbContext db, TimeProvider time, string? q, string? status, string? filter, Guid? brandId, Guid? categoryId,
-            string? sort, string? dir, int? page, int? pageSize) =>
+            string? sort, string? dir, int? page, int? pageSize, string? type) =>
         {
             var a = ctx.GetAccess()!;
             var now = time.UtcNow();
             var all = db.ProductsFor(a).AsNoTracking();
             var query = all;
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                if (!Enum.TryParse<ListingType>(type, true, out var lt) || !Enum.IsDefined(lt)) return Validation.Invalid("type", "Unknown listing type.");
+                query = query.Where(x => x.Type == lt);
+            }
             if (brandId is { } bid) query = query.Where(x => x.BrandId == bid);
             if (categoryId is { } cid) query = query.Where(x => x.CategoryId == cid);
             if (!string.IsNullOrWhiteSpace(status))
@@ -95,7 +100,7 @@ public static class ProductEndpoints
                 query = query.Where(x => x.Title.ToLower().Contains(s) || (x.Sku != null && x.Sku.ToLower().Contains(s)) || x.Variants.Any(v => v.Sku != null && v.Sku.ToLower().Contains(s)));
             }
             if (filter == "outofstock")
-                query = query.Where(x => x.Status != ProductStatus.Archived && !x.AllowBackorder &&
+                query = query.Where(x => x.Status != ProductStatus.Archived && x.Type == ListingType.Product && !x.AllowBackorder &&
                     (x.HasVariants ? !x.Variants.Any(v => v.Enabled && v.Stock - v.Reserved > 0) : x.Stock - x.Reserved <= 0));
             else if (filter == "attention") query = query.Where(x => x.Status != ProductStatus.Archived && (!x.IsReady || x.QualityScore < 60));
             var total = await query.CountAsync();
@@ -112,7 +117,9 @@ public static class ProductEndpoints
             var rows = await ordered.ThenBy(x => x.Id).Skip((pg - 1) * size).Take(size).Select(x => new
             {
                 x.Id, x.Title, x.Sku, x.Status, x.BrandId, x.CategoryId, x.PriceCents, x.SaleCents, x.SaleStart, x.SaleEnd, x.HasVariants, x.QualityScore, x.IsReady, x.Version, x.UpdatedAt,
-                x.AllowBackorder, x.LowStockAlert,
+                x.AllowBackorder, x.LowStockAlert, x.Type,
+                SvcModel = x.Service == null ? null : (PricingModel?)x.Service.PricingModel, SvcMinutes = x.Service == null ? null : (int?)x.Service.DefaultDurationMinutes,
+                SvcPrice = x.Service == null ? null : x.Service.PriceCents,
                 Stock = x.HasVariants ? x.Variants.Where(v => v.Enabled).Sum(v => v.Stock - v.Reserved) : x.Stock - x.Reserved,
                 Variants = x.Variants.Count,
                 Thumb = x.Images.Where(i => i.VariantId == null).OrderBy(i => i.SortOrder).Select(i => (Guid?)i.Id).FirstOrDefault()
@@ -120,7 +127,7 @@ public static class ProductEndpoints
             var brandIds = rows.Select(r => r.BrandId).Distinct().ToList();
             var brands = await db.Brands.AsNoTracking().Where(b => brandIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
             var counts = await all.GroupBy(x => x.Status).Select(gr => new { gr.Key, N = gr.Count() }).ToListAsync();
-            var outOfStock = await all.CountAsync(x => x.Status != ProductStatus.Archived && !x.AllowBackorder &&
+            var outOfStock = await all.CountAsync(x => x.Status != ProductStatus.Archived && x.Type == ListingType.Product && !x.AllowBackorder &&
                 (x.HasVariants ? !x.Variants.Any(v => v.Enabled && v.Stock - v.Reserved > 0) : x.Stock - x.Reserved <= 0));
             var attention = await all.CountAsync(x => x.Status != ProductStatus.Archived && (!x.IsReady || x.QualityScore < 60));
             return Results.Json(new
@@ -130,6 +137,7 @@ public static class ProductEndpoints
                     long? sale = r.SaleCents is { } sc && (r.SaleStart is null || r.SaleStart <= now) && (r.SaleEnd is null || now < r.SaleEnd) ? sc : null;
                     return new
                     {
+                        type = r.Type.ToString(), priceModel = r.SvcModel?.ToString(), durationMinutes = r.SvcMinutes,
                         id = r.Id, title = r.Title, sku = r.Sku, status = r.Status.ToString(), brandId = r.BrandId, brandName = brands.GetValueOrDefault(r.BrandId),
                         categoryId = r.CategoryId, price = Money.FromCents(r.PriceCents), currentPrice = Money.FromCents(sale ?? r.PriceCents), onSale = sale is not null,
                         quantity = Math.Max(r.Stock, 0), hasVariants = r.HasVariants, variantCount = r.Variants, qualityScore = r.QualityScore, canPublish = r.IsReady,
@@ -161,7 +169,10 @@ public static class ProductEndpoints
             var (brand, err) = await ResolveBrandAsync(db, a, r.BrandId);
             if (err is not null) return err;
             var now = time.UtcNow();
-            var prod = new Product { SellerId = a.SellerId, BrandId = brand!.Id, CategoryId = r.CategoryId, Title = title, CreatedAt = now, UpdatedAt = now, CreatedBy = a.UserId };
+            var listingType = ListingType.Product;
+            if (!string.IsNullOrWhiteSpace(r.Type) && (!Enum.TryParse(r.Type, true, out listingType) || !Enum.IsDefined(listingType))) return Validation.Invalid("type", "Choose product or service.");
+            var prod = new Product { SellerId = a.SellerId, BrandId = brand!.Id, CategoryId = r.CategoryId, Title = title, CreatedAt = now, UpdatedAt = now, CreatedBy = a.UserId, Type = listingType };
+            if (listingType == ListingType.Service) prod.Service = new ServiceDetails { ProductId = prod.Id, SellerId = a.SellerId, UpdatedAt = now };
             await ProductRules.RefreshAsync(db, cats, prod);
             db.Products.Add(prod);
             await db.SaveChangesAsync();
@@ -219,7 +230,7 @@ public static class ProductEndpoints
                 // live listings must stay publishable: evaluate the would-be document first
                 var probe = new Product
                 {
-                    Id = prod.Id, CategoryId = r.CategoryId, Images = prod.Images, Options = prod.Options, Variants = prod.Variants,
+                    Id = prod.Id, Type = prod.Type, Service = prod.Service, CategoryId = r.CategoryId, Images = prod.Images, Options = prod.Options, Variants = prod.Variants,
                     Stock = r.Quantity ?? prod.Stock, Reserved = prod.Reserved
                 };
                 ProductService.Apply(probe, r, saleCents);
@@ -317,6 +328,8 @@ public static class ProductEndpoints
             var prod = await db.LoadAsync(a, id, write: true);
             if (prod is null) return Results.NotFound();
             if (prod.Status == ProductStatus.Active) return Problem(409, "deactivate_first", "Deactivate the listing before deleting it.");
+            if (prod.Type == ListingType.Service && (await db.Bookings.AnyAsync(b => b.ProductId == id) || await db.QuoteRequests.AnyAsync(q => q.ProductId == id)))
+                return Problem(409, "has_bookings", "This service has bookings or quote requests. Archive it instead of deleting it.");
             var keys = prod.Images.Select(i => i.StorageKey).ToList();
             db.Products.Remove(prod);
             await db.SaveChangesAsync();
@@ -334,7 +347,7 @@ public static class ProductEndpoints
             var now = time.UtcNow();
             var copy = new Product
             {
-                SellerId = a.SellerId, BrandId = src.BrandId, CategoryId = src.CategoryId, Status = ProductStatus.Draft,
+                SellerId = a.SellerId, BrandId = src.BrandId, CategoryId = src.CategoryId, Status = ProductStatus.Draft, Type = src.Type,
                 Title = ("Copy of " + src.Title) is { Length: > 200 } t ? t[..200] : "Copy of " + src.Title,
                 Condition = src.Condition, ConditionNote = src.ConditionNote, PriceCents = src.PriceCents, CompareAtCents = src.CompareAtCents, CostCents = src.CostCents,
                 Stock = 0, LowStockAlert = src.LowStockAlert, AllowBackorder = src.AllowBackorder, MaxPerOrder = src.MaxPerOrder, NoBarcode = src.NoBarcode,
@@ -351,6 +364,17 @@ public static class ProductEndpoints
                 var nv = new ProductVariant { ProductId = copy.Id, SellerId = a.SellerId, ValuesJson = v.ValuesJson, ComboKey = v.ComboKey, PriceCents = v.PriceCents, Enabled = v.Enabled, SortOrder = v.SortOrder };
                 map[v.Id] = nv.Id; copy.Variants.Add(nv);
             }
+            if (src.Service is { } sd)
+                copy.Service = new ServiceDetails
+                {
+                    ProductId = copy.Id, SellerId = a.SellerId, PricingModel = sd.PricingModel, PriceCents = sd.PriceCents, MinMinutes = sd.MinMinutes, MaxMinutes = sd.MaxMinutes,
+                    IncrementMinutes = sd.IncrementMinutes, DefaultDurationMinutes = sd.DefaultDurationMinutes, BufferBeforeMinutes = sd.BufferBeforeMinutes, BufferAfterMinutes = sd.BufferAfterMinutes,
+                    MinNoticeHours = sd.MinNoticeHours, MaxAdvanceDays = sd.MaxAdvanceDays, SlotGranularityMinutes = sd.SlotGranularityMinutes, Online = sd.Online,
+                    OnlineInstructions = sd.OnlineInstructions, AtCustomer = sd.AtCustomer, ServiceAreaJson = sd.ServiceAreaJson, TravelFeeCents = sd.TravelFeeCents,
+                    TravelBufferMinutes = sd.TravelBufferMinutes, AtSeller = sd.AtSeller, SellerAddress = sd.SellerAddress, BookingMode = sd.BookingMode, ApprovalHours = sd.ApprovalHours,
+                    IntakeJson = sd.IntakeJson, Requirements = sd.Requirements, AddOnsJson = sd.AddOnsJson, CancelFreeHours = sd.CancelFreeHours, CancelFeePercent = sd.CancelFeePercent,
+                    MaxReschedules = sd.MaxReschedules, NoShowFeePercent = sd.NoShowFeePercent, AssignmentRule = sd.AssignmentRule, UpdatedAt = now   // providers are not copied
+                };
             foreach (var at in src.Attributes) copy.Attributes.Add(new ProductAttributeValue { ProductId = copy.Id, Key = at.Key, ValueJson = at.ValueJson });
             foreach (var f in src.Faqs) copy.Faqs.Add(new ProductFaq { ProductId = copy.Id, Question = f.Question, Answer = f.Answer, SortOrder = f.SortOrder });
             foreach (var im in src.Images.OrderBy(i => i.SortOrder))

@@ -15,6 +15,7 @@ public enum Permission
     BrandsManage,           // create / edit / archive brands, logos
     BrandWorkRead,          // read brand content (products, questions: built later)
     BrandWorkWrite,         // write brand content (orders: accept/ship/cancel/returns, messages)
+    ProvidersManage,        // mark team members as service providers, edit anyone's working hours/time off (Owner/Admin); providers always manage their own
     OrderRefund             // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
 }
 

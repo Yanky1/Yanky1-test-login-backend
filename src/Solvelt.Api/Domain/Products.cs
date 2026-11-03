@@ -36,6 +36,8 @@ public class Product
     public Guid BrandId { get; set; }
     public Guid? CategoryId { get; set; }
     public ProductStatus Status { get; set; } = ProductStatus.Draft;
+    /// <summary>Product (default) or Service (workstream F: service details live in <see cref="ServiceDetails"/>).</summary>
+    public ListingType Type { get; set; } = ListingType.Product;
     public string Title { get; set; } = "";
     public string? Handle { get; set; }
     public ProductCondition Condition { get; set; } = ProductCondition.New;
@@ -92,6 +94,7 @@ public class Product
     public List<ProductImage> Images { get; set; } = [];
     public List<ProductAttributeValue> Attributes { get; set; } = [];
     public List<ProductFaq> Faqs { get; set; } = [];
+    public ServiceDetails? Service { get; set; }
 }
 
 public class ProductOption

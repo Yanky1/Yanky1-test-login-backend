@@ -65,6 +65,18 @@ public static class ProductRules
         Check(bullets.Count >= 3, 6, "bullets", "description", false, "Add 3-5 key feature bullets.");
         Check((p.Description?.Trim().Length ?? 0) >= 150, 6, "description", "description", false, "Write a description of at least 150 characters.");
 
+        if (p.Type == ListingType.Service)
+        {
+            // services replace price/stock/variants/shipping with the service sections (Bookings/ServiceRules.cs)
+            Bookings.ServiceRules.Check(p.Service, Check);
+            var sHave = p.Attributes.ToDictionary(a => a.Key, a => a.ValueJson);
+            foreach (var a in attrs.Where(a => a.Required))
+                Check(sHave.TryGetValue(a.Key, out var v) && !IsEmpty(v), 6, "attr:" + a.Key, "details", true, $"{a.Label} is required for this category.");
+            Check(!string.IsNullOrWhiteSpace(p.SearchTerms), 2, "search_terms", "seo", false, "Add search keywords shoppers might use.");
+            var sScore = total == 0 ? 0 : (int)Math.Round(100.0 * earned / total);
+            return new(sScore, issues.All(i => i.Severity != "required"), issues);
+        }
+
         var enabled = p.Variants.Where(v => v.Enabled).ToList();
         if (p.HasVariants)
         {
