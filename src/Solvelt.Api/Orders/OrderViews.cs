@@ -94,7 +94,7 @@ public static class OrderViews
             shipments = o.Shipments.OrderBy(s => s.ShippedAt).Select(s => new
             {
                 id = s.Id, carrier = s.Carrier, service = s.Service, trackingNumber = s.TrackingNumber, trackingUrl = Tracking.Url(s.Carrier, s.TrackingNumber), shippedAt = s.ShippedAt,
-                deliveredAt = s.DeliveredAt, lines = s.Lines.Select(x => new { lineId = x.OrderLineId, quantity = x.Quantity })
+                deliveredAt = s.DeliveredAt, method = s.Method, trackingStatus = s.TrackingStatus, eta = s.Eta, lines = s.Lines.Select(x => new { lineId = x.OrderLineId, quantity = x.Quantity })
             }),
             cancellations = cancels.Select(c => new { id = c.Id, requestedBy = c.RequestedBy.ToString(), status = c.Status.ToString(), reason = c.Reason, note = c.Note, decisionNote = c.DecisionNote, createdAt = c.CreatedAt, resolvedAt = c.ResolvedAt }),
             returns = returns.Select(r => new

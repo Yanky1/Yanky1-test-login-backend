@@ -118,16 +118,19 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     }
 
     // ---- shipping --------------------------------------------------------------------------------------------------------
-    public async Task<Res> ShipAsync(SellerOrder o, Guid actor, ShipRequest req)
+    /// <param name="localCode">Set only by local delivery (never reachable from the API): ships with carrier "Local", the delivery code as tracking number, method local.</param>
+    public async Task<Res> ShipAsync(SellerOrder o, Guid actor, ShipRequest req, string? localCode = null)
     {
         if (o.Status == OrderStatus.New) return Res.Conflict("Accept this order before shipping it.");
         if (o.Status == OrderStatus.OnHold) return Res.Conflict("This order is on hold. Remove the hold before shipping.");
         if (!OrderStateMachine.CanShip(o.Status)) return Res.Conflict($"This order is {OrderStateMachine.Label(o.Status)} and can't be shipped.");
         if (o.CancelRequested) return Res.Conflict("The buyer asked to cancel this order. Approve or reject the request first.", "cancel_requested");
-        var carrier = Tracking.Carrier(req.Carrier);
+        if (localCode is null && await db.LocalDeliveries.AnyAsync(d => d.OrderId == o.Id && d.Status != LocalStatus.Cancelled && d.Status != LocalStatus.Returned))
+            return Res.Conflict("This order is set up for local delivery. Remove it from the dispatch board before shipping it with a carrier.", "local_delivery");
+        var carrier = localCode is null ? Tracking.Carrier(req.Carrier) : "Local";
         if (carrier is null) return Res.Invalid("Choose a carrier: " + string.Join(", ", Tracking.Carriers) + ".", "carrier");
-        var tn = Tracking.Normalize(req.TrackingNumber);
-        if (!Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
+        var tn = localCode ?? Tracking.Normalize(req.TrackingNumber);
+        if (localCode is null && !Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
         if (req.Service is { Length: > 60 }) return Res.Invalid("The service name is too long.", "service");
         var now = time.UtcNow();
         var shippedAt = req.ShippedAt is { } s ? OrderSupport.Utc(s) : now;
@@ -147,6 +150,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (!await ClaimAsync(o, req.Version)) return Stale();
 
         var ship = new Shipment { OrderId = o.Id, Carrier = carrier, Service = req.Service?.Trim(), TrackingNumber = tn, ShippedAt = shippedAt, CreatedAt = now };
+        if (localCode is not null) { ship.Method = DeliveryMethod.Local; ship.TrackingStatus = Domain.TrackingStatus.InTransit; ship.TrackingStatusAt = now; }
         var mismatches = new List<string>();
         foreach (var w in wanted)
         {
