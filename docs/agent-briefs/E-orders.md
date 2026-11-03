@@ -67,3 +67,9 @@ I may be away. Use send_later or create_trigger (if available) to schedule check
 
 ## Finish
 Post a final summary: what was built, the integration contract summary, test counts per suite, workflow run links on main in both repos, anything unverified or deferred, and where the screenshots are.
+
+## Addendum: timing (you are starting early, by user decision)
+Products (worker B) is NOT finished yet: its backend is on main (products, variants, SKUs, brands, IInventoryService, docs/PRODUCTS.md), but it is (a) applying review fixes on backend `fix/products-review` — including one you depend on: stock on hand must not go below Reserved — and (b) building its frontend (catalog, product editor, Questions inbox, and the seller app shell/sidebar around worker D's header) on frontend `feature/products`. Worker D (teams) is applying backend security fixes on `fix/teams-review`. So:
+- Do your BACKEND first (entities, ONE migration, internal marketplace API with HMAC, order splitting, inventory via B's IInventoryService, state machine, shipments, returns/refunds, outbox, messaging, simulator, tests, docs/ORDERS.md). Don't edit B's Products/** or D's Teams/** files; if you need a change in a shared service, keep it minimal and backwards compatible, note it in DECISIONS, and tell the orchestrator.
+- Start your FRONTEND only after B's frontend (with the sidebar/app shell) is merged on frontend main — check `git log origin/main` and docs/AGENTS.md row B. Then add "Orders" and "Messages" to B's sidebar instead of building your own shell.
+- Rebase often; keep ONE EF migration and regenerate it on top of main whenever main gains migrations (B's and D's fixes may add some).
