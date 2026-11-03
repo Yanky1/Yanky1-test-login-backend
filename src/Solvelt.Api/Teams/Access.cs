@@ -64,7 +64,7 @@ public static class AccessExtensions
 /// <summary>Resolves memberships into <see cref="AccountAccess"/>, picks the active account, lists a user's accounts.</summary>
 public class AccountContextService(AppDbContext db, TimeProvider time)
 {
-    public static bool Usable(SellerStatus s) => s is not (SellerStatus.Rejected or SellerStatus.Suspended);
+    public static bool Usable(SellerStatus s) => s is not (SellerStatus.Rejected or SellerStatus.Suspended or SellerStatus.Closed);
 
     public async Task<AccountAccess?> ResolveAsync(Guid userId, Guid sellerId)
     {
@@ -84,7 +84,7 @@ public class AccountContextService(AppDbContext db, TimeProvider time)
     {
         var rows = await (from m in db.Memberships.AsNoTracking()
                           join s in db.Sellers.AsNoTracking() on m.SellerId equals s.Id
-                          where m.UserId == userId && m.Status == MembershipStatus.Active
+                          where m.UserId == userId && m.Status == MembershipStatus.Active && s.Status != SellerStatus.Closed // closed accounts are gone for members
                           select new { m.Id, m.SellerId, m.Role, m.AllBrands, m.LastActiveAt, s.VendorName, s.Status }).ToListAsync();
         var result = new List<(AccountSummary S, DateTime? At)>();
         foreach (var r in rows)

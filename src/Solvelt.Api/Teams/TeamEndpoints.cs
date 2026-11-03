@@ -12,6 +12,7 @@ namespace Solvelt.Api.Teams;
 public record InviteRequest(string? Email, string? Role, bool? AllBrands, List<Guid>? BrandIds);
 public record UpdateMemberRequest(string? Role, bool? AllBrands, List<Guid>? BrandIds, string? Status);
 public record TransferRequest(Guid MemberId, string? CurrentPassword, string? StepUpCode, string? TotpCode);
+public record StepUpRequest(string? CurrentPassword, string? StepUpCode, string? TotpCode);
 public record SwitchAccountRequest(Guid SellerId);
 public record NewAccountRequest(bool AcceptTerms);
 
@@ -44,28 +45,20 @@ public static class TeamEndpoints
             var a = ctx.GetAccess()!;
             var user = await users.FindByIdAsync(a.UserId.ToString());
             if (user is null) return Results.Unauthorized();
-            // Step-up re-authentication: password (+ TOTP when enabled), or a code mailed to the current address for passwordless accounts.
-            static IResult Denied() => Results.Json(new { type = "about:blank", title = "Confirmation failed", status = 400, code = "stepup_failed" }, statusCode: 400);
-            if (user.HasPassword)
-            {
-                if (string.IsNullOrEmpty(r.CurrentPassword) || !await users.CheckPasswordAsync(user, r.CurrentPassword)) { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
-            }
-            else
-            {
-                if (string.IsNullOrWhiteSpace(r.StepUpCode))
-                {
-                    var su = await codes.IssueAsync(user.Id, "team-stepup");
-                    if (su.Code is not null) await mailer.SendAsync(TeamTemplates.StepUp(user.Email!, su.Code));
-                    return Results.Json(new { stepUpRequired = true, message = "We sent a confirmation code to your email address." }, statusCode: 202);
-                }
-                var (o, _) = await codes.VerifyAsync(user.Id, "team-stepup", r.StepUpCode);
-                if (o != OneTimeCodeService.VerifyOutcome.Ok) { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
-            }
-            if (user.TwoFactorEnabled && (string.IsNullOrWhiteSpace(r.TotpCode) ||
-                !await users.VerifyTwoFactorTokenAsync(user, users.Options.Tokens.AuthenticatorTokenProvider, r.TotpCode.Replace(" ", ""))))
-            { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
+            if (await StepUpAsync(user, r.CurrentPassword, r.StepUpCode, r.TotpCode, users, codes, mailer, audit) is { } denied) return denied;
             return (await svc.TransferOwnershipAsync(a, r.MemberId)).ToHttp();
         }).RequirePermission(Permission.OwnershipTransfer).RequireRateLimiting("sensitive");
+
+        // Owner-only: closes the seller account for everyone (data retained). Same step-up re-authentication as an ownership transfer.
+        t.MapPost("/close-account", async (StepUpRequest r, HttpContext ctx, UserManager<AppUser> users, OneTimeCodeService codes,
+            Email.Mailer mailer, TeamService svc, IAuditLog audit) =>
+        {
+            var a = ctx.GetAccess()!;
+            var user = await users.FindByIdAsync(a.UserId.ToString());
+            if (user is null) return Results.Unauthorized();
+            if (await StepUpAsync(user, r.CurrentPassword, r.StepUpCode, r.TotpCode, users, codes, mailer, audit) is { } denied) return denied;
+            return (await svc.CloseAccountAsync(a)).ToHttp();
+        }).RequirePermission(Permission.AccountClose).RequireRateLimiting("sensitive");
 
         // ---- invitations (manage)
         t.MapGet("/invitations", async (HttpContext ctx, TeamService svc) => Results.Ok(await svc.ListInvitesAsync(ctx.GetAccess()!)))
@@ -87,5 +80,34 @@ public static class TeamEndpoints
 
         t.MapDelete("/invitations/{id:guid}", async (Guid id, HttpContext ctx, TeamService svc) =>
             (await svc.RevokeAsync(ctx.GetAccess()!, id)).ToHttp()).RequirePermission(Permission.MembersManage);
+    }
+
+    /// <summary>
+    /// Step-up re-authentication for destructive owner actions: password (+ TOTP when enabled), or a code mailed to the current address for passwordless
+    /// accounts (first call answers 202 with stepUpRequired). Returns null when the user is confirmed, else the response to send.
+    /// </summary>
+    private static async Task<IResult?> StepUpAsync(AppUser user, string? password, string? stepUpCode, string? totp, UserManager<AppUser> users,
+        OneTimeCodeService codes, Email.Mailer mailer, IAuditLog audit)
+    {
+        static IResult Denied() => Results.Json(new { type = "about:blank", title = "Confirmation failed", status = 400, code = "stepup_failed" }, statusCode: 400);
+        if (user.HasPassword)
+        {
+            if (string.IsNullOrEmpty(password) || !await users.CheckPasswordAsync(user, password)) { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(stepUpCode))
+            {
+                var su = await codes.IssueAsync(user.Id, "team-stepup");
+                if (su.Code is not null) await mailer.SendAsync(TeamTemplates.StepUp(user.Email!, su.Code));
+                return Results.Json(new { stepUpRequired = true, message = "We sent a confirmation code to your email address." }, statusCode: 202);
+            }
+            var (o, _) = await codes.VerifyAsync(user.Id, "team-stepup", stepUpCode);
+            if (o != OneTimeCodeService.VerifyOutcome.Ok) { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
+        }
+        if (user.TwoFactorEnabled && (string.IsNullOrWhiteSpace(totp) ||
+            !await users.VerifyTwoFactorTokenAsync(user, users.Options.Tokens.AuthenticatorTokenProvider, totp.Replace(" ", ""))))
+        { await audit.WriteAsync("team.stepup_failed", user.Id); return Denied(); }
+        return null;
     }
 }

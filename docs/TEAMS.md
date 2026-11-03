@@ -13,7 +13,8 @@ UserSession.ActiveAccountId   AppUser.LastAccountId
 ```
 * `SellerAccount.UserId` is kept as the *primary owner* (legacy code paths, status emails, phone module); it is updated on ownership transfer. It is **no longer unique** and is **not** used for authorization.
 * `Brand`: name (unique per account, case-insensitive), slug, description, contact email/website, logo (JPEG/PNG/WebP ≤ 1 MB, magic-byte checked, random storage key), status Active/Archived, `IsDefault`.
-* **Backfill** (`TeamService.BackfillAsync`, idempotent, runs at startup after the schema is created/migrated): every seller account gets an Owner membership for its `UserId` and a default brand named after `VendorName` (or "Main brand"). New accounts get the same; the default brand follows the vendor name until somebody edits it.
+* **Concurrency:** every membership mutation runs under a per-account lock and reads inside it, so the "≥ 1 Owner" rule holds under parallel requests (in-process semaphore + `FOR UPDATE` on PostgreSQL).
+* **Backfill** (`TeamService.BackfillAsync`, idempotent, runs at startup after the schema is created/migrated; only for accounts with no membership at all, so removed Owners are never restored): every seller account gets an Owner membership for its `UserId` and a default brand named after `VendorName` (or "Main brand"). New accounts get the same; the default brand follows the vendor name until somebody edits it.
 
 ## Permission matrix
 Central table: `Teams/Permissions.cs` (`Permissions.Has(role, permission)`), enforced by endpoint filters.
@@ -33,7 +34,7 @@ Central table: `Teams/Permissions.cs` (`Permissions.Has(role, permission)`), enf
 
 Owner/Admin always have all-brand scope; Manager/Viewer have *all brands* or a list.
 Rules: nobody edits their own role (use *Leave*); nobody changes or removes a member with a higher role, nor grants a higher role than their own; only an Owner can touch an Owner or create one (via role change or transfer); Owners can't be *invited*; an account always keeps ≥ 1 active Owner (leave/remove/demote refused with `409 last_owner`); the last active brand can't be archived (`409 last_brand`).
-`AccountClose` is defined in the matrix but no close/delete endpoint exists yet (deferred).
+`AccountClose`: `POST /team/close-account` (Owner only, step-up) sets the account to `Closed`: unusable for everyone, hidden from account lists, data retained, Owners emailed (DECISIONS).
 
 ## Invitation flow
 ```mermaid
@@ -57,7 +58,7 @@ sequenceDiagram
 ```
 * Token: 256-bit random, only SHA-256 stored, single-use, 7-day expiry, **resend rotates the link** (old one dies). Inviting the same email again updates the one pending invite and resends (60 s cool-down, `429`).
 * Throttles: 30 invites/hour per account, 20/hour per inviter (counted from the audit log); endpoints rate-limited per IP.
-* **Email possession for new users is proven by the invite link itself** (it was delivered only to that mailbox, is single-use and short-lived), so no extra email code; the account is created verified. An unverified pre-registration of that address is wiped (credentials, sessions) first, as in password reset. If the address already has a *verified* login, join answers `409 sign_in_required` (only reachable with the emailed link). Passkey/Google at join time is deferred; the invitee can add them in Security settings.
+* **Email possession for new users is proven by the invite link itself** (it was delivered only to that mailbox, is single-use and short-lived), so no extra email code; the account is created verified. An unverified pre-registration of that address (web or phone) is deleted outright with everything it planted (phone number, PIN, seller account, memberships) and a fresh user is created; it is never adopted. If the address already has a *verified* login, join answers `409 sign_in_required` (only reachable with the emailed link). Passkey/Google at join time is deferred; the invitee can add them in Security settings.
 * Existing users: accept requires the **verified** account email to equal the invited one (case-insensitive, trimmed); otherwise `403 email_mismatch`. `GET /account/invitations` lists a signed-in user's pending invites; `…/{id}/accept|decline` act by id (404 for invites addressed to someone else).
 * Invitation states: `pending, expired, revoked, accepted, declined` (`410 invite_<state>` on use). Unknown tokens: uniform `404`.
 * Emails (own file `Teams/TeamTemplates.cs`, HTML+text+preheader): invitation, invite accepted, role/scope changed, removed, ownership transferred, transfer step-up code.
@@ -83,4 +84,4 @@ Use `db.BrandsFor(access)` for every brand/product query (account + scope), and 
 * Add new permissions to `Permission` + the matrix in `Permissions.cs`, and a row to the table above; the matrix test in `TeamsTests` iterates roles × endpoints.
 
 ## API summary (`/api/v1`)
-`session` (GET), `session/account` (POST) · `team/members` (GET, PATCH/DELETE `{id}`), `team/leave`, `team/transfer-ownership` (step-up: password, or mailed code for passwordless accounts; plus TOTP when enabled), `team/invitations` (GET, POST, `{id}/resend`, DELETE `{id}`) · `invitations/{token}` (GET preview, `accept`, `decline`, `join`) · `account/invitations` (+ `{id}/accept|decline`), `account/seller-accounts` (POST) · `brands` (GET, POST, GET/PUT `{id}`, `archive`, `restore`, `logo` POST/GET/DELETE).
+`session` (GET), `session/account` (POST) · `team/members` (GET, PATCH/DELETE `{id}`), `team/leave`, `team/transfer-ownership` (step-up: password, or mailed code for passwordless accounts; plus TOTP when enabled), `team/close-account`, `team/invitations` (GET, POST, `{id}/resend`, DELETE `{id}`) · `invitations/{token}` (GET preview, `accept`, `decline`, `join`) · `account/invitations` (+ `{id}/accept|decline`), `account/seller-accounts` (POST) · `brands` (GET, POST, GET/PUT `{id}`, `archive`, `restore`, `logo` POST/GET/DELETE).

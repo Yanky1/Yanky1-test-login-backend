@@ -44,26 +44,16 @@ public static class InviteEndpoints
             if (!r.AcceptTerms) return Validation.Invalid("acceptTerms", "You must accept the Terms.");
             if (string.IsNullOrEmpty(r.Password) || r.Password.Length > 256) return Validation.Invalid("password", "Enter a password.");
             var existing = await users.FindByEmailAsync(inv.Email);
-            AppUser user;
             if (existing is { EmailConfirmed: true })
                 return Results.Json(new { type = "about:blank", title = "Sign in to accept this invitation.", status = 409, code = "sign_in_required" }, statusCode: 409);
-            if (existing is not null)
-            {
-                // Unverified pre-registration of this address: the invite link proves the mailbox, so wipe whatever was planted and claim it.
-                await security.WipeCredentialsAsync(existing, removePassword: true);
-                var pw = await users.AddPasswordAsync(existing, r.Password);
-                if (!pw.Succeeded) return Validation.Invalid("password", pw.Errors.Select(e => e.Description).ToArray());
-                existing.HasPassword = true; existing.EmailConfirmed = true;
-                await users.UpdateAsync(existing);
-                user = existing;
-            }
-            else
-            {
-                user = new AppUser { UserName = inv.Email, Email = inv.Email, EmailConfirmed = true, HasPassword = true, CreatedAt = time.UtcNow() };
-                var res = await users.CreateAsync(user, r.Password);
-                if (!res.Succeeded) return Validation.Invalid("password", res.Errors.Select(e => e.Description).ToArray());
-                await users.AddToRoleAsync(user, "Seller");
-            }
+            // An UNVERIFIED user with this address is a pre-registration by somebody who never proved the mailbox (web or phone sign-up). It is
+            // deleted outright (login, phone number + PIN, seller account, memberships, sessions) and the real owner gets a brand-new user,
+            // exactly like a fresh web sign-up does. Never adopt it: whatever the squatter planted would survive.
+            if (existing is not null) await security.DeleteUnverifiedAsync(existing);
+            var user = new AppUser { UserName = inv.Email, Email = inv.Email, EmailConfirmed = true, HasPassword = true, CreatedAt = time.UtcNow() };
+            var res = await users.CreateAsync(user, r.Password);
+            if (!res.Succeeded) return Validation.Invalid("password", res.Errors.Select(e => e.Description).ToArray());
+            await users.AddToRoleAsync(user, "Seller");
             var accepted = await svc.AcceptAsync(inv, user);
             if (!accepted.Ok) return accepted.ToHttp();
             await audit.WriteAsync("signup.created", user.Id, user.Email, "method=invite");

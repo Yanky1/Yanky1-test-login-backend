@@ -118,9 +118,13 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
         if (to == SellerStatus.PendingReview) seller.SubmittedAt = time.UtcNow();
         await db.SaveChangesAsync();
         await audit.WriteAsync("seller.status_changed", seller.UserId, null, $"{from}->{to};actor={actor};note={(note is null ? "" : "yes")}");
-        var user = await users.FindByIdAsync(seller.UserId.ToString());
-        if (user?.Email is { } email)
+        // Status mails go to the account's CURRENT active Owners (a removed or departed primary owner hears nothing); legacy accounts without memberships fall back to UserId.
+        var ownerIds = await db.Memberships.Where(m => m.SellerId == seller.Id && m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active).Select(m => m.UserId).ToListAsync();
+        if (ownerIds.Count == 0 && !await db.Memberships.AnyAsync(m => m.SellerId == seller.Id)) ownerIds.Add(seller.UserId);
+        foreach (var ownerId in ownerIds)
         {
+            var user = await users.FindByIdAsync(ownerId.ToString());
+            if (user?.Email is not { } email) continue;
             var vendor = seller.VendorName ?? "your business";
             var msg = to switch
             {
@@ -137,11 +141,11 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
             // Members whose ONLY usable account this is lose their sessions (as before); members with other usable accounts keep theirs,
             // but lose access to this account on their next request (the membership check treats Rejected/Suspended accounts as unusable).
             var members = await db.Memberships.Where(m => m.SellerId == seller.Id).Select(m => m.UserId).ToListAsync();
-            foreach (var uid in members.Append(seller.UserId).Distinct())
+            foreach (var uid in members.Distinct())
             {
                 var hasOther = await (from m in db.Memberships join s in db.Sellers on m.SellerId equals s.Id
                                       where m.UserId == uid && m.Status == MembershipStatus.Active && m.SellerId != seller.Id
-                                            && s.Status != SellerStatus.Rejected && s.Status != SellerStatus.Suspended select m.Id).AnyAsync();
+                                            && s.Status != SellerStatus.Rejected && s.Status != SellerStatus.Suspended && s.Status != SellerStatus.Closed select m.Id).AnyAsync();
                 if (!hasOther) await sessions.RevokeAllAsync(uid, "status:" + to);
             }
         }

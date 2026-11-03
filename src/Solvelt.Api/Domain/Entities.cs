@@ -10,7 +10,7 @@ public class AppUser : IdentityUser<Guid>
     public Guid? LastAccountId { get; set; }
 }
 
-public enum SellerStatus { Draft, PendingReview, NeedsInfo, Approved, Live, Rejected, Suspended }
+public enum SellerStatus { Draft, PendingReview, NeedsInfo, Approved, Live, Rejected, Suspended, Closed }
 
 public class SellerAccount
 {

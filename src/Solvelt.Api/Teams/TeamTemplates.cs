@@ -62,4 +62,8 @@ public static class TeamTemplates
     public static EmailMessage StepUp(string to, string code) =>
         Build(to, "team-stepup", "Confirm the ownership transfer", "Your confirmation code for the ownership transfer.",
             "Confirm it's you", [$"Someone asked to transfer ownership of a seller account you own. Your confirmation code is {code}. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."]);
+
+    public static EmailMessage AccountClosed(string to, string account) =>
+        Build(to, "team-account-closed", $"{account} was closed", $"The seller account {account} was closed by an Owner.",
+            "Seller account closed", [$"The seller account \"{account}\" was closed by an Owner. Nobody can sign in to it any more. The data is retained. Your own Solvelt login and any other accounts are not affected. If this wasn't expected, contact support."]);
 }

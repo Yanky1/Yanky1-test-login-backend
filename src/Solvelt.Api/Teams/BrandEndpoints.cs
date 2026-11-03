@@ -77,7 +77,8 @@ public static class BrandEndpoints
                 ContactEmail = email, Website = site, CreatedAt = now, UpdatedAt = now
             };
             db.Brands.Add(br);
-            await db.SaveChangesAsync();
+            try { await db.SaveChangesAsync(); }
+            catch (DbUpdateException) { return Validation.Invalid("name", "You already have a brand with this name."); } // lost a race on the unique (account, name/slug) index
             await audit.WriteAsync("brand.created", a.UserId, null, $"account={a.SellerId};brand={br.Id}");
             return Results.Json(Dto(br), statusCode: 201);
         }).RequirePermission(Permission.BrandsManage);
@@ -93,7 +94,8 @@ public static class BrandEndpoints
                 return Validation.Invalid("name", "You already have a brand with this name.");
             if (br.Name != name) { br.Name = name; br.Slug = await svc.UniqueSlugAsync(a.SellerId, name, br.Id); br.IsDefault = false; }
             br.Description = desc; br.ContactEmail = email; br.Website = site; br.UpdatedAt = time.UtcNow();
-            await db.SaveChangesAsync();
+            try { await db.SaveChangesAsync(); }
+            catch (DbUpdateException) { return Validation.Invalid("name", "You already have a brand with this name."); }
             await audit.WriteAsync("brand.updated", a.UserId, null, $"account={a.SellerId};brand={br.Id}");
             return Results.Ok(Dto(br));
         }).RequirePermission(Permission.BrandsManage);
