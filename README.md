@@ -29,7 +29,7 @@ See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
-`auth/*` signup, login, refresh, logout, logout-all, verify-email, resend-code, forgot/reset-password, passkey, external (Google/Apple) ·
+`auth/*` signup (202, no session), verify-email (creates the session), resend-code, login, refresh, logout, logout-all, forgot/reset-password, passkey, external (Google/Apple) ·
 `account/*` me, change-password, email change, 2FA, sessions, passkeys, linked logins · `seller/*` wizard + certificate ·
 `admin/sellers/{id}/status` (Admin role) · `public-config`. Testing environment only: `/api/test/emails`.
 Login contract details and the failure `hint` field: `docs/DECISIONS.md`.

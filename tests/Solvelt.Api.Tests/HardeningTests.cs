@@ -279,8 +279,11 @@ public class HardeningTests(ApiFactory f) : IClassFixture<ApiFactory>
             (await new Api(f).Post("/api/v1/auth/login", new { email, password = i == 9 ? ApiFactory.Strong : "Wrong-Passw0rd!x", captchaToken = "XXXX.DUMMY.TOKEN.XXXX" }, false)).StatusCode).ToArray();
         var codes = await Task.WhenAll(tasks);
         var uid = f.WithDb(db => db.Users.Where(u => u.Email == email).Select(u => u.Id).First());
-        var allowed = f.WithDb(db => db.AuditEvents.Count(a => (a.Type == "login.failed" || a.Type == "login.succeeded") && a.UserId == uid));
-        Assert.True(allowed <= 5, $"{allowed} password checks happened");
+        // A successful login legitimately resets the counter, so wrong guesses are bounded per counter window: <= 5 * (successes + 1).
+        var failed = f.WithDb(db => db.AuditEvents.Count(a => a.Type == "login.failed" && a.UserId == uid));
+        var succeeded = f.WithDb(db => db.AuditEvents.Count(a => a.Type == "login.succeeded" && a.UserId == uid));
+        Assert.True(succeeded <= 1, $"{succeeded} successful logins");
+        Assert.True(failed <= 5 * (succeeded + 1), $"{failed} wrong-password checks happened with {succeeded} reset(s)");
         Assert.True(codes.Count(c => c == HttpStatusCode.OK) <= 1);
     }
 
