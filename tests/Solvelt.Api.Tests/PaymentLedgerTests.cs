@@ -214,4 +214,37 @@ public class PaymentLedgerTests
         Assert.Empty((await Pay.Ok(await s.Owner.Get("/api/v1/seller/payments/ledger?type=refund")))["items"]!.AsArray());
         Assert.Empty((await Pay.Ok(await other.Owner.Get($"/api/v1/seller/payments/ledger?orderId={o.Id}")))["items"]!.AsArray());   // someone else's order id shows nothing
     }
+
+    [Fact]
+    public async Task Refunding_in_thirds_returns_exactly_the_fee_that_was_charged()
+    {
+        using var f = new PayFactory();
+        var s = await Orders.NewShop(f);
+        var o = await Pay.Paid(s, price: 1000, shipping: 0);          // items 1000, fee 100, net 900
+        Assert.Equal(100, Pay.Sum(f, s.Seller, LedgerAccount.Fees));
+        await Pay.Refund(f, o.Mid, o.Number, 333);                     // fee back: 33.3 -> 33
+        Assert.Equal(67, Pay.Sum(f, s.Seller, LedgerAccount.Fees));
+        await Pay.Refund(f, o.Mid, o.Number, 333);
+        Assert.Equal(34, Pay.Sum(f, s.Seller, LedgerAccount.Fees));
+        await Pay.Refund(f, o.Mid, o.Number, 334);                     // the last refund takes the rounding remainder (34, not 33)
+        Assert.Equal(0, Pay.Sum(f, s.Seller, LedgerAccount.Fees));
+        Assert.Equal(0, (await Pay.Bal(f, s.Seller)).Pending);
+    }
+
+    [Fact]
+    public async Task Concurrent_postings_of_one_key_create_exactly_one_journal()
+    {
+        using var f = new PayFactory();
+        var s = await Orders.NewShop(f);
+        var seller = s.Seller;
+        var results = await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(() => Pay.Run(f, async sp =>
+        {
+            var l = sp.GetRequiredService<LedgerService>();
+            var j = await l.PostAsync(seller, "USD", "adjustment", "k-race", "race", [new(LedgerAccount.Available, 100, "adjustment"), new(LedgerAccount.Platform, -100, "adjustment")]);
+            return j is not null && await l.SaveAsync();
+        }))));
+        Assert.Equal(1, results.Count(r => r));
+        Assert.Single(Pay.Journals(f, seller));
+        Assert.Equal(100, (await Pay.Bal(f, seller)).Available);
+    }
 }

@@ -185,7 +185,7 @@ public static class SellerPaymentEndpoints
         manage(grp.MapPost("/onboarding", async (HttpContext ctx, OnboardingService svc) =>
         {
             var a = ctx.GetAccess()!;
-            if (a.AccountStatus is not (SellerStatus.Approved or SellerStatus.Live)) return Err(409, "not_approved", "Payouts can be set up once your seller account is approved.");
+            if (a.AccountStatus is not SellerStatus.Approved) return Err(409, "not_approved", "Payouts can be set up once your seller account is approved.");
             try
             {
                 var (_, link) = await svc.StartAsync(a.SellerId, a.UserId, ctx.RequestAborted);

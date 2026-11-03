@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261103203927_Payments")]
+    [Migration("20261103211958_Payments")]
     partial class Payments
     {
         /// <inheritdoc />
