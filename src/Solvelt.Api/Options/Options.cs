@@ -36,6 +36,8 @@ public class SessionSettings
     public int IdleTimeoutMinutes { get; set; } = 20;
     public int RefreshTokenDays { get; set; } = 30;
     public string RefreshCookiePath { get; set; } = "/api/v1/auth";
+    /// <summary>Concurrent tabs may present the just-rotated refresh token within this window without it counting as reuse.</summary>
+    public int RefreshGraceSeconds { get; set; } = 30;
 }
 
 public class LockoutSettings

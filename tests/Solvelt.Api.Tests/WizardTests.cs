@@ -28,19 +28,29 @@ public class WizardTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, await Try(new { email = Api.NewEmail(), password = ApiFactory.Strong, acceptTerms = false }));
         foreach (var weak in new[] { "Short1!a", "alllowercase1!x", "ALLUPPERCASE1!X", "NoNumbers!!abc", "NoSymbols12345Ab", "Password1!", "Qwerty123!" })
             Assert.Equal(HttpStatusCode.BadRequest, await Try(new { email = Api.NewEmail(), password = weak, acceptTerms = true }));
-        Assert.Equal(HttpStatusCode.Created, await Try(new { email = Api.NewEmail(), password = ApiFactory.Strong, acceptTerms = true }));
+        Assert.Equal(HttpStatusCode.Accepted, await Try(new { email = Api.NewEmail(), password = ApiFactory.Strong, acceptTerms = true }));
     }
 
     [Fact]
-    public async Task Signup_records_terms_version_and_duplicate_email_is_rejected_generically()
+    public async Task Signup_records_terms_version()
     {
         var api = new Api(f);
-        var email = await api.SignupVerified();
+        await api.SignupVerified();
         var app = await api.JsonBody(await api.Get("/api/v1/seller/application"));
         Assert.Equal("2026-01", app.GetProperty("legal").GetProperty("termsVersion").GetString());
         Assert.NotEqual(JsonValueKind.Null, app.GetProperty("legal").GetProperty("termsAcceptedAt").ValueKind);
-        var dup = await new Api(f).Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
-        Assert.Equal(HttpStatusCode.BadRequest, dup.StatusCode);
+    }
+
+    [Fact]
+    public async Task Signup_gives_no_session_and_unverified_accounts_cannot_sign_in()
+    {
+        var email = Api.NewEmail();
+        var c = new Api(f);
+        var res = await c.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.DoesNotContain("accessToken", await res.Content.ReadAsStringAsync());
+        Assert.False(res.Headers.Contains("Set-Cookie"));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c.Post("/api/v1/auth/login", new { email, password = ApiFactory.Strong }, false)).StatusCode);
     }
 
     [Fact]
@@ -48,30 +58,23 @@ public class WizardTests(ApiFactory f) : IClassFixture<ApiFactory>
     {
         var api = new Api(f);
         var email = Api.NewEmail();
-        var res = await api.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
-        api.GetType(); // keep analyzers quiet
-        var login = await res.Content.ReadFromJsonAsync<Login>(Api.Json);
-        typeof(Api).GetProperty("Session")!.SetValue(api, login);
-        Assert.Equal("PendingEmailVerification", login!.AccountStatus);
-        var first = f.LastCode(email);
-        // immediate resend -> 429 with retry-after
-        var tooSoon = await api.Post("/api/v1/auth/resend-code");
-        Assert.Equal(HttpStatusCode.TooManyRequests, tooSoon.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await api.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false)).StatusCode);
+        Assert.Single(f.Mails(email, "verify-code"));
+        // immediate resend: same 202 answer, but no second mail inside the 60 s cool-down
+        Assert.Equal(HttpStatusCode.Accepted, (await api.Post("/api/v1/auth/resend-code", new { email }, false)).StatusCode);
+        Assert.Single(f.Mails(email, "verify-code"));
         f.Time.Advance(TimeSpan.FromSeconds(61));
-        var ok = await api.Post("/api/v1/auth/resend-code");
-        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await api.Post("/api/v1/auth/resend-code", new { email }, false)).StatusCode);
         Assert.Equal(2, f.Mails(email, "verify-code").Count);
         var second = f.LastCode(email);
-        // expiry
-        f.Time.Advance(TimeSpan.FromMinutes(11));
-        var exp = await api.Post("/api/v1/auth/verify-email", new { code = second });
+        f.Time.Advance(TimeSpan.FromMinutes(11)); // past the 10 minute validity
+        var exp = await api.Post("/api/v1/auth/verify-email", new { email, code = second }, false);
         Assert.Equal(HttpStatusCode.BadRequest, exp.StatusCode);
-        Assert.Equal("expired", (await api.JsonBody(exp)).GetProperty("code").GetString());
-        // fresh code works
         f.Time.Advance(TimeSpan.FromSeconds(61));
-        await api.Post("/api/v1/auth/resend-code");
-        Assert.Equal(HttpStatusCode.OK, (await api.Post("/api/v1/auth/verify-email", new { code = f.LastCode(email) })).StatusCode);
-        _ = first;
+        await api.Post("/api/v1/auth/resend-code", new { email }, false);
+        var ok = await api.Post("/api/v1/auth/verify-email", new { email, code = f.LastCode(email) }, false);
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal(email, (await ok.Content.ReadFromJsonAsync<Login>(Api.Json))!.Email);
     }
 
     [Fact]
@@ -79,23 +82,11 @@ public class WizardTests(ApiFactory f) : IClassFixture<ApiFactory>
     {
         var api = new Api(f);
         var email = Api.NewEmail();
-        var res = await api.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
-        typeof(Api).GetProperty("Session")!.SetValue(api, await res.Content.ReadFromJsonAsync<Login>(Api.Json));
+        await api.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
         var real = f.LastCode(email);
         var wrong = real == "000000" ? "111111" : "000000";
-        for (var i = 0; i < 5; i++) Assert.Equal(HttpStatusCode.BadRequest, (await api.Post("/api/v1/auth/verify-email", new { code = wrong })).StatusCode);
-        var late = await api.Post("/api/v1/auth/verify-email", new { code = real });
-        Assert.Equal(HttpStatusCode.BadRequest, late.StatusCode); // correct code no longer accepted after 5 attempts
-    }
-
-    [Fact]
-    public async Task Unverified_user_cannot_use_business_step()
-    {
-        var api = new Api(f);
-        var email = Api.NewEmail();
-        var res = await api.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
-        typeof(Api).GetProperty("Session")!.SetValue(api, await res.Content.ReadFromJsonAsync<Login>(Api.Json));
-        Assert.Equal(HttpStatusCode.Forbidden, (await api.Put("/api/v1/seller/application/business", Api.ValidBusiness)).StatusCode);
+        for (var i = 0; i < 5; i++) Assert.Equal(HttpStatusCode.BadRequest, (await api.Post("/api/v1/auth/verify-email", new { email, code = wrong }, false)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await api.Post("/api/v1/auth/verify-email", new { email, code = real }, false)).StatusCode); // dead after 5 attempts
     }
 
     [Fact]

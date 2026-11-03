@@ -12,7 +12,7 @@ using Solvelt.Api.Services;
 
 namespace Solvelt.Api.Endpoints;
 
-public record ExchangeRequest(string? Code);
+public record ExchangeRequest(string? Code, string? TotpCode, string? RecoveryCode);
 
 public static class ExternalEndpoints
 {
@@ -36,7 +36,7 @@ public static class ExternalEndpoints
         }).RequireRateLimiting("auth");
 
         a.MapGet("/callback", async (string provider, HttpContext ctx, UserManager<AppUser> users, AuthFlows flows, AppDbContext db,
-            TimeProvider time, IAuditLog audit, IOptions<AppOptions> app, SessionService sessions) =>
+            TimeProvider time, IAuditLog audit, IOptions<AppOptions> app, AccountSecurityService security) =>
         {
             var front = app.Value.FrontendBaseUrl.TrimEnd('/');
             IResult Error(string code) => Results.Redirect($"{front}/login?error={code}");
@@ -63,11 +63,10 @@ public static class ExternalEndpoints
                     if (!user.EmailConfirmed)
                     {
                         // Pre-hijacking defence: an unverified local account may have been registered by someone else.
-                        // Drop its password and sessions before the real owner takes it over via the provider.
-                        await users.RemovePasswordAsync(user);
-                        user.HasPassword = false; user.EmailConfirmed = true;
+                        // Wipe everything it carries (password, passkeys, logins, TOTP, sessions) before the real owner takes it over.
+                        await security.WipeCredentialsAsync(user, removePassword: true);
+                        user.EmailConfirmed = true;
                         await users.UpdateAsync(user);
-                        await sessions.RevokeAllAsync(user.Id, "unverified-account-claimed");
                     }
                     await users.AddLoginAsync(user, new UserLoginInfo(provider, sub, provider));
                     await audit.WriteAsync("login.linked", user.Id, email, provider);
@@ -97,16 +96,37 @@ public static class ExternalEndpoints
         });
 
         a.MapPost("/exchange", async (ExchangeRequest r, HttpContext ctx, AppDbContext db, UserManager<AppUser> users, SessionService sessions,
-            AuthFlows flows, TimeProvider time, IAuditLog audit) =>
+            AuthFlows flows, TimeProvider time, IAuditLog audit, LoginThrottleService throttle, IOptions<LockoutSettings> lo) =>
         {
-            if (string.IsNullOrWhiteSpace(r.Code)) return Results.Json(new { error = "Login failed" }, statusCode: 401);
+            IResult Fail(bool twoFactor = false) => Results.Json(new LoginFailure("Login failed", new AttemptsHint(null, false, false, null, null), twoFactor ? true : null), statusCode: 401);
+            if (string.IsNullOrWhiteSpace(r.Code)) return Fail();
             var hash = Crypto.Sha256(r.Code);
             var ex = await db.ExternalExchanges.FirstOrDefaultAsync(e => e.CodeHash == hash);
-            if (ex is null || ex.UsedAt is not null || ex.ExpiresAt <= time.UtcNow()) return Results.Json(new { error = "Login failed" }, statusCode: 401);
+            if (ex is null || ex.UsedAt is not null || ex.ExpiresAt <= time.UtcNow()) return Fail();
+            var user = await users.FindByIdAsync(ex.UserId.ToString());
+            if (user is null) return Fail();
+            if (user.TwoFactorEnabled)
+            {
+                // A provider login must not bypass TOTP: the one-time code stays usable (2 min) until a valid second factor is presented.
+                if (string.IsNullOrWhiteSpace(r.TotpCode) && string.IsNullOrWhiteSpace(r.RecoveryCode)) return Fail(true);
+                var key = user.Email!;
+                var t = await throttle.GetAsync(key);
+                if (throttle.IsLocked(t)) return Fail();
+                var attempts = await throttle.ReserveAttemptAsync(key);
+                if (attempts > lo.Value.MaxFailures) return Fail();
+                var good = !string.IsNullOrWhiteSpace(r.TotpCode)
+                    ? await users.VerifyTwoFactorTokenAsync(user, users.Options.Tokens.AuthenticatorTokenProvider, r.TotpCode.Replace(" ", ""))
+                    : (await users.RedeemTwoFactorRecoveryCodeAsync(user, r.RecoveryCode!.Replace(" ", ""))).Succeeded;
+                if (!good)
+                {
+                    await throttle.LockIfReachedAsync(key, attempts);
+                    await audit.WriteAsync("login.failed", user.Id, user.Email, "method=" + ex.Provider + ";2fa");
+                    return Fail(true);
+                }
+                await throttle.ResetAsync(key);
+            }
             ex.UsedAt = time.UtcNow();
             await db.SaveChangesAsync();
-            var user = await users.FindByIdAsync(ex.UserId.ToString());
-            if (user is null) return Results.Json(new { error = "Login failed" }, statusCode: 401);
             var s = await sessions.CreateAsync(user, ex.Provider.ToLowerInvariant(), AuthFlows.Ip(ctx), AuthFlows.Ua(ctx));
             await audit.WriteAsync("login.succeeded", user.Id, user.Email, "method=" + ex.Provider);
             return Results.Ok(await flows.BuildLoginAsync(user, s, ctx));

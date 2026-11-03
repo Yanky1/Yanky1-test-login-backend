@@ -26,7 +26,8 @@ public class SessionTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, r1.StatusCode);
         var second = (await r1.Content.ReadFromJsonAsync<Login>(Api.Json))!.RefreshToken;
         Assert.NotEqual(first, second);
-        // reuse of the first token -> 401 and the family (session) is revoked, so `second` is dead too
+        // outside the 30 s grace window, reuse of the first token -> 401 and the family (session) is revoked, so `second` is dead too
+        f.Time.Advance(TimeSpan.FromSeconds(31));
         var reuse = await new Api(f).Post("/api/v1/auth/refresh", new { refreshToken = first }, false);
         Assert.Equal(HttpStatusCode.Unauthorized, reuse.StatusCode);
         var after = await new Api(f).Post("/api/v1/auth/refresh", new { refreshToken = second }, false);

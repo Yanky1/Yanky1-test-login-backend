@@ -10,7 +10,7 @@ using Solvelt.Api.Services;
 namespace Solvelt.Api.Endpoints;
 
 public record ChangePasswordRequest(string? CurrentPassword, string? NewPassword);
-public record ChangeEmailRequest(string? NewEmail, string? CurrentPassword);
+public record ChangeEmailRequest(string? NewEmail, string? CurrentPassword, string? StepUpCode, string? TotpCode);
 public record TwoFactorCodeRequest(string? Code, string? CurrentPassword);
 
 public static class AccountEndpoints
@@ -62,6 +62,22 @@ public static class AccountEndpoints
             if (!Validation.IsEmail(r.NewEmail)) return Validation.Invalid("newEmail", "Enter a valid email address.");
             if (user.HasPassword && (string.IsNullOrEmpty(r.CurrentPassword) || !await users.CheckPasswordAsync(user, r.CurrentPassword)))
                 return Results.Problem("Your current password isn't correct.", statusCode: 400, extensions: new Dictionary<string, object?> { ["code"] = "wrong_password" });
+            if (!user.HasPassword)
+            {
+                // Passkey-only / Google-only accounts have no password to re-enter: step up with a code mailed to the CURRENT address
+                // (plus a TOTP code when 2FA is on), so a stolen access token alone cannot move the account to another mailbox.
+                if (string.IsNullOrWhiteSpace(r.StepUpCode))
+                {
+                    var su = await codes.IssueAsync(user.Id, "email-stepup");
+                    if (su.Code is not null) await mailer.SendAsync(Templates.StepUpCode(user.Email!, su.Code));
+                    return Results.Json(new { stepUpRequired = true, message = "We sent a confirmation code to your current email address." }, statusCode: 202);
+                }
+                var (so, _) = await codes.VerifyAsync(user.Id, "email-stepup", r.StepUpCode);
+                var totpOk = !user.TwoFactorEnabled || (!string.IsNullOrWhiteSpace(r.TotpCode) &&
+                    await users.VerifyTwoFactorTokenAsync(user, users.Options.Tokens.AuthenticatorTokenProvider, r.TotpCode.Replace(" ", "")));
+                if (so != OneTimeCodeService.VerifyOutcome.Ok || !totpOk)
+                    return Results.Problem("That confirmation code isn't right.", statusCode: 400, extensions: new Dictionary<string, object?> { ["code"] = "stepup_failed" });
+            }
             var newEmail = Crypto.NormalizeEmail(r.NewEmail!);
             // Generic response whether or not the address is taken (no enumeration).
             if (await users.FindByEmailAsync(newEmail) is null)
@@ -71,7 +87,7 @@ public static class AccountEndpoints
                 await audit.WriteAsync("email.change_requested", user.Id, user.Email);
             }
             return Results.Accepted(value: new { message = "If the address can be used, we sent a code to it." });
-        }).RequireRateLimiting("sensitive");
+        }).RequireAuthorization("VerifiedEmail").RequireRateLimiting("sensitive");
 
         a.MapPost("/email/confirm", async (CodeRequest r, ClaimsPrincipal p, UserManager<AppUser> users, OneTimeCodeService codes,
             SessionService sessions, Mailer mailer, IAuditLog audit) =>
@@ -93,7 +109,7 @@ public static class AccountEndpoints
             await audit.WriteAsync("email.changed", user.Id, row.Target, "old=" + AuditLog.Mask(old));
             var token = await sessions.IssueAccessAsync(user, p.SessionId());
             return Results.Ok(new { tokenType = "Bearer", accessToken = token, expiresIn = sessions.AccessSeconds, email = user.Email });
-        }).RequireRateLimiting("sensitive");
+        }).RequireAuthorization("VerifiedEmail").RequireRateLimiting("sensitive");
 
         // ---- TOTP 2FA
         a.MapPost("/2fa/setup", async (ClaimsPrincipal p, UserManager<AppUser> users) =>
@@ -105,7 +121,7 @@ public static class AccountEndpoints
             var key = (await users.GetAuthenticatorKeyAsync(user))!;
             var uri = $"otpauth://totp/Solvelt:{Uri.EscapeDataString(user.Email!)}?secret={key}&issuer=Solvelt&digits=6";
             return Results.Ok(new { sharedKey = key, otpAuthUri = uri });
-        });
+        }).RequireAuthorization("VerifiedEmail");
 
         a.MapPost("/2fa/enable", async (TwoFactorCodeRequest r, ClaimsPrincipal p, UserManager<AppUser> users, IAuditLog audit) =>
         {
@@ -118,7 +134,7 @@ public static class AccountEndpoints
             var codes = await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10);
             await audit.WriteAsync("2fa.enabled", user.Id, user.Email);
             return Results.Ok(new { recoveryCodes = codes });
-        }).RequireRateLimiting("sensitive");
+        }).RequireAuthorization("VerifiedEmail").RequireRateLimiting("sensitive");
 
         a.MapPost("/2fa/disable", async (TwoFactorCodeRequest r, ClaimsPrincipal p, UserManager<AppUser> users, IAuditLog audit) =>
         {
@@ -133,7 +149,7 @@ public static class AccountEndpoints
             await users.ResetAuthenticatorKeyAsync(user);
             await audit.WriteAsync("2fa.disabled", user.Id, user.Email);
             return Results.NoContent();
-        }).RequireRateLimiting("sensitive");
+        }).RequireAuthorization("VerifiedEmail").RequireRateLimiting("sensitive");
 
         a.MapPost("/2fa/recovery-codes", async (TwoFactorCodeRequest r, ClaimsPrincipal p, UserManager<AppUser> users) =>
         {
@@ -143,7 +159,7 @@ public static class AccountEndpoints
                 !await users.VerifyTwoFactorTokenAsync(user, users.Options.Tokens.AuthenticatorTokenProvider, r.Code.Replace(" ", "")))
                 return Results.Problem("That code isn't right.", statusCode: 400);
             return Results.Ok(new { recoveryCodes = await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10) });
-        }).RequireRateLimiting("sensitive");
+        }).RequireAuthorization("VerifiedEmail").RequireRateLimiting("sensitive");
 
         // ---- Sessions
         a.MapGet("/sessions", async (ClaimsPrincipal p, AppDbContext db, SessionService sessions) =>

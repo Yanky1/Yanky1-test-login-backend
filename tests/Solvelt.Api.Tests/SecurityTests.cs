@@ -89,9 +89,9 @@ public class SecurityTests(ApiFactory f) : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Verify_endpoint_requires_authentication_and_validates_format()
+    public async Task Verify_endpoint_validates_format_and_seller_endpoints_require_authentication()
     {
-        Assert.Equal(HttpStatusCode.Unauthorized, (await new Api(f).Post("/api/v1/auth/verify-email", new { code = "123456" }, false)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await new Api(f).Post("/api/v1/auth/verify-email", new { code = "123456" }, false)).StatusCode);
         var a = new Api(f); await a.SignupVerified();
         Assert.Equal(HttpStatusCode.Unauthorized, (await new Api(f).Get("/api/v1/seller/application", false)).StatusCode);
     }

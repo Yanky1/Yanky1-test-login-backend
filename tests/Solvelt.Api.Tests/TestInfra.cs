@@ -163,16 +163,30 @@ public class Api(ApiFactory f)
     }
 
     /// <summary>Signs up, verifies the email and returns the signed-in api.</summary>
+    /// <summary>Signs up (202, no session), proves the mailbox with the emailed code and ends up signed in.</summary>
     public async Task<string> SignupVerified(string? email = null, string password = ApiFactory.Strong)
     {
         email ??= NewEmail();
         var res = await Post("/api/v1/auth/signup", new { email, password, acceptTerms = true }, false);
-        Assert.Equal(HttpStatusCode.Created, res.StatusCode);
-        Session = await res.Content.ReadFromJsonAsync<Login>(Json);
-        var v = await Post("/api/v1/auth/verify-email", new { code = f.LastCode(email) });
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        var v = await Post("/api/v1/auth/verify-email", new { email, code = f.LastCode(email) }, false);
         Assert.Equal(HttpStatusCode.OK, v.StatusCode);
-        var tok = await v.Content.ReadFromJsonAsync<JsonElement>();
-        Session = Session! with { AccessToken = tok.GetProperty("accessToken").GetString()! };
+        Session = await v.Content.ReadFromJsonAsync<Login>(Json);
+        return email;
+    }
+
+    /// <summary>Test-only: a session + access token for an account whose email is NOT verified (email_verified=false claim).</summary>
+    public async Task<string> UnverifiedSession(string? email = null)
+    {
+        email ??= NewEmail();
+        var res = await Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        using var scope = f.Services.CreateScope();
+        var users = scope.ServiceProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<Solvelt.Api.Domain.AppUser>>();
+        var sessions = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Services.SessionService>();
+        var user = (await users.FindByEmailAsync(email))!;
+        var issued = await sessions.CreateAsync(user, "test", null, null);
+        Session = new Login("Bearer", issued.AccessToken, issued.ExpiresIn, issued.RefreshToken, Guid.Empty, email, "", "PendingEmailVerification", ["Seller"]);
         return email;
     }
 

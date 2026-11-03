@@ -72,7 +72,7 @@ public class ExternalTests(ApiFactory f) : IClassFixture<ApiFactory>
         var email = Api.NewEmail();
         var squatter = new Api(f);
         var signup = await squatter.Post("/api/v1/auth/signup", new { email, password = ApiFactory.Strong, acceptTerms = true }, false);
-        Assert.Equal(HttpStatusCode.Created, signup.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, signup.StatusCode);
         Stub("g-" + Guid.NewGuid().ToString("N"), email);
         var (cb, _) = await Flow();
         Assert.NotNull(Code(cb));

@@ -101,6 +101,18 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         var now = time.UtcNow();
         var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == token.SessionId);
         if (session is null || session.RevokedAt is not null || token.RevokedAt is not null) return new(RotateOutcome.Invalid);
+        if (token.UsedAt is not null && now - token.UsedAt.Value <= TimeSpan.FromSeconds(sess.Value.RefreshGraceSeconds)
+            && token.ExpiresAt > now && !IsIdle(session))
+        {
+            // Benign race (e.g. two tabs refreshing at once): hand the caller a fresh pair instead of treating it as theft.
+            var graceUser = await users.FindByIdAsync(session.UserId.ToString());
+            if (graceUser is null) return new(RotateOutcome.Invalid);
+            session.LastActivityAt = now;
+            var rawGrace = AddRefreshToken(session.Id, token.FamilyId, now);
+            await db.SaveChangesAsync();
+            await audit.WriteAsync("refresh.grace_used", session.UserId, null, $"session={session.Id}");
+            return new(RotateOutcome.Ok, graceUser, new IssuedSession(session.Id, await IssueAccessAsync(graceUser, session.Id), AccessSeconds, rawGrace));
+        }
         if (token.UsedAt is not null)
         {
             await RevokeSessionAsync(session.Id, "refresh-reuse");

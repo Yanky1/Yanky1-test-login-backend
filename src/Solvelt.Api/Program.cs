@@ -71,7 +71,7 @@ builder.Services.AddScoped<IPasswordValidator<AppUser>, PasswordRulesValidator>(
     {
         o.ServerDomain = pk.RelyingPartyId;
         o.ValidateOrigin = ctx => ValueTask.FromResult(pk.AllowedOrigins.Contains(ctx.Origin ?? "", StringComparer.OrdinalIgnoreCase));
-        o.UserVerificationRequirement = "preferred";
+        o.UserVerificationRequirement = "required"; // a user-verified passkey is a 2-factor credential (possession + biometric/PIN), so it satisfies MFA
         o.ResidentKeyRequirement = "preferred";
     });
 }
@@ -86,6 +86,7 @@ builder.Services.AddScoped<Crypto>();
 builder.Services.AddSingleton<JwtKeys>();
 builder.Services.AddScoped<IAuditLog, AuditLog>();
 builder.Services.AddScoped<SessionService>();
+builder.Services.AddScoped<AccountSecurityService>();
 builder.Services.AddScoped<LoginThrottleService>();
 builder.Services.AddScoped<OneTimeCodeService>();
 builder.Services.AddScoped<KosherService>();

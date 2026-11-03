@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
+using Microsoft.Extensions.Options;
 using Solvelt.Api.Email;
+using Solvelt.Api.Options;
 using Solvelt.Api.Services;
 
 namespace Solvelt.Api.Endpoints;
@@ -46,6 +48,8 @@ public static class PasskeyEndpoints
             try { res = await sm.PerformPasskeyAssertionAsync(CredJson(r)); } catch (Exception) { return fail(); }
             if (!res.Succeeded || res.User is null) { await audit.WriteAsync("passkey.signin_failed"); return fail(); }
             var user = res.User;
+            // Only passkeys that were user-verified (biometric/PIN) are accepted: possession + inherence = MFA.
+            if (res.Passkey is { IsUserVerified: false } || !user.EmailConfirmed) { await audit.WriteAsync("passkey.signin_failed", user.Id); return fail(); }
             var seller = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == user.Id);
             if (!await users.IsInRoleAsync(user, "Admin") && (seller is null || seller.Status is SellerStatus.Rejected or SellerStatus.Suspended)) return fail();
             await users.AddOrUpdatePasskeyAsync(user, res.Passkey);
@@ -54,41 +58,52 @@ public static class PasskeyEndpoints
             return Results.Ok(await flows.BuildLoginAsync(user, s, ctx));
         }).RequireRateLimiting("auth");
 
-        // ---- sign-up with a passkey
-        a.MapPost("/signup/passkey/options", async (PasskeyEmailRequest r, SignInManager<AppUser> sm, UserManager<AppUser> users) =>
+        // ---- sign-up with a passkey (no session until the mailbox is verified; response is identical for existing emails)
+        a.MapPost("/signup/passkey/options", async (PasskeyEmailRequest r, SignInManager<AppUser> sm) =>
         {
             if (!Validation.IsEmail(r.Email)) return Validation.Invalid("email", "Enter a valid email address.");
             if (!r.AcceptTerms) return Validation.Invalid("acceptTerms", "You must accept the Terms.");
             var email = Crypto.NormalizeEmail(r.Email!);
-            if (await users.FindByEmailAsync(email) is not null)
-                return Validation.Invalid("email", "We couldn't create an account with this email. If you already have one, sign in or reset your password.");
+            // Same options whether or not the address exists. The email is bound into the attested user entity (checked again in /complete).
             var entity = new PasskeyUserEntity { Id = Guid.NewGuid().ToString(), Name = email, DisplayName = email };
             var options = await sm.MakePasskeyCreationOptionsAsync(entity);
             return Results.Content(options, "application/json");
         }).RequireRateLimiting("auth");
 
-        a.MapPost("/signup/passkey/complete", async (PasskeyCredentialRequest r, HttpContext ctx, SignInManager<AppUser> sm, UserManager<AppUser> users,
-            AuthFlows flows, SessionService sessions, OneTimeCodeService codes, Mailer mailer, IAuditLog audit) =>
+        a.MapPost("/signup/passkey/complete", async (PasskeyCredentialRequest r, SignInManager<AppUser> sm, UserManager<AppUser> users,
+            AuthFlows flows, OneTimeCodeService codes, Mailer mailer, IAuditLog audit, AccountSecurityService security, IOptions<AppOptions> app) =>
         {
             if (!Validation.IsEmail(r.Email) || !r.AcceptTerms || r.Credential is null) return Results.Problem("Invalid request.", statusCode: 400);
             var email = Crypto.NormalizeEmail(r.Email!);
-            if (await users.FindByEmailAsync(email) is not null) return Results.Problem("We couldn't create an account with this email.", statusCode: 400);
             var att = await SafeAttest(sm, r);
             if (!att.Succeeded) return Results.Problem("Passkey registration failed.", statusCode: 400);
-            AppUser user;
-            try { user = await flows.CreateSellerUserAsync(email, null, false, true, Guid.TryParse(att.UserEntity?.Id, out var uid) ? uid : null); }
-            catch (AccountCreationException) { return Results.Problem("We couldn't create an account with this email.", statusCode: 400); }
-            att.Passkey.Name = "Passkey";
-            await users.AddOrUpdatePasskeyAsync(user, att.Passkey);
-            var issued = await codes.IssueAsync(user.Id, "verify-email");
-            if (issued.Code is not null) await mailer.SendAsync(Templates.VerifyCode(email, issued.Code));
-            await audit.WriteAsync("signup.created", user.Id, email, "method=passkey");
-            var s = await sessions.CreateAsync(user, "passkey", AuthFlows.Ip(ctx), AuthFlows.Ua(ctx));
-            return Results.Json(await flows.BuildLoginAsync(user, s, ctx), statusCode: 201);
+            // Bind: the email submitted now must be the one the challenge/user entity was issued for.
+            if (!string.Equals(att.UserEntity?.Name, email, StringComparison.OrdinalIgnoreCase))
+                return Results.Problem("Passkey registration failed.", statusCode: 400);
+
+            var existing = await users.FindByEmailAsync(email);
+            if (existing is { EmailConfirmed: true })
+            {
+                await mailer.SendAsync(Templates.SignupExisting(email, app.Value.FrontendBaseUrl.TrimEnd('/') + "/login", app.Value.FrontendBaseUrl.TrimEnd('/') + "/forgot-password"));
+                await audit.WriteAsync("signup.existing_notified", existing.Id, email);
+            }
+            else
+            {
+                if (existing is not null) await security.DeleteUnverifiedAsync(existing); // latest sign-up replaces an unverified account
+                AppUser user;
+                try { user = await flows.CreateSellerUserAsync(email, null, false, true, Guid.TryParse(att.UserEntity?.Id, out var uid) ? uid : null); }
+                catch (AccountCreationException) { return Results.Problem("Passkey registration failed.", statusCode: 400); }
+                att.Passkey.Name = "Passkey";
+                await users.AddOrUpdatePasskeyAsync(user, att.Passkey);
+                var issued = await codes.IssueAsync(user.Id, "verify-email");
+                if (issued.Code is not null) await mailer.SendAsync(Templates.VerifyCode(email, issued.Code));
+                await audit.WriteAsync("signup.created", user.Id, email, "method=passkey");
+            }
+            return Results.Accepted(value: AuthEndpoints.SignupAccepted);
         }).RequireRateLimiting("auth");
 
         // ---- manage passkeys (authenticated)
-        var m = g.MapGroup("/account/passkeys").RequireAuthorization();
+        var m = g.MapGroup("/account/passkeys").RequireAuthorization("VerifiedEmail");
 
         m.MapGet("", async (ClaimsPrincipal p, UserManager<AppUser> users) =>
         {

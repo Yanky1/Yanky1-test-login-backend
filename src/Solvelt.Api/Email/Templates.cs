@@ -41,6 +41,13 @@ public static class Templates
     public static EmailMessage EmailChangedNotice(string to, string newEmail) => Build(to, "email-changed", "Your Solvelt email address was changed",
         "Email address changed", [$"The email on your account was changed to {newEmail}. If this wasn't you, reset your password immediately and contact support."]);
 
+    public static EmailMessage StepUpCode(string to, string code) => Build(to, "stepup-code", "Confirm it's you",
+        "Confirm it's you", ["Someone asked to change the email address on your Solvelt account. Enter this code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."], highlight: code);
+
+    public static EmailMessage SignupExisting(string to, string signInLink, string resetLink) => Build(to, "signup-existing", "Someone tried to sign up with your email",
+        "Sign-up attempt", ["Someone tried to create a Solvelt seller account with this email address, but you already have one. If it was you, sign in or reset your password with the links below. If not, you can ignore this email."],
+        ("Sign in", signInLink));
+
     public static EmailMessage ApplicationReceived(string to, string vendor) => Build(to, "application-received", "We received your application",
         "Application received", [$"Thanks, {vendor}. Your seller application is pending review. Management will reach out to you."]);
 
