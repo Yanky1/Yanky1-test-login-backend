@@ -63,7 +63,8 @@ public class AssistantEngineTests : IClassFixture<AssistantFactory>
         Asst.Script(_f.Model, ("propose_create_product", new { title = "Sneaky" }), ("confirm_action", new { id = Guid.NewGuid() }), ("issue_refund", new { orderId = Guid.NewGuid() }));
         var chat = await Asst.Chat(viewer, "do it");
         Assert.Empty(chat["message"]!["actions"]!.AsArray());
-        Assert.Contains("isn't available", Asst.LastToolResults(_f.Model));
+        var firstResult = _f.Model.Requests.Last().Messages.SelectMany(m => m.Blocks).OfType<AToolResult>().First().Content; // the viewer's propose_create_product itself
+        Assert.Contains("That tool isn't available", firstResult);
         Assert.Equal(0, _f.WithDb(db => db.Products.Count(p => p.Title == "Sneaky")));
         Assert.DoesNotContain(_f.Model.Requests[0].Tools, t => t.Name.Contains("confirm") || t.Name.Contains("refund") || t.Name.Contains("delete"));
     }
