@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Orders;
+using Solvelt.Api.Teams;
 using Solvelt.Api.Products;
 using Solvelt.Api.Services;
 
@@ -108,6 +109,9 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
     {
         var p = await db.Products.AsNoTracking().Include(x => x.Service).FirstOrDefaultAsync(x => x.Id == id && x.Type == ListingType.Service);
         if (p?.Service is null || (requireActive && p.Status != ProductStatus.Active)) return (null, null);
+        // suspended, rejected or closed sellers take no new bookings (same rule as order ingest)
+        var st = await db.Sellers.AsNoTracking().Where(s => s.Id == p.SellerId).Select(s => (SellerStatus?)s.Status).FirstOrDefaultAsync();
+        if (st is null || !AccountContextService.Usable(st.Value)) return (null, null);
         return (p, p.Service);
     }
 
@@ -254,6 +258,13 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
             var b = Build(p, d, r, pl, prov, start, now, status);
             b.Number = await NextNumberAsync(now);
             if (quote is not null) b.QuoteId = quote.Id;
+            if (quote is not null)
+            {
+                // close the quote INSIDE the booking transaction: only one accept can move it Quoted -> Accepted
+                var closed = await db.QuoteRequests.Where(q => q.Id == quote.Id && q.Status == QuoteStatus.Quoted)
+                    .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QuoteStatus.Accepted).SetProperty(q => q.BookingId, b.Id).SetProperty(q => q.UpdatedAt, now).SetProperty(q => q.Version, q => q.Version + 1));
+                if (closed == 0) { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return BRes.Conflict("This quote was already accepted or is no longer open.", "quote_not_open"); }
+            }
             db.Bookings.Add(b);
             Event(b, hold ? "booking.hold" : status == BookingStatus.Requested ? "booking.requested" : "booking.confirmed", Actor.Buyer, hold ? $"Slot held until {b.HoldExpiresAt:u}" : null);
             if (!hold) Emit(b, d, status);
@@ -265,7 +276,6 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
                 if (winner is not null) return Existing(winner);
                 throw;
             }
-            if (quote is not null) { /* the caller marks the quote accepted in the same transaction */ }
             await tx.CommitAsync();
             if (d.AssignmentRule == AssignmentRule.RoundRobin) await db.ServiceDetails.Where(x => x.ProductId == sid).ExecuteUpdateAsync(s => s.SetProperty(x => x.RoundRobinCursor, x => x.RoundRobinCursor + 1));
             return new BRes(true, 201, "created", "", new { created = true, booking = Summary(b, d.OnlineInstructions) });
@@ -292,7 +302,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
             AddressJson = pl.AddressJson, PostalCode = pl.Postal, IntakeAnswersJson = pl.IntakeJson, AddOnsJson = pl.AddOnsJson, ServiceTitle = p.Title, PolicyJson = BJson.Ser(PolicyOf(d)),
             PricingModel = d.PricingModel, RateCents = d.PricingModel == PricingModel.Hourly ? d.PriceCents ?? 0 : 0,
             PriceCents = pl.Price, AddOnsCents = pl.AddOnsCents, TravelFeeCents = pl.Travel, TotalCents = pl.Price + pl.AddOnsCents + pl.Travel,
-            CreatedAt = now, UpdatedAt = now
+            ConfirmedAt = status == BookingStatus.Confirmed ? now : null, CreatedAt = now, UpdatedAt = now
         };
     }
 
@@ -327,9 +337,13 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         // keep the held duration/price: only intake, add-ons check and address come from the confirm request
         if (!plan.Ok && d.PricingModel != PricingModel.Quote) return plan;
         var pl = plan.Data as Plan;
-        var now = time.UtcNow();
         await using var tx = await db.Database.BeginTransactionAsync();
         if (!await ClaimCalendarAsync(b.ProviderId)) { await tx.RollbackAsync(); return BRes.Fail(409, "slot_unavailable", "That time is no longer available."); }
+        // everything below is decided INSIDE the provider lock: re-read the booking (a parallel confirm may have won) and take the time now
+        await db.Entry(b).ReloadAsync();
+        if (b.Status is BookingStatus.Confirmed or BookingStatus.Requested or BookingStatus.Rescheduled) { await tx.RollbackAsync(); return Existing(b); }
+        if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) { await tx.RollbackAsync(); return BRes.Conflict($"A {b.Status} booking can't be confirmed."); }
+        var now = time.UtcNow();
         var wasLive = b.Status == BookingStatus.Hold && b.HoldExpiresAt > now;
         if (!wasLive)
         {
@@ -343,11 +357,19 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         b.BuyerName = Cut(r.Buyer?.DisplayName, 200) ?? b.BuyerName; b.BuyerEmail = Cut(r.Buyer?.RelayEmail, 254); b.BuyerPhone = Cut(r.Buyer?.Phone, 40);
         var status = d.BookingMode == BookingMode.Instant ? BookingStatus.Confirmed : BookingStatus.Requested;
         b.Status = status; b.HoldExpiresAt = null; b.ApprovalDeadline = status == BookingStatus.Requested ? now.AddHours(d.ApprovalHours) : null;
+        if (status == BookingStatus.Confirmed) b.ConfirmedAt ??= now;
         b.Version++; b.UpdatedAt = now;
         Event(b, status == BookingStatus.Requested ? "booking.requested" : "booking.confirmed", Actor.Buyer);
         Emit(b, d, status);
         try { await db.SaveChangesAsync(); }
-        catch (DbUpdateConcurrencyException) { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return BRes.Conflict("The booking changed at the same time. Try again.", "version_conflict"); }
+        catch (DbUpdateConcurrencyException)
+        {
+            await tx.RollbackAsync(); db.ChangeTracker.Clear();
+            // a parallel confirm of the same hold got there first: answer idempotently with what it created
+            var cur = await db.Bookings.FirstOrDefaultAsync(x => x.MarketplaceBookingId == mid);
+            if (cur is not null && cur.Status is BookingStatus.Confirmed or BookingStatus.Requested or BookingStatus.Rescheduled) return Existing(cur!);
+            return BRes.Conflict("The booking changed at the same time. Try again.", "version_conflict");
+        }
         await tx.CommitAsync();
         return new BRes(true, 200, "confirmed", "", new { created = false, booking = Summary(b, d.OnlineInstructions) });
     }
@@ -371,7 +393,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         if (CheckVersion(b, version) is { } c) return c;
         if (!BookingStateMachine.Can(b.Status, BookingStateMachine.Act.Approve)) return Illegal(b, BookingStateMachine.Act.Approve);
         if (b.ApprovalDeadline is { } dl && dl <= time.UtcNow()) return BRes.Conflict("The approval time has passed; the request is being declined.", "request_expired");
-        b.Status = BookingStatus.Confirmed; b.ApprovalDeadline = null; b.ProposedStartUtc = null;
+        b.Status = BookingStatus.Confirmed; b.ConfirmedAt ??= time.UtcNow(); b.ApprovalDeadline = null; b.ProposedStartUtc = null;
         Event(b, "booking.approved", actor);
         outbox.Enqueue("booking.confirmed", b.SellerId, b.Id.ToString(), Data(b, new { onlineInstructions = await InstructionsAsync(b), auto = false }));
         return await SaveAsync(b);
@@ -451,7 +473,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         var proposed = BJson.Utc(b.ProposedStartUtc.Value);
         var (err, tx, d) = await MoveLockedAsync(b, b.ProviderId, proposed, true);
         if (err is not null) return err;
-        Move(b, d!, proposed); b.Status = BookingStatus.Confirmed; b.ProposedStartUtc = null; b.ApprovalDeadline = null;
+        Move(b, d!, proposed); b.Status = BookingStatus.Confirmed; b.ConfirmedAt ??= time.UtcNow(); b.ProposedStartUtc = null; b.ApprovalDeadline = null;
         Event(b, "booking.proposal_accepted", Actor.Buyer);
         outbox.Enqueue("booking.confirmed", b.SellerId, b.Id.ToString(), Data(b, new { onlineInstructions = await InstructionsAsync(b), auto = false }));
         return await SaveAsync(b, tx);
@@ -506,6 +528,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
     public async Task<BRes> DecideRescheduleAsync(Booking b, Actor actor, bool approve, string? note, int? version = null)
     {
         if (CheckVersion(b, version) is { } c) return c;
+        if (!BookingStateMachine.Can(b.Status, BookingStateMachine.Act.Reschedule)) return Illegal(b, BookingStateMachine.Act.Reschedule);
         if (b.RescheduleRequestedStartUtc is not { } req) return BRes.Conflict("There is no reschedule request to answer.");
         if (!approve)
         {
@@ -547,7 +570,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
     {
         if (CheckVersion(b, version) is { } c) return c;
         if (!BookingStateMachine.Can(b.Status, BookingStateMachine.Act.Start)) return Illegal(b, BookingStateMachine.Act.Start);
-        b.Status = BookingStatus.InProgress; b.StartedAt = time.UtcNow();
+        b.Status = BookingStatus.InProgress; b.StartedAt = time.UtcNow(); b.RescheduleRequestedStartUtc = null; b.RescheduleRequestId = null;
         Event(b, "booking.started", actor);
         outbox.Enqueue("booking.started", b.SellerId, b.Id.ToString(), Data(b, new { startedAt = b.StartedAt }));
         return await SaveAsync(b);
@@ -563,14 +586,14 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         long extraCents = 0; int billed = 0, extra = 0;
         if (b.PricingModel == PricingModel.Hourly && actualMinutes is { } am)
         {
-            var addOnMinutes = (BJson.From<List<AddOn>>(b.AddOnsJson) ?? []).Sum(a => a.ExtraMinutes);
-            var bookedBase = b.DurationMinutes - addOnMinutes;
+            // the booked time INCLUDES the add-on minutes (already priced as add-ons): compare the work done with all of it
+            var bookedBase = b.DurationMinutes;
             var inc = Math.Max(1, policy.IncrementMinutes);
             billed = (int)Math.Ceiling(am / (double)inc) * inc;
             extra = billed - bookedBase;
             if (extra > 0) extraCents = Prorate(b.RateCents, extra); else extra = 0;
         }
-        b.Status = BookingStatus.Completed; b.CompletedAt = time.UtcNow(); b.ActualMinutes = actualMinutes; b.AdditionalChargeCents = extraCents;
+        b.Status = BookingStatus.Completed; b.CompletedAt = time.UtcNow(); b.RescheduleRequestedStartUtc = null; b.RescheduleRequestId = null; b.ActualMinutes = actualMinutes; b.AdditionalChargeCents = extraCents;
         Event(b, "booking.completed", actor, actualMinutes is null ? null : $"{actualMinutes} min worked");
         outbox.Enqueue("booking.completed", b.SellerId, b.Id.ToString(), Data(b, new { completedAt = b.CompletedAt, actualMinutes, billedMinutes = billed == 0 ? (int?)null : billed }));
         // the booked price is never changed here: extra time is a *request* the marketplace charges (or not)
@@ -586,7 +609,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         if (BJson.Utc(b.StartUtc) > time.UtcNow()) return BRes.Conflict("A booking can only be marked no-show once it has started.", "too_early");
         var policy = BJson.From<BookingPolicy>(b.PolicyJson) ?? new BookingPolicy(24, 0, 2, 100, 60, 24);
         var fee = (long)Math.Round(b.TotalCents * (decimal)policy.NoShowFeePercent / 100m, 0, MidpointRounding.AwayFromZero);
-        b.Status = BookingStatus.NoShow; b.CancellationFeeCents = fee;
+        b.Status = BookingStatus.NoShow; b.CancellationFeeCents = fee; b.RescheduleRequestedStartUtc = null; b.RescheduleRequestId = null;
         Event(b, "booking.no_show", actor);
         outbox.Enqueue("booking.no_show", b.SellerId, b.Id.ToString(), Data(b, new { noShowFeeCents = fee, refundDueCents = b.TotalCents - fee }));
         return await SaveAsync(b);

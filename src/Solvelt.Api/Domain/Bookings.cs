@@ -182,6 +182,8 @@ public class Booking
     public Guid? QuoteId { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+    /// <summary>When the booking first became Confirmed (customer data is only visible from then on).</summary>
+    public DateTime? ConfirmedAt { get; set; }
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public DateTime? ReminderDaySentAt { get; set; }

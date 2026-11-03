@@ -75,6 +75,7 @@ public static class BookingModel
             e.HasIndex(x => new { x.ProviderId, x.BlockStartUtc });
             e.HasIndex(x => new { x.SellerId, x.Status, x.StartUtc });
             e.HasIndex(x => x.ProductId);
+            e.HasIndex(x => x.QuoteId).IsUnique();   // one booking per accepted quote (NULLs never collide)
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
             e.Property(x => x.Location).HasConversion<string>().HasMaxLength(12);
             e.Property(x => x.PricingModel).HasConversion<string>().HasMaxLength(12);

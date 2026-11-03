@@ -456,6 +456,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -582,6 +585,9 @@ namespace Solvelt.Api.Migrations
                         .IsUnique();
 
                     b.HasIndex("ProductId");
+
+                    b.HasIndex("QuoteId")
+                        .IsUnique();
 
                     b.HasIndex("ProviderId", "BlockStartUtc");
 

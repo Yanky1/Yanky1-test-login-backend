@@ -59,11 +59,19 @@ public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mail
             b.BuyerName = "Redacted"; b.BuyerEmail = null; b.BuyerPhone = null; b.AddressJson = null; b.PostalCode = null; b.IntakeAnswersJson = "[]"; b.PiiRedactedAt = now;
             db.BookingEvents.Add(new BookingEvent { BookingId = b.Id, At = now, Type = "booking.redacted", Actor = "system", Text = "Customer details removed" });
             foreach (var m in await db.BookingMessages.Where(x => x.BookingId == b.Id).ToListAsync(ct)) m.Text = "[message removed]";
+            // free text that can carry buyer data: reasons, timeline texts, delivered outbound payloads (messages, cancellation reasons)
+            b.CancelReason = null; b.DeclineReason = null;
+            var bid = b.Id; var bidText = b.Id.ToString();
+            await db.BookingEvents.Where(e => e.BookingId == bid && e.Type != "booking.redacted").ExecuteUpdateAsync(u => u.SetProperty(e => e.Text, (string?)null), ct);
+            await db.Outbox.Where(ob => ob.AggregateId == bidText && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             redacted++;
         }
         var qTerminal = new[] { QuoteStatus.Accepted, QuoteStatus.Declined, QuoteStatus.Expired, QuoteStatus.Withdrawn };
         foreach (var q in await db.QuoteRequests.Where(x => x.PiiRedactedAt == null && qTerminal.Contains(x.Status) && x.UpdatedAt <= cutoff).Take(500).ToListAsync(ct))
         {
+            q.QuoteNote = null; q.DeclineReason = null;
+            var qidText = q.Id.ToString();
+            await db.Outbox.Where(ob => ob.AggregateId == qidText && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             q.BuyerName = "Redacted"; q.BuyerEmail = null; q.BuyerPhone = null; q.AddressJson = null; q.PostalCode = null; q.Details = "Redacted"; q.PreferredTimesJson = "[]"; q.PiiRedactedAt = now;
             redacted++;
         }
@@ -131,15 +139,16 @@ public static class BookingsModule
         builder.Services.AddScoped<BookingService>();
         builder.Services.AddScoped<QuoteService>();
         builder.Services.AddScoped<BookingMaintenance>();
+        builder.Services.AddScoped<IMemberRemovalGuard, BookingRemovalGuard>();
         var o = cfg.GetSection(BookingOptions.Section).Get<BookingOptions>() ?? new BookingOptions();
         if (!builder.Environment.IsEnvironment("Testing") && o.RunBackgroundJobs) builder.Services.AddHostedService<BookingWorker>();
         var writes = cfg.GetValue("RateLimit:BookingsPerMinute", 300);
-        var avail = cfg.GetValue("RateLimit:AvailabilityPerMinute", 120);
+        var avail = cfg.GetValue("RateLimit:AvailabilityPerMinute", 600);
         builder.Services.Configure<RateLimiterOptions>(r =>
         {
             r.AddPolicy("bookings", c => RateLimitPartition.GetFixedWindowLimiter("bookings:" + (c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = writes, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-            r.AddPolicy("availability", c => RateLimitPartition.GetFixedWindowLimiter("availability:" + (c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
+            r.AddPolicy("availability", c => RateLimitPartition.GetFixedWindowLimiter("availability:" + (c.Request.RouteValues["serviceId"]?.ToString() ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),   // per service: the marketplace is ONE caller, a per-IP key would throttle all shoppers together
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = avail, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
         return builder;
@@ -334,5 +343,16 @@ public static class BookingsModule
             if (!await db.QuoteRequests.AnyAsync(x => x.MarketplaceQuoteId == marketplaceQuoteId && x.SellerId == a.SellerId)) return Results.NotFound();
             return Out(await svc.BuyerDeclineAsync(marketplaceQuoteId, "simulated"));
         });
+    }
+}
+
+/// <summary>A member with upcoming bookings cannot be removed or leave: the bookings must be reassigned or cancelled first.</summary>
+public class BookingRemovalGuard(AppDbContext db, TimeProvider time) : IMemberRemovalGuard
+{
+    public async Task<string?> BlockReasonAsync(Guid sellerId, Guid membershipId)
+    {
+        var now = time.GetUtcNow().UtcDateTime;
+        return await db.Bookings.AnyAsync(b => b.ProviderId == membershipId && b.EndUtc > now && CalendarService.BlockingStatuses.Contains(b.Status))
+            ? "This person still has upcoming bookings. Reassign or cancel them first." : null;
     }
 }

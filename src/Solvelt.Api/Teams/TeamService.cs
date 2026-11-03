@@ -37,7 +37,7 @@ public static partial class TeamRules
 }
 
 public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Mailer mailer, UserManager<AppUser> users,
-    IOptions<AppOptions> app)
+    IOptions<AppOptions> app, IEnumerable<IMemberRemovalGuard>? removalGuards = null)
 {
     // ------------------------------------------------------------------ accounts / brands
 
@@ -262,6 +262,8 @@ public class TeamService(AppDbContext db, TimeProvider time, IAuditLog audit, Ma
     {
         if (m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active && await ActiveOwnersAsync(m.SellerId) <= 1)
             return TeamResult.Fail(409, "last_owner", "An account must always have at least one Owner. Transfer ownership first.");
+        foreach (var guard in removalGuards ?? [])
+            if (await guard.BlockReasonAsync(m.SellerId, m.Id) is { } reason) return TeamResult.Fail(409, "has_upcoming_bookings", reason);
         db.Memberships.Remove(m);
         await RepointPrimaryOwnerAsync(m.SellerId, m.UserId, m.Id);
         // Access to THIS account ends immediately: sessions acting on it lose the active account (checked again on every request anyway).
