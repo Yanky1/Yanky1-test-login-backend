@@ -309,7 +309,7 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
     {
         if (r.MarketplaceQuoteId is not { Length: > 0 and <= 64 } qid) return BRes.Invalid("marketplaceQuoteId is required (up to 64 characters).", "marketplace_id");
         var existing = await db.QuoteRequests.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceQuoteId == qid);
-        if (existing is not null) return new BRes(true, 200, "exists", "", new { created = false, quoteId = existing.Id, status = existing.Status.ToString() });
+        if (existing is not null) return new BRes(true, 200, "exists", "", new { created = false, quoteId = existing.Id, marketplaceQuoteId = qid, status = existing.Status.ToString() });
         if (r.ServiceId is not { } sid) return BRes.Invalid("serviceId is required.", "invalid");
         var (p, d) = await bookings.ServiceAsync(sid);
         if (p is null || d is null) return BRes.Fail(404, "service_not_found", "Service not found.");
@@ -334,10 +334,10 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
         {
             db.ChangeTracker.Clear();
             var winner = await db.QuoteRequests.AsNoTracking().FirstOrDefaultAsync(q => q.MarketplaceQuoteId == qid);
-            if (winner is not null) return new BRes(true, 200, "exists", "", new { created = false, quoteId = winner.Id, status = winner.Status.ToString() });
+            if (winner is not null) return new BRes(true, 200, "exists", "", new { created = false, quoteId = winner.Id, marketplaceQuoteId = qid, status = winner.Status.ToString() });
             throw;
         }
-        return new BRes(true, 201, "created", "", new { created = true, quoteId = x.Id, status = x.Status.ToString() });
+        return new BRes(true, 201, "created", "", new { created = true, quoteId = x.Id, marketplaceQuoteId = qid, status = x.Status.ToString() });
     }
 
     public async Task<BRes> SendAsync(QuoteRequest x, AccountAccess a, SendQuoteIn r)
