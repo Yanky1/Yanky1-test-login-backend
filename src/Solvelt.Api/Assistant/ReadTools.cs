@@ -25,7 +25,8 @@ public static class ReadTools
         return parts.Length == 0 ? "Buyer" : parts.Length == 1 ? parts[0] : $"{parts[0]} {parts[^1][0]}.";
     }
     /// <summary>Buyer-written text: emails, links, phone-like numbers and long tokens masked, then clipped.</summary>
-    public static string BuyerText(string? s, int n = 600) => Clip(Phone.Redactor.Redact(s), n);
+    public static string BuyerText(string? s, int n = 600) => Clip(Phone.Redactor.Redact(StreetRx.Replace(s ?? "", "[address]")), n);
+    private static readonly System.Text.RegularExpressions.Regex StreetRx = new(@"\b\d{1,5}[A-Za-z]?\s+(?:[A-Za-z0-9.'\-]+\s+){1,4}(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|place|pl|terrace|ter|highway|hwy)\b\.?(?:\s*,?\s*(?:apt|apartment|suite|ste|unit|floor|fl)\.?\s*#?\w+)?", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
     private static int Limit(JsonElement i, int def = 10, int max = 25) => Math.Clamp(In.Int(i, "limit") ?? def, 1, max);
 
     private static readonly OrderStatus[] Unshipped = [OrderStatus.New, OrderStatus.Accepted, OrderStatus.PartiallyShipped, OrderStatus.OnHold];

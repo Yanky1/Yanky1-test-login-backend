@@ -21,6 +21,8 @@ public sealed class ToolContext(AppDbContext db, AccountAccess access, IServiceP
     public Guid ConversationId { get; } = conversationId;
     public AssistantOptions Options { get; } = options;
     public DateTime Now => Time.GetUtcNow().UtcDateTime;
+    /// <summary>Fires when the tool call timed out or the user stopped: work that checks it must not write anything afterwards.</summary>
+    public CancellationToken Ct { get; init; }
     public T Get<T>() where T : notnull => (T)Services.GetService(typeof(T))!;
     public List<EntityRef> Refs { get; } = [];
     public List<AssistantPendingAction> Proposals { get; } = [];

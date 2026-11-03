@@ -49,7 +49,7 @@ public sealed class ActionRegistry
 }
 
 /// <summary>Turns an <see cref="ActionDef"/> into the model-facing "propose_*" tool. Running it stores a pending action; nothing else.</summary>
-public sealed class ActionTool(ActionDef def, PendingActionService pending) : IAssistantTool
+public sealed class ActionTool(ActionDef def) : IAssistantTool
 {
     public string Name => def.Type; public string Description => def.Description + " This only PREPARES the change: the user must confirm it on a card before anything happens.";
     public string SchemaJson => def.SchemaJson; public string Label => def.Label; public Permission Permission => def.Permission; public bool IsAction => true;
@@ -57,7 +57,7 @@ public sealed class ActionTool(ActionDef def, PendingActionService pending) : IA
     {
         var p = await def.PrepareAsync(ctx, input);
         if (p.Proposal is null) return ToolOutput.Error(p.Error ?? "That can't be prepared.");
-        var action = await pending.ProposeAsync(ctx, def, p.Proposal);
+        var action = await ctx.Get<PendingActionService>().ProposeAsync(ctx, def, p.Proposal); // the call's own scope (and DbContext)
         ctx.Proposals.Add(action);
         return ToolOutput.Ok($"I prepared this for you to confirm: {action.Summary} Nothing has changed yet. Use the Confirm button on the card below.",
             new { proposed = true, actionId = action.Id, summary = action.Summary, diff = p.Proposal.Diff, expiresAt = action.ExpiresAt, note = "NOT executed. The user must press Confirm." });
