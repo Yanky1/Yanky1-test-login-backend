@@ -353,4 +353,6 @@ public class NotificationPreference
     public bool? ReturnRequest { get; set; }
     public bool? BuyerMessage { get; set; }
     public bool? OverdueReply { get; set; }
+    /// <summary>Payment emails (payout failed, dispute, negative balance, onboarding). Owners always get them; null = Admin default off.</summary>
+    public bool? PaymentEmails { get; set; }
 }

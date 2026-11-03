@@ -1587,6 +1587,123 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("inbound_nonces", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.LedgerEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Account")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<Guid>("JournalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<Guid?>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("JournalId");
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("SellerId", "Currency", "Account");
+
+                    b.ToTable("ledger_entries", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.LedgerJournal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Memo")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<Guid?>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SourceRef")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("SellerId", "CreatedAt");
+
+                    b.ToTable("ledger_journals", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.LoginThrottle", b =>
                 {
                     b.Property<string>("KeyHash")
@@ -1716,6 +1833,9 @@ namespace Solvelt.Api.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool?>("OverdueReply")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool?>("PaymentEmails")
                         .HasColumnType("boolean");
 
                     b.Property<bool?>("ReturnRequest")
@@ -2129,6 +2249,369 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("outbox_messages", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentDispute", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<DateTime>("EventAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("EvidenceDueBy")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("FeeCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExternalId")
+                        .IsUnique();
+
+                    b.HasIndex("SellerId");
+
+                    b.ToTable("payment_disputes", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentJobLease", b =>
+                {
+                    b.Property<string>("Name")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("LockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Name");
+
+                    b.ToTable("payment_job_leases", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentNotice", b =>
+                {
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Key")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<DateTime>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("SellerId", "Key");
+
+                    b.ToTable("payment_notices", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentPayout", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("ArrivalDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<DateTime>("EventAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FailureCode")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("StripePayoutId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId");
+
+                    b.HasIndex("StripePayoutId")
+                        .IsUnique();
+
+                    b.ToTable("payment_payouts", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentReference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CapturedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("EventId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("MarketplaceBookingId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MarketplaceOrderId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Ref")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MarketplaceBookingId");
+
+                    b.HasIndex("MarketplaceOrderId");
+
+                    b.HasIndex("Ref");
+
+                    b.HasIndex("EventId", "Ref")
+                        .IsUnique();
+
+                    b.ToTable("payment_references", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PaymentTransfer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("BatchDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("DestinationAccountId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("EventAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Retries")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)");
+
+                    b.Property<string>("StripeTransferId")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("SellerId");
+
+                    b.HasIndex("StripeTransferId");
+
+                    b.HasIndex("Status", "NextAttemptAt");
+
+                    b.ToTable("payment_transfers", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PayoutAccount", b =>
+                {
+                    b.Property<Guid>("SellerId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BankLast4")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BankName")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("ChargesEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("DetailsSubmitted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("DisabledReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("LastEventAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("PayoutDelayDays")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PayoutInterval")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("PayoutsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("RequirementsDeadline")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RequirementsDueJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequirementsPastDueJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StripeAccountId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("SellerId");
+
+                    b.HasIndex("StripeAccountId")
+                        .IsUnique();
+
+                    b.ToTable("payout_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PayoutHold", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("PlacedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("PlacedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReleaseReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReleasedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ReleasedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId", "ReleasedAt");
+
+                    b.ToTable("payout_holds", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.PhoneCredential", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -2256,6 +2739,32 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("ExpiresAt");
 
                     b.ToTable("phone_states", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ProcessedPaymentEvent", b =>
+                {
+                    b.Property<string>("Source")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("EventId")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Source", "EventId");
+
+                    b.ToTable("processed_payment_events", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.Product", b =>
@@ -2859,6 +3368,42 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("SellerId", "Status");
 
                     b.ToTable("quote_requests", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ReconciliationFlag", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Detail")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ResolvedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("TransferId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ResolvedAt");
+
+                    b.ToTable("reconciliation_flags", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.RefreshToken", b =>
@@ -3859,6 +4404,15 @@ namespace Solvelt.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.LedgerEntry", b =>
+                {
+                    b.HasOne("Solvelt.Api.Domain.LedgerJournal", null)
+                        .WithMany("Entries")
+                        .HasForeignKey("JournalId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.MembershipBrand", b =>
                 {
                     b.HasOne("Solvelt.Api.Domain.Brand", null)
@@ -4133,6 +4687,11 @@ namespace Solvelt.Api.Migrations
             modelBuilder.Entity("Solvelt.Api.Domain.AccountMembership", b =>
                 {
                     b.Navigation("Brands");
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.LedgerJournal", b =>
+                {
+                    b.Navigation("Entries");
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.OrderMessage", b =>

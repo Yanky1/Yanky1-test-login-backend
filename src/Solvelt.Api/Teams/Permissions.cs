@@ -16,7 +16,9 @@ public enum Permission
     BrandWorkRead,          // read brand content (products, questions: built later)
     BrandWorkWrite,         // write brand content (orders: accept/ship/cancel/returns, messages)
     ProvidersManage,        // mark team members as service providers, edit anyone's working hours/time off (Owner/Admin); providers always manage their own
-    OrderRefund             // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
+    OrderRefund,            // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
+    PaymentsRead,           // balances, ledger, transfers, payouts, statements, disputes (Owner/Admin; never Manager/Viewer)
+    PaymentsManage          // start/continue payout onboarding, open the Stripe Express dashboard (Owner only)
 }
 
 /// <summary>The central role -> permission matrix. Documented in docs/TEAMS.md; enforced by endpoint filters.</summary>
@@ -26,7 +28,7 @@ public static class Permissions
     {
         [AccountRole.Owner] = [.. Enum.GetValues<Permission>()],
         [AccountRole.Admin] = [.. Enum.GetValues<Permission>().Except([
-            Permission.AccountEditBusiness, Permission.AgreementAccept, Permission.OwnershipTransfer, Permission.AccountClose])],
+            Permission.AccountEditBusiness, Permission.AgreementAccept, Permission.OwnershipTransfer, Permission.AccountClose, Permission.PaymentsManage])],
         [AccountRole.Manager] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead, Permission.BrandWorkWrite],
         [AccountRole.Viewer] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead],
     };

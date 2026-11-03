@@ -128,7 +128,8 @@ public enum StaffPermission
     IntegrationsView, IntegrationsAct, IntegrationsDiscard,
     AuditView, AuditExport,
     SettingsView, SettingsEdit,
-    StaffView, StaffManage
+    StaffView, StaffManage,
+    PaymentsView, PaymentsHold, PaymentsRetry, PaymentsAdjust
 }
 
 public static class StaffPermissions
@@ -136,7 +137,8 @@ public static class StaffPermissions
     private static readonly StaffPermission[] ReadOnly =
     [
         StaffPermission.DashboardView, StaffPermission.ApplicationsView, StaffPermission.SellersView, StaffPermission.UsersView,
-        StaffPermission.ModerationView, StaffPermission.LookupsView, StaffPermission.IntegrationsView, StaffPermission.AuditView, StaffPermission.SettingsView
+        StaffPermission.ModerationView, StaffPermission.LookupsView, StaffPermission.IntegrationsView, StaffPermission.AuditView, StaffPermission.SettingsView,
+        StaffPermission.PaymentsView
     ];
 
     public static readonly IReadOnlyDictionary<StaffRole, HashSet<StaffPermission>> Matrix = new Dictionary<StaffRole, HashSet<StaffPermission>>
@@ -145,7 +147,7 @@ public static class StaffPermissions
         [StaffRole.ReadOnly] = ReadOnly.ToHashSet(),
         // Support: look up and help sellers/users with non-destructive account actions, incl. break-glass PII reveal and retrying (not discarding) dead letters.
         [StaffRole.Support] = ReadOnly.Concat([StaffPermission.UsersAct, StaffPermission.SellersResendVerification,
-            StaffPermission.LookupsReveal, StaffPermission.IntegrationsAct]).ToHashSet(),
+            StaffPermission.LookupsReveal, StaffPermission.IntegrationsAct, StaffPermission.PaymentsHold, StaffPermission.PaymentsRetry]).ToHashSet(),
         // Moderator: reported content, listings, messages, seller applications (and escalating to suspension).
         [StaffRole.Moderator] = ReadOnly.Concat([StaffPermission.ModerationAct, StaffPermission.ApplicationsDecide,
             StaffPermission.ApplicationsAssign, StaffPermission.SellersSuspend]).ToHashSet()
@@ -157,6 +159,7 @@ public static class StaffPermissions
     public static readonly HashSet<StaffPermission> StepUp =
     [
         StaffPermission.SellersClose, StaffPermission.SellersTransferOwnership, StaffPermission.UsersDisable2fa,
-        StaffPermission.IntegrationsDiscard, StaffPermission.AuditExport, StaffPermission.SettingsEdit, StaffPermission.StaffManage
+        StaffPermission.IntegrationsDiscard, StaffPermission.AuditExport, StaffPermission.SettingsEdit, StaffPermission.StaffManage,
+        StaffPermission.PaymentsAdjust
     ];
 }

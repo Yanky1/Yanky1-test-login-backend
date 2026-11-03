@@ -7,6 +7,7 @@ using Solvelt.Api.Domain;
 using Solvelt.Api.Assistant;
 using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
+using Solvelt.Api.Payments;
 using Solvelt.Api.Products;
 using Solvelt.Api.Teams;
 
@@ -96,6 +97,40 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
     public DbSet<JobRun> JobRuns => Set<JobRun>();
 
+    // seller payments & payouts (see Payments/)
+    public DbSet<LedgerJournal> LedgerJournals => Set<LedgerJournal>();
+    public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+    public DbSet<PayoutAccount> PayoutAccounts => Set<PayoutAccount>();
+    public DbSet<PayoutHold> PayoutHolds => Set<PayoutHold>();
+    public DbSet<PaymentTransfer> PaymentTransfers => Set<PaymentTransfer>();
+    public DbSet<PaymentPayout> PaymentPayouts => Set<PaymentPayout>();
+    public DbSet<PaymentDispute> PaymentDisputes => Set<PaymentDispute>();
+    public DbSet<PaymentReference> PaymentReferences => Set<PaymentReference>();
+    public DbSet<ProcessedPaymentEvent> ProcessedPaymentEvents => Set<ProcessedPaymentEvent>();
+    public DbSet<ReconciliationFlag> ReconciliationFlags => Set<ReconciliationFlag>();
+    public DbSet<PaymentNotice> PaymentNotices => Set<PaymentNotice>();
+    public DbSet<PaymentJobLease> PaymentJobLeases => Set<PaymentJobLease>();
+
+    /// <summary>The ledger is append-only: an update or delete of a journal or entry through the change tracker is a programming error.</summary>
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        GuardLedger();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        GuardLedger();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void GuardLedger()
+    {
+        foreach (var e in ChangeTracker.Entries())
+            if (e.Entity is LedgerJournal or LedgerEntry && e.State is EntityState.Modified or EntityState.Deleted)
+                throw new InvalidOperationException("The ledger is append-only: journals and entries are never edited or deleted (post a correcting journal).");
+    }
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -126,6 +161,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureBookings();
         b.ConfigureAssistant();
         b.ConfigureAdmin();
+        b.ConfigurePayments();
     }
 
     public static void Seed(AppDbContext db)
