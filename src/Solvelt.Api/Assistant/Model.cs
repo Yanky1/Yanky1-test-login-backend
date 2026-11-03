@@ -6,6 +6,9 @@ namespace Solvelt.Api.Assistant;
 public abstract record ABlock;
 public sealed record AText(string Text) : ABlock;
 public sealed record AToolUse(string Id, string Name, JsonElement Input) : ABlock;
+/// <summary>Reasoning blocks must go back to the API unchanged (signature included) while a tool loop is in flight, or the next call is rejected.</summary>
+public sealed record AThinking(string Thinking, string Signature) : ABlock;
+public sealed record ARedactedThinking(string Data) : ABlock;
 public sealed record AToolResult(string ToolUseId, string Content, bool IsError = false) : ABlock;
 
 public sealed record AMessage(string Role, List<ABlock> Blocks)
