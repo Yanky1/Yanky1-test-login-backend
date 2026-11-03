@@ -148,7 +148,7 @@ public static class PhoneWebhooks
         }).RequireRateLimiting("sensitive");
 
         c.MapPost("/links/complete-signup", async (CompleteSignupRequest r, PhoneLinkService links, PinService pins, UserManager<AppUser> users, AuthFlows flows,
-            OneTimeCodeService codes, Mailer mailer, AccountSecurityService security, IAuditLog audit, IOptions<AppOptions> app) =>
+            OneTimeCodeService codes, Mailer mailer, AccountSecurityService security, IAuditLog audit, IOptions<AppOptions> app, AppDbContext db) =>
         {
             var l = await links.FindAsync(r.Token);
             if (l is null || l.Purpose != "signup") return Results.Problem("This link is invalid or has expired.", statusCode: 400, extensions: new Dictionary<string, object?> { ["code"] = "invalid_link" });
@@ -173,8 +173,12 @@ public static class PhoneWebhooks
                 {
                     user = await flows.CreateSellerUserAsync(email, r.Password, false, true);
                     user.PhoneNumber = l.Phone; user.PhoneNumberConfirmed = true;
-                    var upd = await users.UpdateAsync(user);
-                    if (!upd.Succeeded) { await security.DeleteUnverifiedAsync(user); return Results.Accepted(value: AuthEndpoints.SignupAccepted); } // number meanwhile taken: same generic answer
+                    try
+                    {
+                        var upd = await users.UpdateAsync(user);
+                        if (!upd.Succeeded) throw new DbUpdateException("phone");
+                    }
+                    catch (DbUpdateException) { db.ChangeTracker.Clear(); var stale = await users.FindByEmailAsync(email); if (stale is not null) await security.DeleteUnverifiedAsync(stale); return Results.Accepted(value: AuthEndpoints.SignupAccepted); } // number meanwhile taken: same generic answer
                 }
                 catch (AccountCreationException ex) { return Validation.Invalid("password", ex.Errors); }
                 if (links.Unprotect(l) is { } pinHash) await pins.SetHashAsync(user.Id, pinHash);
@@ -284,7 +288,7 @@ public static class PhoneWebhooks
         // Commands win over whatever step the conversation is in.
         var cmd = PhoneEngine.Keyword(body);
         if (cmd is not null && cmd != PhoneEngine.Internal)
-            conv.Step = st.UserId is not null && st.AuthUntil > now ? "auth_menu" : "menu";
+            conv.Step = cmd is AiActions.StartSignin or AiActions.StartSignup || !(st.UserId is not null && st.AuthUntil > now) ? "menu" : "auth_menu";
         if (conv.Step == "menu" && cmd == AiActions.RequestResetLink)
         { var t0 = await engine.SmsResetAsync(conv, new Turn()); conv.Save(); await db.SaveChangesAsync(); return Xml(VoiceResponse.Message(string.Join(" ", t0.Say))); }
 

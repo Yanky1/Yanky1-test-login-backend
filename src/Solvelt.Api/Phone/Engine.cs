@@ -249,7 +249,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
         {
             var r = await ai.InterpretAsync(new AiRequest(c.Chan.ToString(), c.Step, allowed, red, fields), c.Voice, ct);
             if (r is null) return (null, false);
-            await audit.WriteAsync("ai.proposal", c.St.UserId, null, $"channel={c.Chan};step={c.Step};action={Short(r.Action)};allowed={allowed.Contains(r.Action)}");
+            await audit.WriteAsync("ai.proposal", c.St.UserId, null, $"channel={c.Chan};step={c.Step};action={(AiActions.All.Contains(r.Action) ? r.Action : "other")};allowed={allowed.Contains(r.Action)}");
             return (r, false);
         }
         catch (Exception ex)
@@ -259,7 +259,6 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
             return (null, true);
         }
     }
-    private static string Short(string s) => s.Length > 30 ? s[..30] : s;
 
     private Turn AiDown(Conv c, Turn t)
     {
@@ -341,7 +340,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
 
     private async Task<Turn> StartSignInAsync(Conv c, Turn t)
     {
-        c.St.Retries = 0;
+        c.St.Retries = 0; c.St.UserId = null; c.St.AuthUntil = null; // starting a sign-in always starts from signed-out
         c.D.Target = c.St.Phone;
         if (c.Voice)
         {
@@ -629,7 +628,7 @@ public class PhoneEngine(PhoneIdentityService ident, PinService pins, SmsService
         }
         var url = await links.CreateResetAsync(users, user);
         var sent = await sms.SendAsync(user.PhoneNumber!, $"Finish your {O.BrandName} application (kosher certificate, Seller Agreement) and set your password. Link valid {O.SignupLinkMinutes} minutes, works once: {url}");
-        c.D.Biz = []; c.D.Field = 0;
+        c.D.Biz = []; c.D.Field = 0; c.St.UserId = null; c.St.AuthUntil = null;
         return Goodbye(c, t, sent ? "Thanks. We texted you a link to finish your application on the web." : "Thanks. Your details are saved. Please finish your application on the website.");
     }
 

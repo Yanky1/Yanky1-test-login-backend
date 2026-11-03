@@ -115,6 +115,7 @@ public class Api(ApiFactory f)
 {
     public HttpClient Http { get; } = f.NewClient();
     public Login? Session { get; private set; }
+    public void SetSession(Login l) => Session = l;
     public string? Csrf { get; private set; }
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 

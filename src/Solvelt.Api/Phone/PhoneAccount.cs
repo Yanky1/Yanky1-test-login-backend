@@ -85,8 +85,8 @@ public static class PhoneAccountEndpoints
             if (o != OneTimeCodeService.VerifyOutcome.Ok || row?.Target is null) return Bad("That code isn't right or has expired.", "invalid_or_expired");
             var changed = u.PhoneNumberConfirmed;
             u.PhoneNumber = row.Target; u.PhoneNumberConfirmed = true;
-            var res = await users.UpdateAsync(u);
-            if (!res.Succeeded) return Bad("That number can't be used.", "phone_unavailable"); // unique index: somebody verified it first
+            try { if (!(await users.UpdateAsync(u)).Succeeded) return Bad("That number can't be used.", "phone_unavailable"); }
+            catch (DbUpdateException) { return Bad("That number can't be used.", "phone_unavailable"); } // unique index: somebody verified it first
             await mailer.SendAsync(changed ? PhoneTemplates.PhoneChanged(u.Email!, u.PhoneNumber) : PhoneTemplates.PhoneAdded(u.Email!, u.PhoneNumber));
             await audit.WriteAsync(changed ? "phone.changed" : "phone.added", u.Id, u.Email, $"phone={PhoneFormat.Mask(u.PhoneNumber)}");
             return Results.Ok(new { numberEnding = u.PhoneNumber[^4..] });

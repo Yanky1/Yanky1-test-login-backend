@@ -32,7 +32,7 @@ public static partial class Redactor
     [GeneratedRegex(@"(?<![\d])(\d{6})(?![\d])")] private static partial Regex SixRx();
     /// <summary>Six-digit groups in an SMS ("123456 654321" or "code 123456"), in order.</summary>
     public static List<string> SixDigitGroups(string? text) =>
-        text is null ? [] : SixRx().Matches(Regex.Replace(text, @"(?<=\d)[\s\-](?=\d)", "")).Select(m => m.Value).Take(2).ToList();
+        text is null ? [] : SixRx().Matches(text).Select(m => m.Value).Take(2).ToList();
 
     public static string? FindEmail(string? text)
     {

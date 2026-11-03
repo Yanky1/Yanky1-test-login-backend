@@ -47,11 +47,11 @@ public class FakeConversationAi : IConversationAi
         if (Fail) throw new InvalidOperationException("AI unavailable (fake)");
         if (Override is not null) return Task.FromResult(Override(r));
         var t = r.UserText.ToLowerInvariant();
-        string A(string a) => r.Allowed.Contains(a) ? a : AiActions.Unclear;
+        string A(string a) => a; // like a hijacked model: may propose actions that are not allowed in this step; the state machine refuses them
         var fields = new Dictionary<string, string>();
         if (r.Step == "biz")
         {
-            var m = Regex.Match(r.UserText, @"(?:company|business|vendor)(?: name)?(?: is| called)?\s+(?<v>[\p{L}0-9 &'.\-]{2,60})", RegexOptions.IgnoreCase);
+            var m = Regex.Match(r.UserText, @"(?:company|business|vendor)(?: name)?(?: is| called)?\s+(?<v>[\p{L}0-9 &'.\-]{2,60}?)(?=\s+and\b|[,]|$)", RegexOptions.IgnoreCase);
             if (m.Success) fields["vendorName"] = m.Groups["v"].Value.Trim();
             m = Regex.Match(r.UserText, @"(?:my name is|contact is|i am|i'm)\s+(?<v>[\p{L} '.\-]{2,60})", RegexOptions.IgnoreCase);
             if (m.Success) fields["contactName"] = m.Groups["v"].Value.Trim();
