@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Tests;
 using static Solvelt.Api.Tests.Orders;
+using TestApi = Solvelt.Api.Tests.Api;
 
 namespace Solvelt.Api.Evals;
 
@@ -34,7 +35,7 @@ public class AssistantEvals : IClassFixture<RealModelFactory>
 
     private record Outcome(JsonNode Chat, string[] Tools, List<AssistantPendingAction> Actions, string Text);
 
-    private async Task<Outcome> Ask(Api who, Guid seller, string text, object? page = null)
+    private async Task<Outcome> Ask(TestApi who, Guid seller, string text, object? page = null)
     {
         var chat = await Asst.Chat(who, text, null, page);
         var tools = chat["message"]!["tools"]!.AsArray().Select(t => (string)t!["name"]!).ToArray();
