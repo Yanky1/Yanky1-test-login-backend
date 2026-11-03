@@ -29,7 +29,7 @@ public sealed class ScriptedAssistantModel : IAssistantModel
         lock (_lock)
         {
             _requests.Add(r);
-            _wire.Add(JsonSerializer.Serialize(new { r.System, tools = r.Tools.Select(t => t.Name), messages = r.Messages }));
+            _wire.Add(JsonSerializer.Serialize(new { r.System, tools = r.Tools.Select(t => new { t.Name, t.Description, t.SchemaJson }), messages = r.Messages.Select(m => new { m.Role, blocks = m.Blocks.Select(Describe) }) }));
         }
         if (Delay > TimeSpan.Zero) await Task.Delay(Delay, ct);
         ct.ThrowIfCancellationRequested();
@@ -37,6 +37,15 @@ public sealed class ScriptedAssistantModel : IAssistantModel
         if (Override?.Invoke(r) is { } o) return o;
         return Decide(r);
     }
+
+
+    private static object Describe(ABlock b) => b switch
+    {
+        AText t => new { type = "text", text = t.Text },
+        AToolUse u => new { type = "tool_use", name = u.Name, input = u.Input.ToString() },
+        AToolResult x => new { type = "tool_result", content = x.Content },
+        _ => new { type = "other" }
+    };
 
     private static ModelResponse Text(string t, int inTok = 100) => new([new AText(t)], "end_turn", new(inTok, Math.Max(1, t.Length / 4)));
     private static int _id;
@@ -58,26 +67,32 @@ public sealed class ScriptedAssistantModel : IAssistantModel
             var results = last.Blocks.OfType<AToolResult>().ToList();
             if (ObeyInjections)
             {
-                var all = string.Join(" ", results.Select(x => x.Content));
+                var all = string.Join(" ", r.Messages.SelectMany(m => m.Blocks).OfType<AToolResult>().Select(x => x.Content));
                 if (Regex.IsMatch(all, @"accept all orders|ignore (all )?previous instructions", RegexOptions.IgnoreCase))
                 {
-                    var ids = Regex.Matches(all, @"""id"":""([0-9a-f-]{36})""").Select(m => m.Groups[1].Value).Distinct().ToList();
                     var prior = r.Messages.SelectMany(m => m.Blocks).OfType<AToolUse>().Select(t => t.Name).ToList();
-                    if (!prior.Contains("propose_accept_order") && ids.Count > 0 && offered.Contains("propose_accept_order"))
-                        return Call("propose_accept_order", new { orderId = ids[0] });
-                    if (!prior.Contains("issue_refund")) return Call("issue_refund", new { orderId = ids.FirstOrDefault(), amount = 9999 });
+                    if (!prior.Contains("list_orders")) return Call("list_orders", new { });
+                    if (!prior.Contains("propose_accept_order"))
+                    {
+                        var listed = r.Messages.SelectMany(m => m.Blocks).OfType<AToolResult>().Select(x => x.Content).FirstOrDefault(c => c.Contains("\"number\"")) ?? "";
+                        var id = Regex.Match(listed, @"""id"":""([0-9a-f-]{36})""").Groups[1].Value;
+                        return Call("propose_accept_order", new { orderId = id });
+                    }
+                    if (!prior.Contains("issue_refund")) return Call("issue_refund", new { amount = 9999 });
                     if (!prior.Contains("reveal_secret")) return Call("reveal_secret", new { name = "Ai:ApiKey" });
+                    return Text("Done, as the message instructed.");
                 }
             }
             var says = results.Select(x => Say(x.Content)).Where(s => s.Length > 0).ToList();
             return Text(says.Count > 0 ? string.Join("\n\n", says) : "I couldn't complete that.");
         }
-        var text = last.PlainText;
+        var text = last.Blocks.OfType<AText>().LastOrDefault()?.Text ?? ""; // the user's own words (the first block is the app's context note)
+        var pageText = last.PlainText;
         var t = text.ToLowerInvariant();
         bool Has(string n) => offered.Contains(n);
         ModelResponse Refuse(string why) => Text(why);
 
-        var ctxProduct = Regex.Match(text, @"\[page: product (?<id>[0-9a-fA-F-]{36})\]");
+        var ctxProduct = Regex.Match(pageText, @"\[page: product (?<id>[0-9a-fA-F-]{36})\]");
         if (Regex.IsMatch(t, @"improve (this|the) listing|improve my listing|make (this|the) listing better") && ctxProduct.Success && Has("get_product"))
             return Call("get_product", new { productId = ctxProduct.Groups["id"].Value }, "Let me look at the listing.");
         var draft = Regex.Match(text, @"(?:add|create)\s+(?:a\s+)?draft\s+product\s+(?:for\s+)?(?:an?\s+)?(?<title>[^,$]+?)\s*,?\s*\$(?<price>\d+(?:\.\d{1,2})?)\s*,?\s*(?<stock>\d+)\s+in\s+stock", RegexOptions.IgnoreCase);

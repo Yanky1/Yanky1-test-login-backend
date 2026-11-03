@@ -77,7 +77,7 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
         json = json.Replace("<", "\\u003c").Replace(">", "\\u003e");
         return "<untrusted_data>" + json + "</untrusted_data>";
     }
-    private static readonly JsonSerializerOptions ProductsJson = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions ProductsJson = new(JsonSerializerDefaults.Web) { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     public async Task<TurnResult> RunAsync(TurnRequest req, Func<AssistantEvent, Task> emit, CancellationToken ct)
     {
