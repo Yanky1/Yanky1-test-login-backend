@@ -10,12 +10,14 @@ using Solvelt.Api.Teams;
 namespace Solvelt.Api.Orders;
 
 public record IngestBuyer(string? DisplayName, string? RelayEmail, string? Phone);
-public record IngestAddress(string? Name, string? Line1, string? Line2, string? City, string? Region, string? PostalCode, string? Country);
+public record IngestAddress(string? Name, string? Line1, string? Line2, string? City, string? Region, string? PostalCode, string? Country, double? Lat = null, double? Lng = null);
 public record IngestLine(string? MarketplaceLineId, Guid SellerId, Guid BrandId, Guid? ProductId, Guid? VariantId, string? Sku, int Quantity,
     long UnitPriceCents, long DiscountCents, long TaxCents);
 public record IngestShipping(Guid SellerId, Guid BrandId, long AmountCents);
+/// <summary>Additive: the buyer chose local delivery from this seller (and brand) for this date and window (see docs/LOCAL-DELIVERY.md).</summary>
+public record IngestDelivery(Guid SellerId, Guid BrandId, string? Method, Guid? WindowId, DateOnly? Date);
 public record IngestOrder(string? MarketplaceOrderId, DateTime? PlacedAt, string? Currency, IngestBuyer? Buyer, IngestAddress? ShippingAddress,
-    string? ShippingMethod, string? ShippingSpeed, string? GiftMessage, List<IngestLine>? Lines, List<IngestShipping>? Shipping);
+    string? ShippingMethod, string? ShippingSpeed, string? GiftMessage, List<IngestLine>? Lines, List<IngestShipping>? Shipping, List<IngestDelivery>? Deliveries = null);
 
 public record LineError(int Index, string Code, string Message);
 public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineError> Errors)
@@ -24,7 +26,7 @@ public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineErro
 }
 
 /// <summary>Creates seller orders from a marketplace order: validation, splitting per (account, brand), stock reservation, SLA dates, fees, number.</summary>
-public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier, InflightHolds inflight)
+public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier, InflightHolds inflight, Solvelt.Api.Delivery.DeliveryService delivery)
 {
     private static readonly Dictionary<string, int> Transit = new() { ["standard"] = 5, ["expedited"] = 2, ["overnight"] = 1 };
     /// <summary>Upper bound for any single money field (10,000,000.00): keeps every sum far inside <c>long</c> (100 lines x 10,000 units).</summary>
@@ -109,6 +111,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         var reservedLog = new List<(Guid SellerId, Guid ProductId, Guid? VariantId, int Qty)>();
         using var holds = inflight.Begin();   // visible to the reconciliation job until the order is saved (or the holds are given back)
         var orders = new List<SellerOrder>();
+        var booked = new List<LocalDelivery>();
         try
         {
             foreach (var g in resolved.GroupBy(r => (r.L.SellerId, r.L.BrandId)))
@@ -143,12 +146,32 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     else order.Oversold = true;
                     order.Lines.Add(line);
                 }
+                if (ad is { Lat: { } alat, Lng: { } alng } && Solvelt.Api.Delivery.Geo.ValidLatLng(alat, alng)) { order.ShipLat = alat; order.ShipLng = alng; }
                 OrderSupport.Recalculate(order, await Solvelt.Api.Admin.PlatformSettings.FeeAsync(db, o.FeeBasisPoints));
                 order.Number = await OrderSupport.NextNumberAsync(db, now);
                 db.AddEvent(order.Id, "order.placed", Party.Buyer, null, "Order placed", now);
                 if (order.Oversold) db.AddEvent(order.Id, "order.oversold", Party.System, null, "Not enough stock for every item: needs attention", now);
                 db.Orders.Add(order);
                 orders.Add(order);
+                if (req.Deliveries?.FirstOrDefault(x => x.SellerId == g.Key.SellerId && x.BrandId == g.Key.BrandId) is { } dl)
+                {
+                    if (!string.Equals(dl.Method, "local", StringComparison.OrdinalIgnoreCase) || dl.WindowId is null || dl.Date is null) errors.Add(new(-1, "delivery", "deliveries[] needs method \"local\", windowId and date."));
+                    else
+                    {
+                        var (d, code, msg) = await delivery.PrepareAsync(order, dl.WindowId.Value, dl.Date.Value, order.ShipLat, order.ShipLng, converted: false);
+                        if (d is null) errors.Add(new(-1, code!, msg!));
+                        else { booked.Add(d); order.ShippingMethod = "local"; db.AddEvent(order.Id, "order.local_delivery", Party.Buyer, null, $"Local delivery chosen ({d.Code})", now); }
+                    }
+                }
+            }
+            if (req.Deliveries?.Any(x => !resolved.Any(r => r.L.SellerId == x.SellerId && r.L.BrandId == x.BrandId)) == true) errors.Add(new(-1, "delivery", "deliveries[] names a seller/brand that has no lines in this order."));
+            if (errors.Count > 0)
+            {
+                // nothing is created: give back the stock holds and the window capacity
+                db.ChangeTracker.Clear();
+                foreach (var b in booked) await delivery.ReleaseAsync(b);
+                await ReleaseAllAsync(reservedLog);
+                return new(false, [], errors);
             }
             await db.SaveChangesAsync(CancellationToken.None);
         }
@@ -156,6 +179,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // lost the idempotency race to a concurrent identical request: undo our reservations and return what the winner created
             db.ChangeTracker.Clear();
+            foreach (var b in booked) await delivery.ReleaseAsync(b);
             await ReleaseAllAsync(reservedLog);
             var winner = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mid).ToListAsync(ct);
             if (winner.Count > 0) return new(false, winner, []);
@@ -165,6 +189,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // anything else (overflow, cancellation, bug): nothing was saved, so give every hold back before surfacing the error
             db.ChangeTracker.Clear();
+            foreach (var b in booked) await delivery.ReleaseAsync(b);
             await ReleaseAllAsync(reservedLog);
             throw;
         }
