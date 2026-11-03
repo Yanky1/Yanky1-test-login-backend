@@ -41,12 +41,11 @@ public class ProductReviewFixTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, (await api.Put($"/api/v1/seller/products/{id}/variants", OneVariant(true, barcode: new string('2', 21)))).StatusCode);
         // the draft is still saveable afterwards (no false 409)
         Assert.Equal(HttpStatusCode.OK, (await ProdApi.Put(api, id, d => d["title"] = "Still saves fine after the 400")).StatusCode);
-        // a unique-index hit surfaces as a 400 field error (forced here by claiming the SKU behind the API's back)
-        var other = await ProdApi.ReadyProduct(api, "Other mug listing", sku: "FIRST");
-        var seller = f.WithDb(db => db.Products.Where(p => p.Id == other).Select(p => p.SellerId).Single());
+        // a SKU that is already taken (case-insensitively) is a 400 field error, never a 409 version conflict. The database-level race
+        // (unique index hit after the pre-check) is covered by Item3's parallel test and Item8's CSV test.
+        await ProdApi.ReadyProduct(api, "Other mug listing", sku: "FIRST");
         var res = await ProdApi.Put(api, id, d => d["sku"] = "first");
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        _ = seller;
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode); Assert.NotEqual("version_conflict", await res.ErrCode());
     }
 
     [Fact]

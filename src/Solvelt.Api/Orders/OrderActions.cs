@@ -147,16 +147,29 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (!await ClaimAsync(o, req.Version)) return Stale();
 
         var ship = new Shipment { OrderId = o.Id, Carrier = carrier, Service = req.Service?.Trim(), TrackingNumber = tn, ShippedAt = shippedAt, CreatedAt = now };
+        var mismatches = new List<string>();
         foreach (var w in wanted)
         {
             var line = o.Lines.First(l => l.Id == w.LineId);
             ship.Lines.Add(new ShipmentLine { ShipmentId = ship.Id, OrderLineId = line.Id, Quantity = w.Quantity });
             line.ShippedQty += w.Quantity;
             var consume = Math.Min(w.Quantity, line.ReservedQty);
-            if (consume > 0) { await inventory.CommitAsync(o.SellerId, line.ProductId, line.VariantId, consume); line.ReservedQty -= consume; }
+            if (consume > 0)
+            {
+                var c = await inventory.CommitAsync(o.SellerId, line.ProductId, line.VariantId, consume);
+                if (!c.Ok) mismatches.Add($"{line.Sku ?? line.Title}: {consume} reserved unit(s) could not be consumed from stock");
+                line.ReservedQty -= consume;
+            }
             // units that were never reserved (oversold, stock added later) still leave on-hand stock when they ship (best effort: never below zero)
             var unreserved = w.Quantity - consume;
-            if (unreserved > 0) await inventory.AdjustAsync(o.SellerId, line.ProductId, line.VariantId, -unreserved);
+            if (unreserved > 0)
+            {
+                // on-hand may not drop below what is reserved for other orders: take what can be taken and flag the difference
+                var snap = await inventory.AdjustAsync(o.SellerId, line.ProductId, line.VariantId, 0);
+                var take = snap.Ok ? Math.Min(unreserved, Math.Max(0, snap.OnHand - snap.Reserved)) : 0;
+                if (take > 0) await inventory.AdjustAsync(o.SellerId, line.ProductId, line.VariantId, -take);
+                if (take < unreserved) mismatches.Add($"{line.Sku ?? line.Title}: {unreserved - take} unit(s) not deducted from stock");
+            }
         }
         db.Shipments.Add(ship);
         o.Shipments.Add(ship);
@@ -165,13 +178,14 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (o.FirstShippedAt is null) { o.FirstShippedAt = shippedAt; o.ShippedLate = shippedAt > o.ShipByAt; }
         if (all) o.ShippedAt = shippedAt;
         db.AddEvent(o.Id, all ? "order.shipped" : "order.partially_shipped", Party.Seller, actor, $"{carrier} {tn}", now);
+        if (mismatches.Count > 0) db.AddEvent(o.Id, "stock.mismatch", Party.System, null, string.Join("; ", mismatches) + ". Check your stock count.", now);
         outbox.Enqueue("order.shipped", o.SellerId, o.MarketplaceOrderId, new
         {
             order = Ref(o), partial = !all, shipmentId = ship.Id, carrier, service = ship.Service, trackingNumber = tn, trackingUrl = Tracking.Url(carrier, tn), shippedAt,
             lines = wanted.Select(w => new { marketplaceLineId = o.Lines.First(l => l.Id == w.LineId).MarketplaceLineId, sku = o.Lines.First(l => l.Id == w.LineId).Sku, quantity = w.Quantity })
         });
         var r = await SaveAsync(o, "order.changed");
-        if (r.Ok) await Audit("order.ship", actor, o, $"carrier={carrier} partial={!all}");
+        if (r.Ok) await Audit("order.ship", actor, o, $"carrier={carrier} partial={!all}" + (mismatches.Count > 0 ? " stock_mismatch=true" : ""));
         return r;
     }
 
@@ -217,15 +231,61 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     // ---- cancellation -----------------------------------------------------------------------------------------------------
     public async Task<Res> CancelAsync(SellerOrder o, Guid actor, CancelRequest req, Party by = Party.Seller)
     {
-        if (!OrderStateMachine.Can(o.Status, OrderStatus.Cancelled) || o.Lines.Any(l => l.ShippedQty > 0))
-            return Res.Conflict(o.Lines.Any(l => l.ShippedQty > 0) && !OrderStateMachine.IsTerminal(o.Status)
-                ? "Part of this order has already shipped. Refund the unshipped items instead."
-                : $"This order is {OrderStateMachine.Label(o.Status)} and can't be cancelled.");
+        var partial = o.Lines.Any(l => l.ShippedQty > 0);
+        if (partial)
+        {
+            // part of the order already left: only the unshipped remainder can be cancelled
+            var shippable = o.Status == OrderStatus.PartiallyShipped || (o.Status == OrderStatus.OnHold && o.HeldFrom == OrderStatus.PartiallyShipped);
+            if (!shippable || !o.Lines.Any(l => OrderSupport.Unshipped(l) > 0))
+                return Res.Conflict($"This order is {OrderStateMachine.Label(o.Status)}; there is nothing left to cancel.");
+        }
+        else if (!OrderStateMachine.Can(o.Status, OrderStatus.Cancelled))
+            return Res.Conflict($"This order is {OrderStateMachine.Label(o.Status)} and can't be cancelled.");
         var reason = req.Reason?.Trim().ToLowerInvariant();
         if (reason is null || !OrderSupport.CancelReasons.Contains(reason)) return Res.Invalid("Choose a cancellation reason.", "reason");
         if (req.Note is { Length: > 1000 }) return Res.Invalid("The note is too long.", "note");
         if (!await ClaimAsync(o, req.Version)) return Stale();
-        return await DoCancelAsync(o, actor, reason, req.Note, req.Restock ?? true, by, null);
+        return partial ? await CancelRemainderAsync(o, actor, reason, req.Note, req.Restock ?? true) : await DoCancelAsync(o, actor, reason, req.Note, req.Restock ?? true, by, null);
+    }
+
+    /// <summary>Cancels the units that have not shipped yet of a partly shipped order: stock released, refund for those units recorded, the order continues as Shipped.</summary>
+    private async Task<Res> CancelRemainderAsync(SellerOrder o, Guid actor, string reason, string? note, bool restock)
+    {
+        var now = time.UtcNow();
+        var refund = new OrderRefund { OrderId = o.Id, Reason = "cancelled_remainder", Note = note?.Trim(), CreatedAt = now, CreatedBy = actor };
+        var priorPerLine = await db.RefundLines.Where(x => db.Refunds.Any(r => r.Id == x.RefundId && r.OrderId == o.Id)).GroupBy(x => x.OrderLineId).Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents) }).ToListAsync();
+        foreach (var l in o.Lines)
+        {
+            var open = OrderSupport.Unshipped(l);
+            if (open <= 0) continue;
+            if (l.ReservedQty > 0)
+            {
+                if (restock) await inventory.ReleaseAsync(o.SellerId, l.ProductId, l.VariantId, l.ReservedQty);
+                else await inventory.CommitAsync(o.SellerId, l.ProductId, l.VariantId, l.ReservedQty);
+                l.ReservedQty = 0;
+            }
+            // the last open units of a line take the rounding remainder, so shipped + cancelled shares add up to the line total
+            var done = priorPerLine.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
+            var left = l.Quantity - l.RefundedQty - l.CancelledQty;
+            var cents = open == left ? OrderSupport.LineNet(l) - done : OrderSupport.Prorate(OrderSupport.LineNet(l), open, l.Quantity);
+            l.CancelledQty += open;
+            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = l.Id, Quantity = open, AmountCents = Math.Max(0, cents) });
+        }
+        refund.AmountCents = refund.Lines.Sum(x => x.AmountCents);
+        db.Refunds.Add(refund);
+        o.RefundedCents += refund.AmountCents;
+        if (o.Status == OrderStatus.OnHold) { OrderStateMachine.Move(o, OrderStatus.PartiallyShipped); o.HeldFrom = null; }
+        OrderStateMachine.Move(o, OrderStatus.Shipped);       // nothing left to ship
+        o.ShippedAt = o.Shipments.Max(sh => sh.ShippedAt);
+        db.AddEvent(o.Id, "order.remainder_cancelled", Party.Seller, actor, reason, now);
+        outbox.Enqueue("order.cancelled", o.SellerId, o.MarketplaceOrderId, new
+        {
+            order = Ref(o), partial = true, reason, note, restocked = restock, cancelledBy = "seller", refundDueCents = refund.AmountCents,
+            lines = refund.Lines.Select(x => new { marketplaceLineId = o.Lines.First(l => l.Id == x.OrderLineId).MarketplaceLineId, quantity = x.Quantity, amountCents = x.AmountCents })
+        });
+        var r = await SaveAsync(o, "order.changed");
+        if (r.Ok) await Audit("order.cancel_remainder", actor, o, $"reason={reason} restock={restock} refund={refund.AmountCents}");
+        return r;
     }
 
     private async Task<Res> DoCancelAsync(SellerOrder o, Guid actor, string reason, string? note, bool restock, Party by, OrderCancellation? request)

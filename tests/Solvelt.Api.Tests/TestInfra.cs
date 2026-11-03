@@ -63,8 +63,12 @@ public class ApiFactory : WebApplicationFactory<Program>
             s.RemoveAll<TimeProvider>();
             s.AddSingleton<TimeProvider>(Time);
             s.AddAuthentication().AddScheme<AuthenticationSchemeOptions, StubOidcHandler>("Google", _ => { });
+            ConfigureTestServices(s);
         });
     }
+
+    /// <summary>Hook for test subclasses that swap a service (e.g. to simulate a race).</summary>
+    protected virtual void ConfigureTestServices(IServiceCollection services) { }
 
     public HttpClient NewClient() => CreateClient(new WebApplicationFactoryClientOptions
     {

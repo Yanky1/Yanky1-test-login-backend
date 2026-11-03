@@ -64,8 +64,7 @@ stateDiagram-v2
     Refunded --> [*]
 ```
 
-Rules enforced on top of the diagram: shipping needs Accepted/PartiallyShipped and no open buyer cancellation request; an order with **any shipped
-unit cannot be cancelled** (refund the unshipped items instead); **refunds only cover units that have shipped** (nothing shipped yet -> `409 refund_before_ship`, cancel instead; the full refund of a partly shipped order covers the shipped units + shipping); a partial refund of a delivered order keeps its status until the order is fully
+Rules enforced on top of the diagram: shipping needs Accepted/PartiallyShipped and no open buyer cancellation request; a **fully shipped order cannot be cancelled**, but the **unshipped remainder of a partly shipped order can** (`POST .../cancel`): its stock is released (or consumed without restock), the refund for those units is recorded (`reason cancelled_remainder`, an `OrderRefund` row like a full cancel; any role allowed to cancel may do it, it does not need the refund permission), an `order.cancelled` event with `partial:true` and `refundDueCents` goes out, and the order continues as Shipped; **refunds only cover units that have shipped** (nothing shipped yet -> `409 refund_before_ship`, cancel instead; the full refund of a partly shipped order covers the shipped units + shipping); a partial refund of a delivered order keeps its status until the order is fully
 refunded; refunds after a received return move the order to Refunded (the refund amount tells partial from full); cancelled orders are refunded
 in full by the marketplace (`refundDueCents` is in the `order.cancelled` event).
 
@@ -78,6 +77,8 @@ their side effects (`409 version_conflict` for the loser; `version` in the reque
 **SLA:** `ShipByAt = placedAt + max(product handling days, Orders:DefaultHandlingDays (2))` calendar days; `DeliverByAt = ShipByAt + transit`
 (standard 5, expedited 2, overnight 1). *Late* = unshipped past ship-by (computed, not stored). The dashboard shows today's orders, to-ship, late,
 open returns, 30-day sales (daily series), **late-shipment rate** and **cancellation rate** (30 days), plus message metrics.
+
+**Stock repair:** units that ship without ever having been reserved (oversold) are deducted from on-hand stock as far as the stock still reserved for other orders allows; any shortfall adds a `stock.mismatch` timeline event (`stockMismatch:true` in the order detail) and an audit entry. A **reservation reconciler** sets `Reserved` back to the sum of open order lines' `ReservedQty` when a hold leaked (crash between reserve and save, failed release), but never for holds of ingests running in this process right now (`InflightHolds`, announced before the stock moves) and only after the same difference was seen for 2 minutes (covers another instance's in-flight holds). **Operational limit:** `InflightHolds` is per process, so with several instances a hold of an ingest stalled for more than `ReservationDrift.Grace` (2 min) on ANOTHER instance could still be repaired away: keep request deadlines on the internal API well under 2 minutes (or move the in-flight markers to the database later). A `Commit` that fails when an order ships is flagged as `stock.mismatch` too.
 
 **Jobs** (`OrderMaintenance`, hosted worker every 10 s outside Testing, `POST /api/dev/maintenance/run` in Dev/Testing): auto-accept
 (`Orders:AutoAcceptMinutes`, 0 = off), Delivered -> Completed after `Orders:ReturnWindowDays` (30), PII redaction, overdue-reply notices, replay-table cleanup.
@@ -138,7 +139,7 @@ Content-Type: application/json
 ### 3.3 Buyer events
 | Endpoint | Body | Notes |
 |---|---|---|
-| `POST /orders/{marketplaceOrderId}/cancel-requests` | `{requestId, reason, note?, sellerOrderNumber?}` | `reason` in `changed_mind, ordered_by_mistake, found_better_price, delivery_too_slow, other`. Applies to every seller order of that marketplace order unless `sellerOrderNumber` is given. Per-order result `requested | duplicate | already_cancelled | auto_rejected` (shipped orders are declined automatically and an outbox `cancellation.decided` is sent). Idempotent on `requestId`. |
+| `POST /orders/{marketplaceOrderId}/cancel-requests` | `{requestId, reason, note?, sellerOrderNumber?}` | `reason` in `changed_mind, ordered_by_mistake, found_better_price, delivery_too_slow, other`. Applies to every seller order of that marketplace order unless `sellerOrderNumber` is given. Per-order result `requested | duplicate | already_cancelled | auto_rejected` (shipped orders are declined automatically and an outbox `cancellation.decided` is sent). Idempotent on `requestId`. If the order changed at the same instant the answer is **`503` + `Retry-After: 1`** with `code: version_conflict` and the per-order results (`retry` = not stored): send the same request again. |
 | `POST /orders/{marketplaceOrderId}/return-requests` | `{returnId, reason, comment?, sellerOrderNumber?, lines:[{marketplaceLineId, quantity}]}` | `reason` in `damaged, not_as_described, wrong_item, no_longer_needed, other`. Quantity <= shipped - returned - refunded. Idempotent on `returnId`; result per order `requested | duplicate | rejected(message)`. |
 | `POST /orders/{marketplaceOrderId}/delivery-confirmations` | `{sellerOrderNumber?, trackingNumber?, deliveredAt?}` | Shipped -> Delivered; with `trackingNumber` on a partially shipped order only that shipment is marked. Idempotent. |
 | `POST /messages` | `{messageId, conversationId, kind:"order"\|"product", marketplaceOrderId?, sellerOrderNumber?, productId?, buyerName, text, sentAt?}` | See section 6. Idempotent on `messageId` (`200 duplicate`). |
@@ -171,7 +172,7 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 | `order.shipped` | `partial`, `shipmentId`, `carrier`, `service`, `trackingNumber`, `trackingUrl`, `shippedAt`, `lines:[{marketplaceLineId, sku, quantity}]` |
 | `order.tracking_updated` | `shipmentId`, `carrier`, `trackingNumber`, `trackingUrl` |
 | `order.delivered` | `deliveredAt`, `by` (`seller`/`buyer`) |
-| `order.cancelled` | `reason`, `note`, `restocked`, `cancelledBy`, `refundDueCents` (the marketplace refunds this) |
+| `order.cancelled` | `reason`, `note`, `restocked`, `cancelledBy`, `refundDueCents` (the marketplace refunds this), `partial` + `lines` when only the unshipped remainder was cancelled |
 | `cancellation.decided` | `requestId`, `decision` (`rejected`), `note` (approval is `order.cancelled`) |
 | `return.decided` | `returnId`, `decision` (`approved`/`rejected`), `reason`, `note` |
 | `return.received` | `returnId`, `restocked` |

@@ -35,6 +35,9 @@ public static class OrderViews
     public static object Actions(SellerOrder o, AccountAccess a, long managerRefundLimit)
     {
         var w = a.CanWorkOnBrand(o.BrandId, true);
+        var canCancelAll = OrderStateMachine.Can(o.Status, OrderStatus.Cancelled) && o.Lines.All(l => l.ShippedQty == 0);
+        var canCancelRemainder = w && o.Lines.Any(l => l.ShippedQty > 0) && o.Lines.Any(l => OrderSupport.Unshipped(l) > 0)
+            && (o.Status == OrderStatus.PartiallyShipped || o.Status == OrderStatus.OnHold && o.HeldFrom == OrderStatus.PartiallyShipped);
         var canRefund = w && o.Status != OrderStatus.Cancelled && o.Lines.Any(l => l.ShippedQty > 0) && o.RefundedCents < o.TotalCents && (a.Has(Permission.OrderRefund) || a.Role == AccountRole.Manager && managerRefundLimit > 0);
         return new
         {
@@ -44,7 +47,8 @@ public static class OrderViews
             ship = w && OrderStateMachine.CanShip(o.Status) && !o.CancelRequested,
             editTracking = w && o.Shipments.Any(s => s.DeliveredAt == null),
             markDelivered = w && o.Status == OrderStatus.Shipped,
-            cancel = w && OrderStateMachine.Can(o.Status, OrderStatus.Cancelled) && o.Lines.All(l => l.ShippedQty == 0),
+            cancel = w && (canCancelAll || canCancelRemainder),
+            cancelRemainder = canCancelRemainder,
             refund = canRefund,
             refundLimitCents = a.Has(Permission.OrderRefund) ? (long?)null : managerRefundLimit,
             note = w,
@@ -103,6 +107,7 @@ public static class OrderViews
             timeline = events.Select(e => new { id = e.Id, type = e.Type, actor = e.Actor.ToString(), text = e.Text, at = e.At }),
             notes = notes.Select(n => new { id = n.Id, text = n.Text, author = names.GetValueOrDefault(n.AuthorId, ""), createdAt = n.CreatedAt }),
             conversationId = conv,
+            stockMismatch = events.Any(e => e.Type == "stock.mismatch"),
             actions = Actions(o, a, managerRefundLimit),
             reasons = new { cancel = OrderSupport.CancelReasons, refund = OrderSupport.RefundReasons, rejectReturn = OrderSupport.RejectReasons, carriers = Tracking.Carriers }
         };

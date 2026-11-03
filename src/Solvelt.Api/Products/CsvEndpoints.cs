@@ -76,6 +76,9 @@ public record CsvRow(int Row, bool Ok, string? Title, string? Sku, List<CsvRowEr
 
 public static class CsvEndpoints
 {
+    /// <summary>Test seam only (null in production): runs between CSV validation and the first save.</summary>
+    internal static Func<Task>? AfterValidate;
+
     private record Parsed(CsvRow Row, ProductWrite? Write, Guid BrandId, Guid? CategoryId);
 
     private static async Task<(List<Parsed>? Rows, IResult? Error, List<string> Ignored)> ParseFileAsync(IFormFile file, HttpContext ctx, AppDbContext db)
@@ -185,6 +188,7 @@ public static class CsvEndpoints
             var (parsed, err, _) = await ParseFileAsync(file, ctx, db);
             if (err is not null) return err;
             var rows = parsed!;
+            if (AfterValidate is { } hook) await hook(); // test seam: lets a test take a SKU after validation, to exercise the unique-index path
             var now = time.UtcNow(); var created = new List<object>(); var failed = new List<CsvRow>();
             foreach (var r in rows.Where(r => r.Row.Ok))
             {

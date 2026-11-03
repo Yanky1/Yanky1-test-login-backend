@@ -19,6 +19,9 @@ public static class ProductEndpoints
     internal static IResult Problem(int status, string code, string title, object? extra = null) =>
         Results.Json(new { type = "about:blank", title, status, code, extra }, statusCode: status);
 
+    internal static IResult BelowReserved(InventoryResult r) =>
+        Problem(409, "below_reserved", $"{r.Reserved} unit{(r.Reserved == 1 ? " is" : "s are")} reserved by open orders, so the quantity can't go below {r.Reserved}.");
+
     internal static IResult Conflict() => Problem(409, "version_conflict", "This listing was changed somewhere else. Reload to see the latest version.");
 
     internal static async Task<string?> BrandNameAsync(AppDbContext db, Guid brandId) =>
@@ -246,12 +249,16 @@ public static class ProductEndpoints
             db.ProductAttributeValues.RemoveRange(prod.Attributes);
             prod.Attributes = attrValues.Select(kv => new ProductAttributeValue { ProductId = prod.Id, Key = kv.Key, ValueJson = kv.Value }).ToList();
             foreach (var av in prod.Attributes) db.Entry(av).State = EntityState.Added;
+            // one transaction for claims + document + stock: if an order reserved stock after the pre-check, nothing is half-applied
+            await using var tx = await db.Database.BeginTransactionAsync();
             if (await ProductService.SyncSkuClaimsAsync(db, prod) is { } claimErr) { db.ChangeTracker.Clear(); return Validation.Invalid("sku", claimErr); }
             await ProductRules.RefreshAsync(db, cats, prod);
             prod.Version++; prod.UpdatedAt = time.UtcNow();
             // stock goes through the inventory service (atomic), never by assigning the column while orders may be reserving
             if (!await TrySaveAsync(db)) return Conflict();
-            if (r.Quantity is { } qty && !r.HasVariants) await inv.SetOnHandAsync(a.SellerId, prod.Id, null, qty);
+            if (r.Quantity is { } qty && !r.HasVariants && await inv.SetOnHandAsync(a.SellerId, prod.Id, null, qty) is { Ok: false } stockFail)
+            { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return stockFail.Error == "below_reserved" ? BelowReserved(stockFail) : Validation.Invalid("quantity", "The quantity can't be changed right now."); }
+            await tx.CommitAsync();
             _ = categoryChanged;
             db.ChangeTracker.Clear(); // ExecuteUpdate bypasses the tracker: reload so the response shows the real stock
             var fresh = await db.LoadAsync(a, id, write: false);
@@ -283,10 +290,13 @@ public static class ProductEndpoints
                 if (prod.HasVariants) return Validation.Invalid("quantity", "This listing has variations: edit the quantity of each variation.");
                 if (q < prod.Reserved) return Validation.Invalid("quantity", $"{prod.Reserved} unit{(prod.Reserved == 1 ? " is" : "s are")} reserved by open orders, so the quantity can't go below {prod.Reserved}.");
             }
+            await using var tx = await db.Database.BeginTransactionAsync();
             await ProductRules.RefreshAsync(db, cats, prod);
             prod.Version++; prod.UpdatedAt = time.UtcNow();
             if (!await TrySaveAsync(db)) return Conflict();
-            if (r.Quantity is { } qq) await inv.SetOnHandAsync(a.SellerId, prod.Id, null, qq);
+            if (r.Quantity is { } qq && await inv.SetOnHandAsync(a.SellerId, prod.Id, null, qq) is { Ok: false } stockFail)
+            { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return stockFail.Error == "below_reserved" ? BelowReserved(stockFail) : Validation.Invalid("quantity", "The quantity can't be changed right now."); }
+            await tx.CommitAsync();
             db.ChangeTracker.Clear();
             var fresh = (await db.LoadAsync(a, id, write: false))!;
             await ProductRules.RefreshAsync(db, cats, fresh);

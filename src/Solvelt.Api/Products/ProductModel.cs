@@ -29,7 +29,7 @@ public static class ProductModel
             e.ToTable("products");
             e.HasIndex(x => new { x.SellerId, x.Status });
             e.HasIndex(x => new { x.SellerId, x.BrandId });
-            e.HasIndex(x => new { x.SellerId, x.Sku }).IsUnique(); // NULLs never collide
+            e.HasIndex(x => new { x.SellerId, x.Sku }); // plain lookup index: uniqueness lives in sku_claims (case-insensitive, shared with variations)
             e.HasIndex(x => new { x.SellerId, x.Handle });
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16);
             e.Property(x => x.Condition).HasConversion<string>().HasMaxLength(16);
@@ -61,7 +61,7 @@ public static class ProductModel
         {
             e.ToTable("product_variants");
             e.HasIndex(x => new { x.ProductId, x.ComboKey }).IsUnique();
-            e.HasIndex(x => new { x.SellerId, x.Sku }).IsUnique();
+            e.HasIndex(x => new { x.SellerId, x.Sku });
             e.Property(x => x.Sku).HasMaxLength(64);
             e.Property(x => x.ComboKey).HasMaxLength(400);
             e.Property(x => x.Barcode).HasMaxLength(20);

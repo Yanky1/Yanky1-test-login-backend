@@ -15,12 +15,19 @@ public class FlakyInventory(IInventoryService inner) : IInventoryService
 {
     public static volatile int FailOnReserveNumber;   // 0 = never
     public static int Counter;
+    public static volatile int FailReleaseNumber;   // 0 = never
+    public static int ReleaseCounter;
+    public static volatile TaskCompletionSource? Gate;      // when set, a successful reservation waits here (simulates a stalled ingest)
+    public static volatile TaskCompletionSource? Reached;
     public async Task<InventoryResult> ReserveAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default)
     {
         if (FailOnReserveNumber > 0 && Interlocked.Increment(ref Counter) == FailOnReserveNumber) throw new InvalidOperationException("boom");
-        return await inner.ReserveAsync(s, p, v, q, ct);
+        var res = await inner.ReserveAsync(s, p, v, q, ct);
+        if (res.Ok && Gate is { } g) { Reached?.TrySetResult(); await g.Task; }
+        return res;
     }
-    public Task<InventoryResult> ReleaseAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default) => inner.ReleaseAsync(s, p, v, q, ct);
+    public Task<InventoryResult> ReleaseAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default) =>
+        FailReleaseNumber > 0 && Interlocked.Increment(ref ReleaseCounter) == FailReleaseNumber ? throw new InvalidOperationException("release failed") : inner.ReleaseAsync(s, p, v, q, ct);
     public Task<InventoryResult> CommitAsync(Guid s, Guid p, Guid? v, int q, CancellationToken ct = default) => inner.CommitAsync(s, p, v, q, ct);
     public Task<InventoryResult> AdjustAsync(Guid s, Guid p, Guid? v, int d, CancellationToken ct = default) => inner.AdjustAsync(s, p, v, d, ct);
     public Task<InventoryResult> SetOnHandAsync(Guid s, Guid p, Guid? v, int o, CancellationToken ct = default) => inner.SetOnHandAsync(s, p, v, o, ct);
@@ -63,7 +70,8 @@ public class OrderReviewFixTests(OrdersFactory f) : IClassFixture<OrdersFactory>
     {
         var s = await NewShop(f);
         var body = OrderBody(f, Mid(), [Line(s.Seller, s.Brand, s.Product)]);
-        foreach (var ts in new[] { long.MinValue, long.MaxValue, -1L, 4_102_444_801L })
+        var nowTs = f.Time.GetUtcNow().ToUnixTimeSeconds();
+        foreach (var ts in new[] { long.MinValue, long.MaxValue, -1L, 4_102_444_801L, nowTs + long.MinValue, nowTs - long.MinValue })
         {
             var r = await Inbound(f, Path, body, ts: ts);
             Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
@@ -150,7 +158,7 @@ public class OrderReviewFixTests(OrdersFactory f) : IClassFixture<OrdersFactory>
             await Task.CompletedTask;
         };
         var first = await svc.CancelRequestAsync(mid, new("CR-RACE", number, "changed_mind", null));
-        Assert.Equal(409, first.Status); Assert.Equal("version_conflict", first.Code);
+        Assert.Equal(503, first.Status); Assert.Equal("version_conflict", first.Code);
         Assert.Equal("retry", first.Orders[0].Result);
         Assert.Equal(0, f.WithDb(db => db.Cancellations.Count(c => c.OrderId == id)));       // nothing half-stored
         svc.BeforeSave = null;
@@ -171,7 +179,7 @@ public class OrderReviewFixTests(OrdersFactory f) : IClassFixture<OrdersFactory>
             await Task.CompletedTask;
         };
         var ret = await svc2.ReturnRequestAsync(mid2, new("R-RACE", n2, "damaged", null, [new("RL", 1)]));
-        Assert.Equal(409, ret.Status); Assert.Equal("retry", ret.Orders[0].Result);
+        Assert.Equal(503, ret.Status); Assert.Equal("retry", ret.Orders[0].Result);
         Assert.Equal(0, f.WithDb(db => db.Returns.Count(r => r.OrderId == id2)));
     }
 
@@ -250,7 +258,7 @@ public class OrderDispatchRaceTests : IClassFixture<WebhookFactory>
         await Ok(Act(s.Owner, id, "accept")); await Ok(Act(s.Owner, id, "hold")); await Ok(Act(s.Owner, id, "resume"));
         lock (_f.Calls) _f.Calls.Clear();
         async Task Run() { using var sc = _f.Services.CreateScope(); await sc.ServiceProvider.GetRequiredService<OutboxDispatcher>().DispatchDueAsync(); }
-        await Task.WhenAll(Run(), Run(), Run());
+        await Task.WhenAll(Task.Run(Run), Task.Run(Run), Task.Run(Run));   // truly parallel dispatchers
         List<string> ids; lock (_f.Calls) ids = _f.Calls.Where(c => c.Body.Contains(mid)).Select(c => c.Req.Headers.GetValues(Signing.EventIdHeader).Single()).ToList();
         Assert.Equal(3, ids.Count);
         Assert.Equal(3, ids.Distinct().Count());                                   // one call per event, no duplicates
@@ -299,6 +307,31 @@ public class OrderRedactionFixTests(JobFactory f) : IClassFixture<JobFactory>
     }
 
     private async Task _httpDispatch() => await f.NewClient().PostAsync("/api/dev/outbox/dispatch", null);
+
+    [Fact]
+    public async Task Redacting_one_order_never_blanks_the_events_of_another_whose_id_merely_contains_it()
+    {
+        var s = await NewShop(f, stock: 20);
+        var mid1 = "R" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant(); var mid2 = mid1 + "0";        // MP-1 inside MP-10
+        async Task<Guid> Order(string mid)
+        {
+            var r = await Inbound(f, "/api/internal/v1/orders", OrderBody(f, mid, [Line(s.Seller, s.Brand, s.Product, 1, lid: "L1")]));
+            Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+            return Guid.Parse((string)(await Node(r))["orders"]![0]!["sellerOrderId"]!);
+        }
+        var o1 = await Order(mid1); var o2 = await Order(mid2);
+        await Ok(Act(s.Owner, o1, "accept")); await Ok(Act(s.Owner, o1, "ship", Ship())); await Ok(Act(s.Owner, o1, "deliver"));
+        await Ok(Act(s.Owner, o2, "accept"));
+        await _httpDispatch();                                                                 // both orders' events are Delivered
+        f.Time.Advance(TimeSpan.FromDays(31)); await Run();
+        f.Time.Advance(TimeSpan.FromDays(91)); await Run();
+        Assert.NotNull(f.WithDb(db => db.Orders.First(o => o.Id == o1).PiiRedactedAt));
+        Assert.Null(f.WithDb(db => db.Orders.First(o => o.Id == o2).PiiRedactedAt));
+        Assert.All(OutboxFor(f, mid1), m => Assert.Equal("{\"redacted\":true}", m.PayloadJson));
+        var other = OutboxFor(f, mid2);
+        Assert.NotEmpty(other);
+        Assert.All(other, m => Assert.Contains(mid2, m.PayloadJson));                          // untouched
+    }
 
     [Fact]
     public async Task Draft_attachments_that_were_never_sent_are_cleaned_up()

@@ -24,7 +24,7 @@ public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineErro
 }
 
 /// <summary>Creates seller orders from a marketplace order: validation, splitting per (account, brand), stock reservation, SLA dates, fees, number.</summary>
-public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier)
+public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier, InflightHolds inflight)
 {
     private static readonly Dictionary<string, int> Transit = new() { ["standard"] = 5, ["expedited"] = 2, ["overnight"] = 1 };
     /// <summary>Upper bound for any single money field (10,000,000.00): keeps every sum far inside <c>long</c> (100 lines x 10,000 units).</summary>
@@ -106,6 +106,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
 
         // reserve stock (single atomic UPDATE per line; a shortage never fails the order, it flags it)
         var reservedLog = new List<(Guid SellerId, Guid ProductId, Guid? VariantId, int Qty)>();
+        using var holds = inflight.Begin();   // visible to the reconciliation job until the order is saved (or the holds are given back)
         var orders = new List<SellerOrder>();
         try
         {
@@ -134,7 +135,9 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     var img = prod.Images.Where(x => variant != null && x.VariantId == variant.Id).OrderBy(x => x.SortOrder).FirstOrDefault()
                               ?? prod.Images.Where(x => x.VariantId == null).OrderByDescending(x => x.IsMain).ThenBy(x => x.SortOrder).FirstOrDefault();
                     if (img is not null) { line.ImageKey = img.StorageKey; line.ImageContentType = img.ContentType; }
+                    holds.Add(prod.Id, variant?.Id, l.Quantity);   // announced BEFORE the stock moves: the repair job must never see a hold it can't explain
                     var r = await inventory.ReserveAsync(prod.SellerId, prod.Id, variant?.Id, l.Quantity, CancellationToken.None);
+                    if (!r.Ok) holds.Add(prod.Id, variant?.Id, -l.Quantity);
                     if (r.Ok) { line.ReservedQty = l.Quantity; reservedLog.Add((prod.SellerId, prod.Id, variant?.Id, l.Quantity)); }
                     else order.Oversold = true;
                     order.Lines.Add(line);
@@ -152,7 +155,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // lost the idempotency race to a concurrent identical request: undo our reservations and return what the winner created
             db.ChangeTracker.Clear();
-            foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
+            await ReleaseAllAsync(reservedLog);
             var winner = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mid).ToListAsync(ct);
             if (winner.Count > 0) return new(false, winner, []);
             throw;
@@ -161,11 +164,21 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // anything else (overflow, cancellation, bug): nothing was saved, so give every hold back before surfacing the error
             db.ChangeTracker.Clear();
-            foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
+            await ReleaseAllAsync(reservedLog);
             throw;
         }
-        foreach (var order in orders) await notifier.OrderPlacedAsync(order, ct);
+        foreach (var order in orders) await notifier.OrderPlacedAsync(order, CancellationToken.None);   // the order exists: a cancelled request must not skip the notifications
         return new(true, orders, []);
+    }
+
+    /// <summary>Gives every hold back; one failing release never stops the others (the reconciliation job repairs anything left behind).</summary>
+    private async Task ReleaseAllAsync(List<(Guid SellerId, Guid ProductId, Guid? VariantId, int Qty)> held)
+    {
+        foreach (var r in held)
+        {
+            try { await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None); }
+            catch (Exception) { /* keep releasing the rest */ }
+        }
     }
 
     private static string? OptionsText(Product p, ProductVariant? v)

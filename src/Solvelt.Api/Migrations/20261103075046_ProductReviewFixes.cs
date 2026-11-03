@@ -52,10 +52,10 @@ namespace Solvelt.Api.Migrations
             // Backfill: existing SKUs become claims (lower-cased, trimmed). Products first, then variations; clashes (case-variants that
             // the old case-sensitive index allowed) are skipped so the migration never fails; the owner fixes them on the next edit.
             migrationBuilder.Sql(@"INSERT INTO sku_claims (""Id"", ""SellerId"", ""Sku"", ""ProductId"", ""VariantId"")
-SELECT gen_random_uuid(), ""SellerId"", lower(btrim(""Sku"")), ""Id"", NULL FROM products WHERE ""Sku"" IS NOT NULL AND btrim(""Sku"") <> ''
+SELECT gen_random_uuid(), ""SellerId"", lower(btrim(""Sku"")), ""Id"", NULL FROM products WHERE ""Sku"" IS NOT NULL AND btrim(""Sku"") <> '' ORDER BY ""CreatedAt"", ""Id""
 ON CONFLICT DO NOTHING;");
             migrationBuilder.Sql(@"INSERT INTO sku_claims (""Id"", ""SellerId"", ""Sku"", ""ProductId"", ""VariantId"")
-SELECT gen_random_uuid(), ""SellerId"", lower(btrim(""Sku"")), ""ProductId"", ""Id"" FROM product_variants WHERE ""Sku"" IS NOT NULL AND btrim(""Sku"") <> ''
+SELECT gen_random_uuid(), ""SellerId"", lower(btrim(""Sku"")), ""ProductId"", ""Id"" FROM product_variants WHERE ""Sku"" IS NOT NULL AND btrim(""Sku"") <> '' ORDER BY ""Id""
 ON CONFLICT DO NOTHING;");
         }
 

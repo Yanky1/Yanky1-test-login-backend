@@ -18,6 +18,18 @@ public static class InternalEndpoints
     private static IResult Err(int status, string code, string message, object? extra = null) =>
         Results.Json(new { type = "about:blank", title = message, status, code, errors = extra }, statusCode: status);
 
+    /// <summary>A concurrent change kept the request from being stored: 503 + Retry-After (clients retry 5xx, many treat 4xx as final); per-order results say which orders were stored.</summary>
+    private static IResult Retry(string code, string message, object orders) => new RetryResult(code, message, orders);
+
+    private sealed class RetryResult(string code, string message, object orders) : IResult
+    {
+        public Task ExecuteAsync(HttpContext ctx)
+        {
+            ctx.Response.Headers["Retry-After"] = "1";
+            return Results.Json(new { type = "about:blank", title = message, status = 503, code, orders }, OrderJson.Opts, statusCode: 503).ExecuteAsync(ctx);
+        }
+    }
+
     private static async Task<(T? Body, IResult? Error)> Signed<T>(HttpContext ctx, InboundVerifier verifier) where T : class
     {
         var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
@@ -50,7 +62,7 @@ public static class InternalEndpoints
             var (req, err) = await Signed<BuyerCancelRequest>(ctx, verifier);
             if (err is not null) return err;
             var r = await svc.CancelRequestAsync(marketplaceOrderId, req!);
-            return r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
+            return r.Status == 503 ? Retry(r.Code, r.Message, r.Orders) : r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
         });
 
         g.MapPost("/orders/{marketplaceOrderId}/return-requests", async (HttpContext ctx, InboundVerifier verifier, BuyerEventService svc, string marketplaceOrderId) =>
@@ -58,7 +70,7 @@ public static class InternalEndpoints
             var (req, err) = await Signed<BuyerReturnRequest>(ctx, verifier);
             if (err is not null) return err;
             var r = await svc.ReturnRequestAsync(marketplaceOrderId, req!);
-            return r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
+            return r.Status == 503 ? Retry(r.Code, r.Message, r.Orders) : r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
         });
 
         g.MapPost("/orders/{marketplaceOrderId}/delivery-confirmations", async (HttpContext ctx, InboundVerifier verifier, BuyerEventService svc, string marketplaceOrderId) =>
@@ -66,7 +78,7 @@ public static class InternalEndpoints
             var (req, err) = await Signed<BuyerDelivery>(ctx, verifier);
             if (err is not null) return err;
             var r = await svc.DeliveryAsync(marketplaceOrderId, req!);
-            return r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
+            return r.Status == 503 ? Retry(r.Code, r.Message, r.Orders) : r.Status != 200 ? Err(r.Status, r.Code, r.Message) : Results.Json(new { orders = r.Orders }, OrderJson.Opts);
         });
 
         g.MapPost("/messages", async (HttpContext ctx, InboundVerifier verifier, MessageService svc) =>
