@@ -145,7 +145,7 @@ Staff API under `/api/v1/admin/payments`: `sellers/{id}` (balances, Stripe accou
 * No key: Development/Testing use the **fake provider**; any other environment uses an *unconfigured* provider (payments endpoints answer `503 payments_not_configured`, nothing is faked, the app still starts).
 * **Production refuses to start with a test key** (`sk_test_`/`rk_test_`) unless `Payments:AllowTestKeysInProduction=true`; a **live key outside Production** is refused unless `AllowLiveKeysOutsideProduction=true`; anything that is not an `sk_`/`rk_` key is refused.
 * Logs never contain amounts per person, bank details or Stripe secrets; webhook bodies are not logged; staff views show Stripe ids only.
-* Dev/Testing helpers (never mapped elsewhere): `POST /api/dev/payments/run` (release + transfers + reconcile), `complete-onboarding/{sellerId}`, `capture/{orderId}`, `refund/{orderId}`, `age-order/{orderId}` (drive the flow from E2E tests).
+* Dev/Testing helpers (never mapped elsewhere): `POST /api/dev/payments/run` (release + transfers + reconcile), `complete-onboarding/{sellerId}`, `capture/{orderId}`, `refund/{orderId}`, `age-order/{orderId}` (moves the delivery past the release delay and the return window; drive the flow from E2E tests).
 
 ## 11. Opt-in Stripe test-mode tests
 

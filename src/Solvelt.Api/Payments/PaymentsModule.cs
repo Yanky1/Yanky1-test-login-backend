@@ -153,11 +153,13 @@ public static class PaymentsModule
         });
 
         // moves an order's delivery back in time so release rules apply immediately
-        g.MapPost("/age-order/{orderId:guid}", async (Guid orderId, AppDbContext db, IOptions<PaymentOptions> opt) =>
+        g.MapPost("/age-order/{orderId:guid}", async (Guid orderId, AppDbContext db, IOptions<PaymentOptions> opt, IOptions<OrderOptions> orders) =>
         {
             var o = await db.Orders.FirstOrDefaultAsync(x => x.Id == orderId);
             if (o is null || o.DeliveredAt is null) return Results.NotFound();
-            o.DeliveredAt = o.DeliveredAt.Value.AddDays(-(opt.Value.ReleaseDays + 1));
+            // past EVERY release rule: the release delay and, when required (the default), the return window
+            var days = opt.Value.RequireReturnWindowClosed ? Math.Max(opt.Value.ReleaseDays, orders.Value.ReturnWindowDays) : opt.Value.ReleaseDays;
+            o.DeliveredAt = o.DeliveredAt.Value.AddDays(-(days + 1));
             await db.SaveChangesAsync();
             return Results.Ok();
         });
