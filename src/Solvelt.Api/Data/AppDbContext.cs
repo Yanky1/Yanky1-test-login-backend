@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Domain;
+using Solvelt.Api.Orders;
 using Solvelt.Api.Products;
 using Solvelt.Api.Teams;
 
@@ -41,6 +42,28 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<ProductFaq> ProductFaqs => Set<ProductFaq>();
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
     public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
+    // orders + messaging (see Orders/)
+    public DbSet<SellerOrder> Orders => Set<SellerOrder>();
+    public DbSet<OrderLine> OrderLines => Set<OrderLine>();
+    public DbSet<Shipment> Shipments => Set<Shipment>();
+    public DbSet<ShipmentLine> ShipmentLines => Set<ShipmentLine>();
+    public DbSet<OrderCancellation> Cancellations => Set<OrderCancellation>();
+    public DbSet<ReturnRequest> Returns => Set<ReturnRequest>();
+    public DbSet<ReturnLine> ReturnLines => Set<ReturnLine>();
+    public DbSet<OrderRefund> Refunds => Set<OrderRefund>();
+    public DbSet<RefundLine> RefundLines => Set<RefundLine>();
+    public DbSet<OrderNote> OrderNotes => Set<OrderNote>();
+    public DbSet<OrderEvent> OrderEvents => Set<OrderEvent>();
+    public DbSet<OrderCounter> OrderCounters => Set<OrderCounter>();
+    public DbSet<InboundNonce> InboundNonces => Set<InboundNonce>();
+    public DbSet<OutboxMessage> Outbox => Set<OutboxMessage>();
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<OrderMessage> Messages => Set<OrderMessage>();
+    public DbSet<MessageAttachment> MessageAttachments => Set<MessageAttachment>();
+    public DbSet<ConversationRead> ConversationReads => Set<ConversationRead>();
+    public DbSet<ConversationNote> ConversationNotes => Set<ConversationNote>();
+    public DbSet<MessageTemplate> MessageTemplates => Set<MessageTemplate>();
+    public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -68,6 +91,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigurePhone();
         b.ConfigureTeams();
         b.ConfigureProducts();
+        b.ConfigureOrders();
     }
 
     public static void Seed(AppDbContext db)

@@ -14,7 +14,8 @@ public enum Permission
     BrandsRead,
     BrandsManage,           // create / edit / archive brands, logos
     BrandWorkRead,          // read brand content (products, questions: built later)
-    BrandWorkWrite          // write brand content
+    BrandWorkWrite,         // write brand content (orders: accept/ship/cancel/returns, messages)
+    OrderRefund             // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
 }
 
 /// <summary>The central role -> permission matrix. Documented in docs/TEAMS.md; enforced by endpoint filters.</summary>

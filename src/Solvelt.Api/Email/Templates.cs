@@ -69,4 +69,8 @@ public static class Templates
 
     public static EmailMessage PasswordChanged(string to) => Build(to, "password-changed", "Your Solvelt password was changed",
         "Password changed", ["Your password was changed and you were signed out of all devices. If this wasn't you, reset your password immediately."]);
+
+    /// <summary>Generic notification in the shared style (orders / messages): heading, short paragraphs and one button.</summary>
+    public static EmailMessage Notification(string to, string kind, string subject, string heading, string[] paragraphs, string? buttonLabel = null, string? buttonUrl = null) =>
+        Build(to, kind, subject, heading, paragraphs, buttonLabel is null || buttonUrl is null ? null : (buttonLabel, buttonUrl));
 }
