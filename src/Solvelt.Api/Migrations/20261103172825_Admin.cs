@@ -28,7 +28,7 @@ namespace Solvelt.Api.Migrations
                 table: "Sessions",
                 type: "text",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "seller");
 
             migrationBuilder.AddColumn<DateTime>(
                 name: "MfaAt",

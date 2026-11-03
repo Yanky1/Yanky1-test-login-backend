@@ -418,12 +418,16 @@ public class OrderMessagingTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var (_, msgId, convB, _) = await Msg.BuyerMessage(f, "order", mid, number, text: "You are scammers!!!");
         Assert.Equal(HttpStatusCode.OK, (await Inbound(f, $"/api/internal/v1/messages/{msgId}/reports", new { reason = "abusive" })).StatusCode);
         Assert.True((bool)(await Node(await s.Owner.Get($"/api/v1/seller/messages/{convB}")))["conversation"]!["flagged"]!);
-        var admin = new Api(f); await admin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
+        // staff area: a seller-kind Admin session (no staff session, no 2FA) is refused, a staff Moderator is not
+        var legacyAdmin = new Api(f); await legacyAdmin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
+        Assert.Equal(HttpStatusCode.Forbidden, (await legacyAdmin.Get("/api/v1/admin/messages/reported")).StatusCode);
+        var admin = await StaffKit.LoginNew(f, Solvelt.Api.Admin.StaffRole.Moderator);
         var rep = await Node(await admin.Get("/api/v1/admin/messages/reported"));
         var row = rep.AsArray().First(x => (string)x!["conversationId"]! == convB.ToString())!;
         Assert.Equal("abusive", (string)row["reason"]!);
         Assert.Equal(HttpStatusCode.Forbidden, (await s.Owner.Get("/api/v1/admin/messages/reported")).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await admin.Post($"/api/v1/admin/messages/{(string)row["id"]!}/dismiss-report")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.Post($"/api/v1/admin/messages/{(string)row["id"]!}/dismiss-report", new { reason = "Heated but not abusive" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await legacyAdmin.Post($"/api/v1/admin/messages/{(string)row["id"]!}/dismiss-report", new { reason = "Heated but not abusive" })).StatusCode);
         Assert.False((bool)(await Node(await s.Owner.Get($"/api/v1/seller/messages/{convB}")))["conversation"]!["flagged"]!);
         Assert.Equal(HttpStatusCode.NotFound, (await Inbound(f, "/api/internal/v1/messages/NOPE/reports", new { reason = "x" })).StatusCode);
     }

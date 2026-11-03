@@ -32,7 +32,7 @@ public class SellerAdminService(AppDbContext db, SellerStatusService status, Ses
         var sel = await db.Sellers.FirstOrDefaultAsync(s => s.Id == id);
         if (sel is null) return Results.NotFound();
         var from = sel.Status;
-        var (ok, err) = await status.ChangeAsync(sel, to, note ?? reason, actor.UserId);
+        var (ok, err) = await status.ChangeAsync(sel, to, note, actor.UserId); // `reason` stays in the audit log only; the seller sees `note` (null unless staff wrote one for them)
         if (!ok) return AdminHttp.Err(409, "invalid_transition", err!);
         await audit.WriteAsync(actor, action, "seller", id, reason, new { status = from.ToString() }, new { status = to.ToString() });
         return Results.Ok(new { sellerId = id, status = sel.Status.ToString() });
@@ -270,7 +270,7 @@ public static class SellerAdminEndpoints
             return await svc.ChangeStatusAsync(ctx.Staff(), id, SellerStatus.NeedsInfo, "application.needs_info", msg, note: msg);
         }, StaffPermission.ApplicationsDecide);
         a.APost("/{id:guid}/reject", async (Guid id, DecisionRequest r, HttpContext ctx, SellerAdminService svc) =>
-            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.ChangeStatusAsync(ctx.Staff(), id, SellerStatus.Rejected, "application.rejected", reason), StaffPermission.ApplicationsDecide);
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.ChangeStatusAsync(ctx.Staff(), id, SellerStatus.Rejected, "application.rejected", reason, note: string.IsNullOrWhiteSpace(r.Message) ? null : r.Message.Trim()), StaffPermission.ApplicationsDecide);
 
         a.APost("/{id:guid}/assign", async (Guid id, AssignRequest r, HttpContext ctx, AppDbContext db, AdminAudit audit, TimeProvider time) =>
         {

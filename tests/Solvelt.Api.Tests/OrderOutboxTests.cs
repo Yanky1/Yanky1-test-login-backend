@@ -98,7 +98,9 @@ public class OrderOutboxWebhookTests : IClassFixture<WebhookFactory>
         Assert.Equal(OutboxStatus.Dead, dead.Status); Assert.Equal("HTTP 500", dead.LastError);
 
         // dead letters are visible to platform admins only
-        var admin = new Api(_f); await admin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
+        var legacyAdmin = new Api(_f); await legacyAdmin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
+        Assert.Equal(HttpStatusCode.Forbidden, (await legacyAdmin.Get("/api/v1/admin/outbox?status=dead")).StatusCode); // seller-kind session: not staff
+        var admin = await StaffKit.LoginNew(_f, Solvelt.Api.Admin.StaffRole.Support);
         var list = await Node(await admin.Get("/api/v1/admin/outbox?status=dead"));
         Assert.Contains(list["items"]!.AsArray(), x => (string)x!["id"]! == msg.Id.ToString());
         Assert.True((int)list["counts"]!["dead"]! >= 1);
@@ -106,7 +108,10 @@ public class OrderOutboxWebhookTests : IClassFixture<WebhookFactory>
 
         // recovery: the marketplace is back, an admin re-queues the message
         _f.Handler = _ => new HttpResponseMessage(HttpStatusCode.OK);
-        Assert.Equal(HttpStatusCode.NoContent, (await admin.Post($"/api/v1/admin/outbox/{msg.Id}/retry")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await legacyAdmin.Post($"/api/v1/admin/outbox/{msg.Id}/retry", new { reason = "Marketplace is back" })).StatusCode); // the seller-kind session cannot retry
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await admin.Post($"/api/v1/admin/outbox/{msg.Id}/retry", new { })).StatusCode); // a reason is required
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.Post($"/api/v1/admin/outbox/{msg.Id}/retry", new { reason = "Marketplace is back" })).StatusCode);
+        Assert.Contains(_f.WithDb(db => db.AuditEvents.Where(e => e.Type == "admin.outbox.retried").ToList()), e => e.TargetId == msg.Id.ToString());
         await Dispatch();
         Assert.Equal(OutboxStatus.Delivered, Row(msg.Id).Status);
     }

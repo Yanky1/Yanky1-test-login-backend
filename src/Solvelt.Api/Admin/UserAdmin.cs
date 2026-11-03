@@ -17,6 +17,18 @@ public static class UserAdminEndpoints
 {
     private static async Task<AppUser?> Find(UserManager<AppUser> users, Guid id) => await users.FindByIdAsync(id.ToString());
 
+    /// <summary>Acting on an ACTIVE staff member's account (sign-out, lockout, reset, phone) is a staff-management action: Super admin with a recent step-up.</summary>
+    private static async Task<IResult?> StaffTargetAsync(HttpContext ctx, AppDbContext db, Guid target)
+    {
+        if (!await db.StaffMembers.AsNoTracking().AnyAsync(m => m.UserId == target && m.Active)) return null;
+        var me = ctx.Staff();
+        var opt = ctx.RequestServices.GetRequiredService<IOptions<AdminOptions>>().Value;
+        var time = ctx.RequestServices.GetRequiredService<TimeProvider>().UtcNow();
+        if (!StaffPermissions.Has(me.Role, StaffPermission.StaffManage)) return AdminHttp.Err(403, "staff_target", "This account belongs to a staff member: only a Super admin can act on it.");
+        var sess = await db.Sessions.AsNoTracking().Where(x => x.Id == me.SessionId).Select(x => x.StepUpAt).FirstOrDefaultAsync();
+        return sess is { } su && time - su <= TimeSpan.FromMinutes(opt.StepUpMinutes) ? null : AdminHttp.Err(403, "step_up_required", "Confirm it's you again with your authenticator code to do this.");
+    }
+
     public static void MapUserAdminEndpoints(this RouteGroupBuilder g)
     {
         var u = g.MapGroup("/users");
@@ -73,6 +85,7 @@ public static class UserAdminEndpoints
         u.APost("/{id:guid}/sign-out-everywhere", async (Guid id, ReasonRequest r, HttpContext ctx, UserManager<AppUser> users, SessionService sessions, AdminAudit audit) =>
         {
             if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
+            if (await StaffTargetAsync(ctx, ctx.RequestServices.GetRequiredService<AppDbContext>(), id) is { } blocked) return blocked;
             var user = await Find(users, id); if (user is null) return Results.NotFound();
             await sessions.RevokeAllAsync(id, "staff-sign-out");
             await audit.WriteAsync(ctx.Staff(), "user.signed_out_everywhere", "user", id, reason);
@@ -82,6 +95,7 @@ public static class UserAdminEndpoints
         u.APost("/{id:guid}/clear-lockout", async (Guid id, ReasonRequest r, HttpContext ctx, UserManager<AppUser> users, LoginThrottleService throttle, AdminAudit audit) =>
         {
             if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
+            if (await StaffTargetAsync(ctx, ctx.RequestServices.GetRequiredService<AppDbContext>(), id) is { } blocked) return blocked;
             var user = await Find(users, id); if (user is null) return Results.NotFound();
             var email = Crypto.NormalizeEmail(user.Email!);
             var before = await throttle.GetAsync(email);
@@ -93,6 +107,7 @@ public static class UserAdminEndpoints
         u.APost("/{id:guid}/send-password-reset", async (Guid id, ReasonRequest r, HttpContext ctx, UserManager<AppUser> users, Mailer mailer, IOptions<AppOptions> app, AdminAudit audit) =>
         {
             if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
+            if (await StaffTargetAsync(ctx, ctx.RequestServices.GetRequiredService<AppDbContext>(), id) is { } blocked) return blocked;
             var user = await Find(users, id); if (user is null) return Results.NotFound();
             var email = Crypto.NormalizeEmail(user.Email!);
             var token = await users.GeneratePasswordResetTokenAsync(user);
@@ -105,6 +120,7 @@ public static class UserAdminEndpoints
         u.APost("/{id:guid}/remove-phone", async (Guid id, ReasonRequest r, HttpContext ctx, UserManager<AppUser> users, AppDbContext db, SessionService sessions, Mailer mailer, AdminAudit audit) =>
         {
             if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
+            if (await StaffTargetAsync(ctx, ctx.RequestServices.GetRequiredService<AppDbContext>(), id) is { } blocked) return blocked;
             var user = await Find(users, id); if (user is null) return Results.NotFound();
             if (string.IsNullOrEmpty(user.PhoneNumber)) return AdminHttp.Err(409, "no_phone", "This user has no phone number.");
             var masked = Mask.PhoneNo(user.PhoneNumber);

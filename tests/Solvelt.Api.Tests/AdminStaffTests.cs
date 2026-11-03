@@ -104,7 +104,14 @@ public class AdminStaffTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal("self_change", await StaffKit.Err(res));
         Assert.Equal(HttpStatusCode.Forbidden, (await sa.Post($"/api/v1/admin/staff/{StaffKit.UserId(f, saEmail)}/deactivate", new { reason = StaffKit.Why })).StatusCode);
         // a promoted/demoted Super admin gains/loses the legacy Admin role that guards the older seller-status API
+        // a promoted Super admin does NOT get the legacy seller-kind Admin role; a demoted holder of it loses it
         Assert.Equal(HttpStatusCode.OK, (await sa.Put($"/api/v1/admin/staff/{tid}/role", new { role = "SuperAdmin", reason = StaffKit.Why })).StatusCode);
+        Assert.False(await HasLegacyAdmin(tid));
+        using (var scope = f.Services.CreateScope())
+        {
+            var um = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+            await um.AddToRoleAsync((await um.FindByIdAsync(tid.ToString()))!, "Admin");
+        }
         Assert.True(await HasLegacyAdmin(tid));
         Assert.Equal(HttpStatusCode.OK, (await sa.Put($"/api/v1/admin/staff/{tid}/role", new { role = "ReadOnly", reason = StaffKit.Why })).StatusCode);
         Assert.False(await HasLegacyAdmin(tid));
@@ -146,24 +153,22 @@ public class AdminStaffTests(ApiFactory f) : IClassFixture<ApiFactory>
     }
 }
 
-/// <summary>The last-Super-admin guard is a service rule (an acting Super admin always counts as another one), so it is tested at the service.</summary>
+/// <summary>At least one active Super admin must always remain, also under concurrency.</summary>
 public class AdminLastSuperAdminTests
 {
-    private static StaffContext Outsider() => new(Guid.NewGuid(), "ghost@example.com", StaffRole.SuperAdmin, Guid.NewGuid(), DateTime.UtcNow);
+    private static StaffContext Ctx(Guid id, string email) => new(id, email, StaffRole.SuperAdmin, Guid.NewGuid(), DateTime.UtcNow);
     private static int Status(IResult r) => ((IStatusCodeHttpResult)r).StatusCode ?? 200;
 
     [Fact]
-    public async Task The_only_super_admin_cannot_be_demoted_or_deactivated()
+    public async Task A_caller_who_is_no_longer_an_active_super_admin_cannot_change_staff()
     {
         using var f = new ApiFactory();
-        var only = f.WithDb(db => db.StaffMembers.Single(s => s.Role == StaffRole.SuperAdmin).UserId);
+        var seed = f.WithDb(db => db.StaffMembers.Single(s => s.Role == StaffRole.SuperAdmin).UserId);
         using var scope = f.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<StaffService>();
-        var demote = await svc.ChangeRoleAsync(Outsider(), only, "Support", StaffKit.Why);
-        Assert.Equal(409, Status(demote));
-        Assert.Equal(409, Status(await svc.SetActiveAsync(Outsider(), only, false, StaffKit.Why)));
-        Assert.Equal(StaffRole.SuperAdmin, f.WithDb(db => db.StaffMembers.Single(s => s.UserId == only).Role));
-        Assert.True(f.WithDb(db => db.StaffMembers.Single(s => s.UserId == only).Active));
+        Assert.Equal(403, Status(await svc.ChangeRoleAsync(Ctx(Guid.NewGuid(), "ghost@example.com"), seed, "Support", StaffKit.Why)));
+        Assert.Equal(403, Status(await svc.SetActiveAsync(Ctx(Guid.NewGuid(), "ghost@example.com"), seed, false, StaffKit.Why)));
+        Assert.Equal(StaffRole.SuperAdmin, f.WithDb(db => db.StaffMembers.Single(s => s.UserId == seed).Role));
     }
 
     [Fact]
@@ -174,5 +179,30 @@ public class AdminLastSuperAdminTests
         var (sa2, _) = await StaffKit.LoginSteppedUp(f, StaffRole.SuperAdmin);
         Assert.Equal(HttpStatusCode.OK, (await sa2.Put($"/api/v1/admin/staff/{seed}/role", new { role = "ReadOnly", reason = StaffKit.Why })).StatusCode);
         Assert.Equal(1, f.WithDb(db => db.StaffMembers.Count(s => s.Role == StaffRole.SuperAdmin && s.Active)));
+    }
+
+    [Theory]
+    [InlineData(true)]   // demote each other
+    [InlineData(false)]  // deactivate each other
+    public async Task Two_super_admins_removing_each_other_in_parallel_never_leave_zero(bool demote)
+    {
+        using var f = new ApiFactory();
+        var seed = f.WithDb(db => db.StaffMembers.Single(s => s.Role == StaffRole.SuperAdmin).UserId);
+        var aEmail = await StaffKit.Create(f, StaffRole.SuperAdmin); var bEmail = await StaffKit.Create(f, StaffRole.SuperAdmin);
+        var a = StaffKit.UserId(f, aEmail); var b = StaffKit.UserId(f, bEmail);
+        f.WithDb(db => { db.StaffMembers.Single(s => s.UserId == seed).Role = StaffRole.ReadOnly; db.SaveChanges(); return 0; });
+        for (var round = 0; round < 12; round++)
+        {
+            f.WithDb(db => { foreach (var m in db.StaffMembers.Where(s => s.UserId == a || s.UserId == b)) { m.Role = StaffRole.SuperAdmin; m.Active = true; } db.SaveChanges(); return 0; });
+            async Task Go(Guid actor, string email, Guid target)
+            {
+                using var scope = f.Services.CreateScope();
+                var svc = scope.ServiceProvider.GetRequiredService<StaffService>();
+                if (demote) await svc.ChangeRoleAsync(Ctx(actor, email), target, "ReadOnly", StaffKit.Why);
+                else await svc.SetActiveAsync(Ctx(actor, email), target, false, StaffKit.Why);
+            }
+            await Task.WhenAll(Task.Run(() => Go(a, aEmail, b)), Task.Run(() => Go(b, bEmail, a)));
+            Assert.True(f.WithDb(db => db.StaffMembers.Count(s => s.Role == StaffRole.SuperAdmin && s.Active)) >= 1, $"round {round}: no active Super admin left");
+        }
     }
 }

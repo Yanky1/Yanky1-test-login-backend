@@ -1,3 +1,4 @@
+using Solvelt.Api.Admin;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Solvelt.Api.Data;
@@ -18,7 +19,7 @@ public static class AdminDevEndpoints
     /// <summary>Platform-admin view of the outbox (dead letters) and of messages reported by buyers.</summary>
     public static void MapOrderAdminEndpoints(this RouteGroupBuilder g)
     {
-        var a = g.MapGroup("/admin").RequireAuthorization("Admin");
+        var a = g.MapGroup("/admin"); // staff-gated route by route (Solvelt.Api.Admin): a seller-kind session, even of an Admin-role user, never reaches these
         a.MapGet("/outbox", async (AppDbContext db, string? status, int? page, int? pageSize) =>
         {
             var q = db.Outbox.AsNoTracking().AsQueryable();
@@ -34,28 +35,32 @@ public static class AdminDevEndpoints
             {
                 counts, items = items.Select(m => new { id = m.Id, type = m.EventType, sellerId = m.SellerId, aggregateId = m.AggregateId, status = m.Status.ToString(), attempts = m.Attempts, createdAt = m.CreatedAt, nextAttemptAt = m.NextAttemptAt, deliveredAt = m.DeliveredAt, lastError = m.LastError })
             }, OrderJson.Opts);
-        });
-        a.MapPost("/outbox/{id:guid}/retry", async (AppDbContext db, TimeProvider time, Guid id) =>
+        }).RequireStaff(StaffPermission.IntegrationsView, "read");
+        a.MapPost("/outbox/{id:guid}/retry", async (HttpContext ctx, ReasonRequest r, AdminAudit audit, AppDbContext db, TimeProvider time, Guid id) =>
         {
+            if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
             var m = await db.Outbox.FirstOrDefaultAsync(x => x.Id == id && x.Status == OutboxStatus.Dead);
             if (m is null) return Results.NotFound();
             m.Status = OutboxStatus.Pending; m.Attempts = 0; m.NextAttemptAt = time.UtcNow(); m.LastError = null;
+            audit.Add(ctx.Staff(), "outbox.retried", "outbox", id, reason, new { status = "Dead" }, new { status = "Pending" });
             await db.SaveChangesAsync();
             return Results.NoContent();
-        });
-        a.MapGet("/messages/reported", async (AppDbContext db) =>
+        }).RequireStaff(StaffPermission.IntegrationsAct, "write");
+        a.MapGet("/messages/reported", async (HttpContext ctx, AppDbContext db) =>
             Results.Json((await db.Messages.AsNoTracking().Where(m => m.Reported).OrderByDescending(m => m.CreatedAt).Take(100).ToListAsync())
-                .Select(m => new { id = m.Id, conversationId = m.ConversationId, sellerId = m.SellerId, direction = m.Direction.ToString(), text = m.Text, reason = m.ReportReason, createdAt = m.CreatedAt }), OrderJson.Opts));
-        a.MapPost("/messages/{id:guid}/dismiss-report", async (AppDbContext db, Guid id) =>
+                .Select(m => new { id = m.Id, conversationId = m.ConversationId, sellerId = m.SellerId, direction = m.Direction.ToString(), text = StaffPermissions.Has(ctx.Staff().Role, StaffPermission.ModerationAct) ? m.Text : Mask.Text(m.Text), reason = m.ReportReason, createdAt = m.CreatedAt }), OrderJson.Opts)).RequireStaff(StaffPermission.ModerationView, "read");
+        a.MapPost("/messages/{id:guid}/dismiss-report", async (HttpContext ctx, ReasonRequest r, AdminAudit audit, AppDbContext db, Guid id) =>
         {
+            if (AdminHttp.NeedReason(r.Reason, out var reason) is { } bad) return bad;
             var m = await db.Messages.FirstOrDefaultAsync(x => x.Id == id && x.Reported);
             if (m is null) return Results.NotFound();
             m.Reported = false; m.ReportReason = null;
             if (!await db.Messages.AnyAsync(x => x.ConversationId == m.ConversationId && x.Reported && x.Id != id))
                 await db.Conversations.Where(c => c.Id == m.ConversationId).ExecuteUpdateAsync(s => s.SetProperty(c => c.Flagged, false).SetProperty(c => c.FlagReason, (string?)null));
+            audit.Add(ctx.Staff(), "moderation.report_dismissed", "message", id, reason);
             await db.SaveChangesAsync();
             return Results.NoContent();
-        });
+        }).RequireStaff(StaffPermission.ModerationAct, "write");
     }
 
     public static bool SimulatorEnabled(IHostEnvironment env) => env.IsDevelopment() || env.IsEnvironment("Testing");

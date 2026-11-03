@@ -129,6 +129,9 @@ var authBuilder = builder.Services.AddAuthentication(o =>
     {
         OnTokenValidated = async ctx =>
         {
+            // A staff token is valid on the staff area only (never on seller, account or session endpoints).
+            if (ctx.Principal?.FindFirstValue("ctx") == "staff" && !ctx.HttpContext.Request.Path.StartsWithSegments("/api/v1/admin"))
+            { ctx.Fail("staff_token_outside_admin"); return; }
             var sid = ctx.Principal?.FindFirstValue("sid");
             var sub = ctx.Principal?.FindFirstValue("sub");
             var sessions = ctx.HttpContext.RequestServices.GetRequiredService<SessionService>();

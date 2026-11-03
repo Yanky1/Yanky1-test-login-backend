@@ -183,6 +183,9 @@ public static class ModerationEndpoints
             var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
             if (r is null) return Results.NotFound();
             object? target = null;
+            // only roles that can act on reports (Moderator, Super admin) read message text unmasked
+            var full = StaffPermissions.Has(ctx.Staff().Role, StaffPermission.ModerationAct);
+            string T(string? t) => full ? t ?? "" : Mask.Text(t);
             if (r.Kind is "message" or "contact_warning")
             {
                 var msg = await db.Messages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == r.TargetId);
@@ -191,13 +194,13 @@ public static class ModerationEndpoints
                     var conv = await db.Conversations.AsNoTracking().FirstOrDefaultAsync(c => c.Id == msg.ConversationId);
                     var around = await db.Messages.AsNoTracking().Where(x => x.ConversationId == msg.ConversationId && x.CreatedAt <= msg.CreatedAt).OrderByDescending(x => x.CreatedAt).Take(6)
                         .Select(x => new { x.Id, direction = x.Direction.ToString(), x.Text, x.CreatedAt, x.ContactWarning, x.Reported }).ToListAsync();
-                    target = new { conversationId = msg.ConversationId, subject = conv?.Subject, messages = around.OrderBy(x => x.CreatedAt) };
+                    target = new { conversationId = msg.ConversationId, subject = T(conv?.Subject), messages = around.OrderBy(x => x.CreatedAt).Select(x => new { x.Id, x.direction, text = T(x.Text), x.CreatedAt, x.ContactWarning, x.Reported }) };
                 }
             }
             else if (r.Kind == "booking_message")
             {
                 var msg = await db.BookingMessages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == r.TargetId);
-                if (msg is not null) target = new { bookingId = msg.BookingId, messages = new[] { new { msg.Id, direction = msg.Direction, msg.Text, msg.CreatedAt } } };
+                if (msg is not null) target = new { bookingId = msg.BookingId, messages = new[] { new { msg.Id, direction = msg.Direction, text = T(msg.Text), msg.CreatedAt } } };
             }
             else if (r.Kind == "listing") target = new { productId = r.TargetId };
             await audit.WriteAsync(ctx.Staff(), "moderation.viewed", "report", id, null);

@@ -52,6 +52,10 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("GET", "/api/v1/admin/lookups/orders?q=SO-2026", StaffPermission.LookupsView, null),
         ("GET", $"/api/v1/admin/lookups/orders/{G}", StaffPermission.LookupsView, null),
         ("POST", $"/api/v1/admin/lookups/orders/{G}/reveal", StaffPermission.LookupsReveal, new { reason = StaffKit.Why }),
+        ("GET", "/api/v1/admin/outbox", StaffPermission.IntegrationsView, null),
+        ("POST", $"/api/v1/admin/outbox/{G}/retry", StaffPermission.IntegrationsAct, new { reason = StaffKit.Why }),
+        ("GET", "/api/v1/admin/messages/reported", StaffPermission.ModerationView, null),
+        ("POST", $"/api/v1/admin/messages/{G}/dismiss-report", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("GET", "/api/v1/admin/integrations/outbox", StaffPermission.IntegrationsView, null),
         ("GET", $"/api/v1/admin/integrations/outbox/{G}", StaffPermission.IntegrationsView, null),
         ("POST", $"/api/v1/admin/integrations/outbox/{G}/retry", StaffPermission.IntegrationsAct, new { reason = StaffKit.Why }),
@@ -101,7 +105,7 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var mapped = f.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()
             .Where(e => e.RoutePattern.RawText!.TrimStart('/').StartsWith("api/v1/admin/") && !e.RoutePattern.RawText.Contains("/auth/login") && !e.RoutePattern.RawText.Contains("/2fa/")
                 && !e.RoutePattern.RawText.Contains("accept-invite") && !e.RoutePattern.RawText.Contains("step-up") && !e.RoutePattern.RawText.EndsWith("/logout")
-                && !e.Metadata.OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>().Any(a => a.Policy == "Admin")) // the older Admin-role endpoints keep their own policy
+                && !e.RoutePattern.RawText.Contains("/sellers/{id:guid}/status")) // the one legacy Admin-role API kept as it was (seller-status)
             .SelectMany(e => (e.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? []).Select(m => $"{m} {Norm(e.RoutePattern.RawText!)}")).ToHashSet();
         var covered = Endpoints.Select(e => $"{e.Method} {Norm(e.Url)}").ToHashSet();
         Assert.Empty(mapped.Except(covered));
@@ -181,7 +185,7 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var seller = new Api(f); var email = await seller.SignupVerified();
         await StaffKit.Create(f, StaffRole.Support, email);
         var staff = await StaffKit.Login(f, email);
-        Assert.Equal(HttpStatusCode.Forbidden, (await staff.Get("/api/v1/seller/products")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await staff.Get("/api/v1/seller/products")).StatusCode); // a staff token is valid on /admin only
         Assert.Equal(HttpStatusCode.OK, (await staff.Get("/api/v1/admin/dashboard")).StatusCode);
         // and the seller token of the same person cannot use admin
         Assert.Equal(HttpStatusCode.Forbidden, (await seller.Get("/api/v1/admin/dashboard")).StatusCode);

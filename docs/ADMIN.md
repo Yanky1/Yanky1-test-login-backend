@@ -35,8 +35,10 @@ One central table, `StaffPermissions.Matrix` (`Admin/AdminModel.cs`); every admi
 | View staff list | ✔ | | | | |
 | Invite staff, change roles, deactivate/reactivate | ✔ | | | | ✔ |
 
-The legacy Identity role `Admin` maps to **Super admin** (backfilled at start-up; kept in step when roles change) and the old
-`POST /api/v1/admin/sellers/{id}/status` API keeps working with its own `Admin` policy and ordinary seller-kind sessions.
+The legacy Identity role `Admin` maps to **Super admin** (backfilled at start-up). It is only ever *removed* afterwards (demotion/deactivation): new Super admins do **not**
+receive it, because it opens the one old API that stays outside the staff gate, `POST /api/v1/admin/sellers/{id}/status` (seller-kind session, no 2FA, no audit).
+The older order-admin routes `GET admin/outbox`, `POST admin/outbox/{id}/retry`, `GET admin/messages/reported`, `POST admin/messages/{id}/dismiss-report` are now behind the staff gate
+(`IntegrationsView/Act`, `ModerationView/Act`; reasons + audit; text masked unless the role can act): a seller-kind session answers `403 not_staff_session`.
 
 ## Access model (ASVS L2)
 * **Separate session context.** Staff sign in at `POST /admin/auth/login` (password **and** TOTP/recovery code). That creates a `UserSession` of
@@ -53,6 +55,10 @@ The legacy Identity role `Admin` maps to **Super admin** (backfilled at start-up
 * **Rate limits** per staff member after authentication: `Admin:ReadsPerMinute` 240, `WritesPerMinute` 60, `RevealsPerMinute` 20 (`429 rate_limited`);
   sign-in shares the `auth` per-IP limiter and the normal login lockout.
 * **CSRF:** the admin API uses `Authorization: Bearer` only (no cookies), like the rest of the app, so there is nothing to forge.
+* **Staff tokens work on `/admin` only**: a staff JWT (`ctx=staff`) is refused (401) on seller, account, team and session endpoints.
+* **Acting on staff accounts** (sign out, clear lockout, password reset, remove phone) is a staff-management action: Super admin with a recent step-up; Support gets `403 staff_target`.
+* **Seller-facing text is separate from the internal reason**: the reason stays in the audit log; the seller only sees a message staff wrote for them (needs-info message, optional reject message).
+* **Concurrency:** role changes/deactivations that can reduce the Super admin count run under a process lock (+ PostgreSQL advisory lock) that re-reads the acting Super admin and the count.
 * **Invariants:** a staff member cannot change their own role / access / 2FA; at least one active Super admin always remains (service rule).
 
 ## Reasons and audit
@@ -68,7 +74,7 @@ Support lookups (`/admin/lookups/{orders|bookings|quotes|conversations}`) return
 (`****11`), postal codes (`11***`), hide street lines and mask e-mails/phones inside message text. `POST .../reveal {reason}` (Super admin, Support) returns the
 unmasked record; the audit row `admin.pii.revealed` (reason, record, field names, no values) is written before the data leaves; reveals are rate limited.
 No impersonation / "log in as" exists (ROADMAP).
-Moderators read the reported message and up to 5 preceding messages in full (their job); each moderation view is audited (`admin.moderation.viewed`).
+Moderators and Super admins (roles that can act on reports) read the reported message and up to 5 preceding messages in full; Support and Read-only see them masked. Each moderation view is audited (`admin.moderation.viewed`).
 
 ## Features and endpoints
 | Area | Endpoints |

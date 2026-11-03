@@ -26,16 +26,35 @@ public class StaffService(AppDbContext db, UserManager<AppUser> users, SessionSe
     public static bool TryRole(string? s, out StaffRole r) => Enum.TryParse(s, true, out r) && Enum.IsDefined(r);
 
     private async Task<int> ActiveSuperAdminsExceptAsync(Guid userId) =>
-        await db.StaffMembers.CountAsync(s => s.Active && s.Role == StaffRole.SuperAdmin && s.UserId != userId);
+        await db.StaffMembers.AsNoTracking().CountAsync(s => s.Active && s.Role == StaffRole.SuperAdmin && s.UserId != userId);
 
-    /// <summary>Keeps the legacy Identity role "Admin" (existing seller-status API) in step with Super admin.</summary>
-    private async Task SyncLegacyRoleAsync(Guid userId, bool superAdmin)
+    // One writer at a time for every change that can reduce the number of Super admins (this process), plus a PostgreSQL advisory lock for several instances.
+    private static readonly SemaphoreSlim StaffLock = new(1, 1);
+
+    private async Task<IResult> LockedAsync(StaffContext actor, Func<Task<IResult>> work)
+    {
+        await StaffLock.WaitAsync();
+        try
+        {
+            await using var tx = await db.Database.BeginTransactionAsync();
+            if (db.Database.IsNpgsql()) await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(7403)");
+            // the acting Super admin is re-read INSIDE the lock: an earlier request may just have demoted or deactivated them
+            db.ChangeTracker.Clear();
+            var me = await db.StaffMembers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == actor.UserId);
+            if (me is not { Active: true, Role: StaffRole.SuperAdmin }) return AdminHttp.Err(403, "forbidden", "Your staff role doesn't allow this.");
+            var res = await work();
+            await tx.CommitAsync();
+            return res;
+        }
+        finally { StaffLock.Release(); }
+    }
+
+    /// <summary>The legacy Identity role "Admin" (old seller-status API, seller-kind sessions, no 2FA) is only ever REMOVED here: new Super admins never receive it,
+    /// and a demoted or deactivated person loses it.</summary>
+    private async Task RevokeLegacyRoleAsync(Guid userId)
     {
         var u = await users.FindByIdAsync(userId.ToString());
-        if (u is null) return;
-        var has = await users.IsInRoleAsync(u, "Admin");
-        if (superAdmin && !has) await users.AddToRoleAsync(u, "Admin");
-        else if (!superAdmin && has) await users.RemoveFromRoleAsync(u, "Admin");
+        if (u is not null && await users.IsInRoleAsync(u, "Admin")) await users.RemoveFromRoleAsync(u, "Admin");
     }
 
     public async Task<IResult> InviteAsync(StaffContext actor, string? email, string? role, string reason)
@@ -92,12 +111,14 @@ public class StaffService(AppDbContext db, UserManager<AppUser> users, SessionSe
         if (member is null) db.StaffMembers.Add(new StaffMember { UserId = user.Id, Role = inv.Role, CreatedBy = inv.InvitedBy, CreatedAt = now, UpdatedAt = now });
         else { member.Role = inv.Role; member.Active = true; member.DeactivatedAt = null; member.UpdatedAt = now; }
         await db.SaveChangesAsync();
-        await SyncLegacyRoleAsync(user.Id, inv.Role == StaffRole.SuperAdmin);
         await plainAudit.WriteAsync("admin.staff.invite_accepted", user.Id, e, $"role={inv.Role};invitation={inv.Id}");
         return Results.NoContent();
     }
 
-    public async Task<IResult> ChangeRoleAsync(StaffContext actor, Guid userId, string? role, string reason)
+    public Task<IResult> ChangeRoleAsync(StaffContext actor, Guid userId, string? role, string reason) => LockedAsync(actor, () => ChangeRoleCoreAsync(actor, userId, role, reason));
+    public Task<IResult> SetActiveAsync(StaffContext actor, Guid userId, bool active, string reason) => LockedAsync(actor, () => SetActiveCoreAsync(actor, userId, active, reason));
+
+    private async Task<IResult> ChangeRoleCoreAsync(StaffContext actor, Guid userId, string? role, string reason)
     {
         if (!TryRole(role, out var r)) return Validation.Invalid("role", "Choose SuperAdmin, Support, Moderator or ReadOnly.");
         if (userId == actor.UserId) return AdminHttp.Err(403, "self_change", "You can't change your own role.");
@@ -109,11 +130,11 @@ public class StaffService(AppDbContext db, UserManager<AppUser> users, SessionSe
         var before = m.Role; m.Role = r; m.UpdatedAt = time.UtcNow();
         audit.Add(actor, "staff.role_changed", "staff", userId, reason, new { role = before.ToString() }, new { role = r.ToString() });
         await db.SaveChangesAsync();
-        await SyncLegacyRoleAsync(userId, r == StaffRole.SuperAdmin && m.Active);
+        if (r != StaffRole.SuperAdmin) await RevokeLegacyRoleAsync(userId);
         return Results.Ok(new { userId, role = r.ToString() });
     }
 
-    public async Task<IResult> SetActiveAsync(StaffContext actor, Guid userId, bool active, string reason)
+    private async Task<IResult> SetActiveCoreAsync(StaffContext actor, Guid userId, bool active, string reason)
     {
         if (userId == actor.UserId) return AdminHttp.Err(403, "self_change", "You can't change your own staff access.");
         var m = await db.StaffMembers.FirstOrDefaultAsync(s => s.UserId == userId);
@@ -125,7 +146,7 @@ public class StaffService(AppDbContext db, UserManager<AppUser> users, SessionSe
         audit.Add(actor, active ? "staff.reactivated" : "staff.deactivated", "staff", userId, reason, new { active = !active }, new { active });
         await db.SaveChangesAsync();
         if (!active) await sessions.RevokeAllAsync(userId, "staff-deactivated");
-        await SyncLegacyRoleAsync(userId, active && m.Role == StaffRole.SuperAdmin);
+        if (!active || m.Role != StaffRole.SuperAdmin) await RevokeLegacyRoleAsync(userId);
         return Results.Ok(new { userId, active });
     }
 }

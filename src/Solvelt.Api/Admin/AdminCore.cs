@@ -199,7 +199,7 @@ public static class Mask
 /// <summary>Redacts outbox payloads for display: personal fields and secrets are replaced; ids, numbers, states stay.</summary>
 public static class PayloadRedactor
 {
-    private static readonly Regex Sensitive = new("(email|phone|name|address|line|city|postal|zip|region|token|secret|signature|password|pin|code|note|message|text|gift|reason|details|body|answer|key)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex Sensitive = new("(email|phone|name|address|street|recipient|company|contact|line|city|postal|zip|region|token|secret|signature|password|pin|code|note|message|text|gift|reason|details|body|answer|key)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static string Redact(string json, int max = 4000)
     {
