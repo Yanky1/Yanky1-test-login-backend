@@ -2,6 +2,7 @@
 
 ASP.NET Core 10 API for seller sign-up / sign-in: signup wizard drafts, email verification, JWT + rotating refresh tokens,
 lockout, passkeys (built-in Identity passkey support), Google/Apple sign-in, TOTP 2FA, seller approval status.
+Optional **phone (IVR) and SMS channels with an AI assistant** (SignalWire/Twilio, Claude): `docs/PHONE-SMS.md`.
 Frontend: <https://github.com/Yanky1/test-login-frontend>.
 
 ## Prerequisites
@@ -25,13 +26,13 @@ dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLit
 
 ## Configuration keys
 See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
-(server idle limit), `Lockout`, `RateLimit`, `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`.
+(server idle limit), `Lockout`, `RateLimit`, `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Phone`, `Ai`.
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
 `auth/*` signup (202, no session), verify-email (creates the session), resend-code, login, refresh, logout, logout-all, forgot/reset-password, passkey, external (Google/Apple) ·
 `account/*` me, change-password, email change, 2FA, sessions, passkeys, linked logins · `seller/*` wizard + certificate ·
-`admin/sellers/{id}/status` (Admin role) · `public-config`. Testing environment only: `/api/test/emails`.
+`account/phone*` number + PIN (step-up) · `channels/voice|sms|links` provider webhooks and texted links (signed; see `docs/PHONE-SMS.md`) · `admin/sellers/{id}/status` (Admin role) · `public-config`. Testing environment only: `/api/test/emails`.
 Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
 
 ## Deploy notes

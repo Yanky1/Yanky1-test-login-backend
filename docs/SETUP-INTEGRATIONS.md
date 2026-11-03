@@ -31,6 +31,26 @@ Captcha is only demanded after the 4th failed login for an email.
 Certificates go through `IFileStorage`. `LocalFileStorage` writes to `Storage:LocalRoot` (not web-served; files are streamed only to their owner). In production mount a persistent volume
 (or implement `IFileStorage` for S3/Azure Blob and register it in `Program.cs`).
 
+## Phone, SMS and the AI assistant (SignalWire / Twilio / Anthropic)
+Full design: `docs/PHONE-SMS.md`. Set `Phone:Enabled=true` and the keys below (env form `Phone__AccountSid`, ...).
+
+### SignalWire (default)
+1. Create a Space (`<name>.signalwire.com`) and a Project. **Phone Numbers → Buy** a number with Voice + SMS (US 10DLC: local number; or a toll-free number).
+2. **API → Credentials**: Project ID → `Phone:AccountSid`, API token → `Phone:AuthToken`, space host → `Phone:Space`, the number (E.164) → `Phone:FromNumber`. **Settings → Signing Key** → `Phone:SigningKey`.
+3. Number settings → **Voice**: "Handle calls using LaML Webhooks", `https://<api-host>/api/v1/channels/voice/incoming` (POST), status callback `https://<api-host>/api/v1/channels/voice/status`.
+   **Messaging**: LaML Webhooks, `https://<api-host>/api/v1/channels/sms/inbound` (POST). Our outgoing messages set the status callback `https://<api-host>/api/v1/channels/sms/status`.
+4. `Phone:PublicBaseUrl=https://<api-host>` (must match the URL configured at the provider exactly: it is part of the signature). Keep call recording off.
+5. **US A2P 10DLC** (required to text from a local US number): Brand registration (EIN/legal entity), then a Campaign (use case "Account notification / 2FA"; sample messages: the code and link texts from `PHONE-SMS.md`; opt-in: web card "Phone number" and "Text JOIN/LOGIN"; opt-out STOP; help HELP), then attach the number to the campaign. Approval takes days; unregistered traffic is filtered.
+   **Alternative: toll-free verification** (submit use case, opt-in flow screenshots, sample messages): faster, no brand/campaign.
+6. Messages must include "Msg&data rates may apply" and STOP/HELP handling, which the server implements.
+
+### Twilio
+Same code, `Phone:Provider=Twilio`: Account SID → `AccountSid`, Auth Token → `AuthToken` (also the signing key). Webhook URLs as above (Console → Phone Numbers → Active numbers → Voice/Messaging "Webhook, HTTP POST"). Register A2P 10DLC under Messaging → Regulatory Compliance.
+
+### Anthropic API key (AI assistant)
+Create a key in the Anthropic Console, then `Ai:Provider=Anthropic` and `Ai:ApiKey` (or `ANTHROPIC_API_KEY`). `Ai:Model` (default `claude-opus-5-5`); for lower call latency set `Ai:VoiceModel=claude-haiku-5-5`. Without it the deterministic keyword assistant (`Fake`) is used; the keypad menu and all SMS keywords work either way.
+Dev without a provider: `Phone:Provider=Sink` and the simulator (`docs/PHONE-SMS.md`).
+
 ## PostgreSQL + migrations
 ```bash
 export Database__Provider=Postgres Database__ConnectionString="Host=...;Database=solvelt;Username=...;Password=..."
