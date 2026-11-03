@@ -143,13 +143,11 @@ public static class BookingsModule
         var o = cfg.GetSection(BookingOptions.Section).Get<BookingOptions>() ?? new BookingOptions();
         if (!builder.Environment.IsEnvironment("Testing") && o.RunBackgroundJobs) builder.Services.AddHostedService<BookingWorker>();
         var writes = cfg.GetValue("RateLimit:BookingsPerMinute", 300);
-        var avail = cfg.GetValue("RateLimit:AvailabilityPerMinute", 600);
+        builder.Services.AddSingleton(new AvailabilityLimits(cfg.GetValue("RateLimit:AvailabilityPerMinute", 600), cfg.GetValue("RateLimit:AvailabilityFailedPerMinute", 60)));
         builder.Services.Configure<RateLimiterOptions>(r =>
         {
             r.AddPolicy("bookings", c => RateLimitPartition.GetFixedWindowLimiter("bookings:" + (c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = writes, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-            r.AddPolicy("availability", c => RateLimitPartition.GetFixedWindowLimiter("availability:" + (c.Request.RouteValues["serviceId"]?.ToString() ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),   // per service: the marketplace is ONE caller, a per-IP key would throttle all shoppers together
-                _ => new FixedWindowRateLimiterOptions { PermitLimit = avail, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
         return builder;
     }
@@ -186,14 +184,17 @@ public static class BookingsModule
     public static void MapInternalBookingEndpoints(this WebApplication app)
     {
         var g = app.MapGroup("/api/internal/v1").AllowAnonymous();
-        var read = g.MapGroup("").RequireRateLimiting("availability");
+        var read = g.MapGroup("");
         var write = g.MapGroup("").RequireRateLimiting("internal");
 
-        read.MapGet("/services/{serviceId:guid}/availability", async (HttpContext ctx, InboundVerifier verifier, BookingService svc, Guid serviceId, DateTime? from, DateTime? to,
+        read.MapGet("/services/{serviceId:guid}/availability", async (HttpContext ctx, InboundVerifier verifier, BookingService svc, AvailabilityLimits limits, Guid serviceId, DateTime? from, DateTime? to,
             Guid? providerId, string? location, string? postalCode, double? lat, double? lng, int? minutes, string? addOns) =>
         {
             var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
-            if (!v.Ok) return Err(v.Status, v.Code, v.Message);
+            // unsigned / failed requests only ever touch a small PER-IP bucket; the per-service bucket is spent by VERIFIED requests alone,
+            // so a flood of forged requests can never make the marketplace's own signed requests 429
+            if (!v.Ok) return limits.TryFailed(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") ? Err(v.Status, v.Code, v.Message) : Err(429, "rate_limited", "Too many failed requests.");
+            if (!limits.TryService(serviceId)) return Err(429, "rate_limited", "Too many availability requests for this service.");
             if (from is null || to is null) return Err(422, "range", "from and to are required.");
             return Out(await svc.AvailabilityAsync(serviceId, from.Value, to.Value, providerId, location, postalCode, lat, lng, minutes,
                 addOns?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()));
@@ -355,4 +356,15 @@ public class BookingRemovalGuard(AppDbContext db, TimeProvider time) : IMemberRe
         return await db.Bookings.AnyAsync(b => b.ProviderId == membershipId && b.EndUtc > now && CalendarService.BlockingStatuses.Contains(b.Status))
             ? "This person still has upcoming bookings. Reassign or cancel them first." : null;
     }
+}
+
+/// <summary>Availability limits: verified requests per service, failed (unsigned/forged) requests per client address.</summary>
+public sealed class AvailabilityLimits(int perServicePerMinute, int failedPerIpPerMinute)
+{
+    private static PartitionedRateLimiter<string> Make(int permits) => PartitionedRateLimiter.Create<string, string>(key =>
+        RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions { PermitLimit = Math.Max(1, permits), Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+
+    private readonly PartitionedRateLimiter<string> _service = Make(perServicePerMinute), _failed = Make(failedPerIpPerMinute);
+    public bool TryService(Guid serviceId) { using var l = _service.AttemptAcquire(serviceId.ToString()); return l.IsAcquired; }
+    public bool TryFailed(string ip) { using var l = _failed.AttemptAcquire(ip); return l.IsAcquired; }
 }
