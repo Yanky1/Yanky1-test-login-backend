@@ -202,6 +202,7 @@ public static class ProductChildEndpoints
                 }
             }
             prod.HasVariants = r.HasVariants;
+            await using var tx = await db.Database.BeginTransactionAsync();
             if (await ProductService.SyncSkuClaimsAsync(db, prod) is { } claimErr) { db.ChangeTracker.Clear(); return Validation.Invalid("variants", claimErr); }
             if (prod.Status == ProductStatus.Active)
             {
@@ -212,7 +213,10 @@ public static class ProductChildEndpoints
             prod.Version++;
             var res = await Touch(db, cats, prod, time);
             if (res is IStatusCodeHttpResult { StatusCode: 409 }) return res;
-            foreach (var (vid, q) in stockSets) await inv.SetOnHandAsync(a.SellerId, prod.Id, vid, q);
+            foreach (var (vid, q) in stockSets)
+                if (await inv.SetOnHandAsync(a.SellerId, prod.Id, vid, q) is { Ok: false } stockFail)
+                { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return stockFail.Error == "below_reserved" ? ProductEndpoints.BelowReserved(stockFail) : Validation.Invalid("variants", "A quantity can't be changed right now."); }
+            await tx.CommitAsync();
             foreach (var k in dropKeys) await storage.DeleteAsync(k);
             db.ChangeTracker.Clear();
             var fresh = (await db.LoadAsync(a, id, write: false))!;

@@ -201,7 +201,7 @@ public static partial class ProductService
         return taken ? "You already use this SKU." : null;
     }
 
-    /// <summary>Makes the claim rows of one product match its current SKU + variation SKUs. A SKU used twice inside the product is a validation error (returned).</summary>
+    /// <summary>Makes the claim rows of one product match its current SKU + variation SKUs. A SKU used twice inside the product is a validation error (returned). MUST run inside a database transaction.</summary>
     public static async Task<string?> SyncSkuClaimsAsync(AppDbContext db, Product p)
     {
         var want = new List<(string Sku, Guid? Variant)>();
@@ -209,7 +209,10 @@ public static partial class ProductService
         foreach (var v in p.Variants) if (NormSku(v.Sku) is { } vs) want.Add((vs, v.Id));
         if (want.Select(w => w.Sku).Distinct().Count() != want.Count) return "Each SKU can be used only once: the product and its variations all need different SKUs.";
         var have = await db.SkuClaims.Where(c => c.ProductId == p.Id).ToListAsync();
-        foreach (var c in have.Where(c => !want.Any(w => w.Sku == c.Sku && w.Variant == c.VariantId))) db.SkuClaims.Remove(c);
+        // Obsolete claims are deleted with immediate SQL (callers run inside a transaction, so a failed save rolls this back). Deleting first, then inserting
+        // in the later SaveChanges, is what makes swapping two SKUs in one request work (EF may order inserts before deletes, which a unique index rejects).
+        var obsolete = have.Where(c => !want.Any(w => w.Sku == c.Sku && w.Variant == c.VariantId)).Select(c => c.Id).ToList();
+        if (obsolete.Count > 0) await db.SkuClaims.Where(c => obsolete.Contains(c.Id)).ExecuteDeleteAsync();
         foreach (var w in want.Where(w => !have.Any(c => c.Sku == w.Sku && c.VariantId == w.Variant)))
             db.SkuClaims.Add(new SkuClaim { SellerId = p.SellerId, ProductId = p.Id, Sku = w.Sku, VariantId = w.Variant });
         return null;

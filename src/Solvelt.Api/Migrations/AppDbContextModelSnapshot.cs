@@ -1569,8 +1569,7 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("SellerId", "Handle");
 
-                    b.HasIndex("SellerId", "Sku")
-                        .IsUnique();
+                    b.HasIndex("SellerId", "Sku");
 
                     b.HasIndex("SellerId", "Status");
 
@@ -1812,8 +1811,7 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("ProductId", "ComboKey")
                         .IsUnique();
 
-                    b.HasIndex("SellerId", "Sku")
-                        .IsUnique();
+                    b.HasIndex("SellerId", "Sku");
 
                     b.ToTable("product_variants", (string)null);
                 });
