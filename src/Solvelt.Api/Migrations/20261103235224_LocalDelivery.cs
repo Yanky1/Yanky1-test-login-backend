@@ -34,7 +34,7 @@ namespace Solvelt.Api.Migrations
                 table: "order_shipments",
                 type: "text",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "carrier");
 
             migrationBuilder.AddColumn<string>(
                 name: "TrackingStatus",
