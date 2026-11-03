@@ -27,7 +27,7 @@ public static class UserAdminEndpoints
             var t = q.Trim();
             var query = db.Users.AsNoTracking().AsQueryable();
             if (Guid.TryParse(t, out var gid)) query = query.Where(x => x.Id == gid);
-            else if (t.Contains('@')) { var e = t.ToLowerInvariant(); query = query.Where(x => x.Email!.ToLower().Contains(e)); }
+            else if (t.Any(char.IsLetter)) { var e = t.ToLowerInvariant(); query = query.Where(x => x.Email!.ToLower().Contains(e)); }
             else
             {
                 var phone = PhoneFormat.Normalize(t) ?? t;

@@ -46,7 +46,7 @@ public class SellerAdminService(AppDbContext db, SellerStatusService status, Ses
         // back to where it was before the suspension (Live or Approved)
         var tag = $"seller={id}";
         var last = await db.AuditEvents.AsNoTracking().Where(e => e.Type == "seller.status_changed" && e.Detail!.EndsWith(tag) && e.Detail.Contains("->Suspended"))
-            .OrderByDescending(e => e.At).Select(e => e.Detail).FirstOrDefaultAsync();
+            .OrderByDescending(e => e.At).ThenByDescending(e => e.Id).Select(e => e.Detail).FirstOrDefaultAsync();
         var to = last is not null && last.StartsWith("Live->") ? SellerStatus.Live : SellerStatus.Approved;
         return await ChangeStatusAsync(actor, id, to, "seller.reactivated", reason);
     }
@@ -69,7 +69,9 @@ public class SellerAdminService(AppDbContext db, SellerStatusService status, Ses
                                   where m.UserId == uid && m.Status == MembershipStatus.Active && m.SellerId != id && s.Status != SellerStatus.Rejected && s.Status != SellerStatus.Suspended && s.Status != SellerStatus.Closed select m.Id).AnyAsync();
             if (!hasOther) await sessions.RevokeAllAsync(uid, "status:Closed");
         }
-        foreach (var o in await OwnersAsync(id)) await mailer.SendAsync(TeamTemplates.AccountClosed(o.Email!, sel.VendorName ?? "your business"));
+        foreach (var o in await OwnersAsync(id))
+            await mailer.SendAsync(Templates.Notification(o.Email!, "account-closed-by-staff", "Your seller account was closed", "Seller account closed",
+                [$"Solvelt closed the seller account \"{sel.VendorName ?? "your business"}\". Nobody can sign in to it any more and the data is retained. Contact support if you think this is a mistake."]));
         return Results.Ok(new { sellerId = id, status = "Closed" });
     }
 
