@@ -31,6 +31,8 @@ public class FakePaymentProvider : IPaymentProvider
     public bool IsFake => true;
     private readonly object _l = new();
     private int _acct, _tr;
+    /// <summary>Per-process suffix: ids stay unique across restarts of a dev server that keeps its database.</summary>
+    private readonly string _run = Guid.NewGuid().ToString("N")[..6];
     public ConcurrentDictionary<string, AccountSnapshot> Accounts { get; } = new();
     public ConcurrentDictionary<string, TransferResult> Transfers { get; } = new();
     private readonly ConcurrentDictionary<string, TransferResult> _byKey = new();
@@ -44,7 +46,7 @@ public class FakePaymentProvider : IPaymentProvider
 
     public Task<string> CreateExpressAccountAsync(Guid sellerId, string? email, string country, CancellationToken ct = default)
     {
-        string id; lock (_l) id = $"acct_fake_{++_acct:D4}";
+        string id; lock (_l) id = $"acct_fake_{_run}_{++_acct:D4}";
         Accounts[id] = new AccountSnapshot(id, false, false, false, ["individual.first_name", "external_account"], [], null, null, null, null, null, null);
         return Task.FromResult(id);
     }
@@ -80,7 +82,7 @@ public class FakePaymentProvider : IPaymentProvider
         lock (_l)
         {
             if (_byKey.TryGetValue(r.IdempotencyKey, out existing)) return existing;
-            var t = new TransferResult($"tr_fake_{++_tr:D5}", "paid", r.AmountCents, r.Currency, r.DestinationAccountId);
+            var t = new TransferResult($"tr_fake_{_run}_{++_tr:D5}", "paid", r.AmountCents, r.Currency, r.DestinationAccountId);
             Transfers[t.Id] = t; _byKey[r.IdempotencyKey] = t; return t;
         }
     }
