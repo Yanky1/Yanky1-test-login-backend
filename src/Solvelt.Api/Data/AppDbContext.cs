@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
@@ -80,6 +81,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<QuoteRequest> QuoteRequests => Set<QuoteRequest>();
     public DbSet<BookingMessage> BookingMessages => Set<BookingMessage>();
 
+    // staff back-office (see Admin/)
+    public DbSet<StaffMember> StaffMembers => Set<StaffMember>();
+    public DbSet<StaffInvitation> StaffInvitations => Set<StaffInvitation>();
+    public DbSet<AdminNote> AdminNotes => Set<AdminNote>();
+    public DbSet<ApplicationAssignment> ApplicationAssignments => Set<ApplicationAssignment>();
+    public DbSet<ModerationReport> ModerationReports => Set<ModerationReport>();
+    public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+    public DbSet<JobRun> JobRuns => Set<JobRun>();
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
@@ -108,6 +118,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureProducts();
         b.ConfigureOrders();
         b.ConfigureBookings();
+        b.ConfigureAdmin();
     }
 
     public static void Seed(AppDbContext db)

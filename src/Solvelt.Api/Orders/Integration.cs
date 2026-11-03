@@ -47,6 +47,22 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
 
     public async Task<Result> VerifyAsync(HttpRequest req, CancellationToken ct)
     {
+        var res = await VerifyCoreAsync(req, ct);
+        // rejected signatures / stale timestamps / replays are counted for the staff integration-health page (no payload, no secrets)
+        if (!res.Ok && res.Code is "bad_signature" or "stale" or "replayed" or "bad_timestamp" or "unsigned")
+        {
+            try
+            {
+                db.AuditEvents.Add(new AuditEvent { Type = "inbound.rejected", Detail = "code=" + res.Code, IpAddress = req.HttpContext.Connection.RemoteIpAddress?.ToString(), At = time.UtcNow() });
+                await db.SaveChangesAsync(CancellationToken.None);
+            }
+            catch (Exception) { db.ChangeTracker.Clear(); }
+        }
+        return res;
+    }
+
+    private async Task<Result> VerifyCoreAsync(HttpRequest req, CancellationToken ct)
+    {
         var o = opt.Value;
         if (string.IsNullOrEmpty(o.InboundSecret)) return new(null, 503, "inbound_not_configured", "The inbound API is not configured.");
         var ts = req.Headers[Signing.TimestampHeader].ToString();
@@ -170,8 +186,9 @@ public class OutboxWorker(IServiceScopeFactory scopes, ILogger<OutboxWorker> log
             try
             {
                 using var scope = scopes.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<OutboxDispatcher>().DispatchDueAsync(stop);
-                await scope.ServiceProvider.GetRequiredService<OrderMaintenance>().RunAsync(stop);
+                var rec = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Admin.JobRecorder>();
+                await rec.RunAsync("outbox-dispatcher", async () => new { sent = await scope.ServiceProvider.GetRequiredService<OutboxDispatcher>().DispatchDueAsync(stop) });
+                await rec.RunAsync("order-maintenance", () => scope.ServiceProvider.GetRequiredService<OrderMaintenance>().RunAsync(stop));
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Order background job failed"); }
             try { await Task.Delay(TimeSpan.FromSeconds(10), stop); } catch (OperationCanceledException) { }

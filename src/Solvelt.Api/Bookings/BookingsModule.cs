@@ -122,7 +122,7 @@ public class BookingWorker(IServiceScopeFactory scopes, ILogger<BookingWorker> l
     {
         while (!stop.IsCancellationRequested)
         {
-            try { using var scope = scopes.CreateScope(); await scope.ServiceProvider.GetRequiredService<BookingMaintenance>().RunAsync(stop); }
+            try { using var scope = scopes.CreateScope(); await scope.ServiceProvider.GetRequiredService<Solvelt.Api.Admin.JobRecorder>().RunAsync("booking-maintenance", () => scope.ServiceProvider.GetRequiredService<BookingMaintenance>().RunAsync(stop)); }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Booking background job failed"); }
             try { await Task.Delay(TimeSpan.FromSeconds(30), stop); } catch (OperationCanceledException) { }
         }

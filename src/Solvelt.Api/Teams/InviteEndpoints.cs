@@ -96,7 +96,7 @@ public static class InviteEndpoints
             if (!r.AcceptTerms) return Validation.Invalid("acceptTerms", "You must accept the Terms.");
             if (await db.Sellers.CountAsync(s => s.UserId == user.Id && s.Status == SellerStatus.Draft) >= 3)
                 return Results.Json(new { type = "about:blank", title = "Finish your existing draft accounts first.", status = 409, code = "too_many_drafts" }, statusCode: 409);
-            var acc = svc.NewAccount(user.Id, 3, app.Value.TermsVersion, time.UtcNow());
+            var acc = svc.NewAccount(user.Id, 3, await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion), time.UtcNow());
             if (!await users.IsInRoleAsync(user, "Seller")) await users.AddToRoleAsync(user, "Seller");
             await db.SaveChangesAsync();
             await audit.WriteAsync("account.created", user.Id, null, $"account={acc.Id}");

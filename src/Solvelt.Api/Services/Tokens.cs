@@ -74,7 +74,7 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
     {
         var session = await db.Sessions.FirstAsync(x => x.Id == sessionId);
         var active = await accounts.EnsureActiveAsync(user, session);
-        var access = active is { } a ? await accounts.ResolveAsync(user.Id, a) : null;
+        var access = active is { } a && session.Kind != "staff" ? await accounts.ResolveAsync(user.Id, a) : null;
         var roles = await users.GetRolesAsync(user);
         var now = time.GetUtcNow();
         var claims = new List<Claim>
@@ -98,7 +98,7 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         return (token, access?.SellerId);
     }
 
-    public bool IsIdle(UserSession s) => time.UtcNow() - s.LastActivityAt > TimeSpan.FromMinutes(sess.Value.IdleTimeoutMinutes);
+    public bool IsIdle(UserSession s) => time.UtcNow() - s.LastActivityAt > TimeSpan.FromMinutes(s.IdleLimitMinutes ?? sess.Value.IdleTimeoutMinutes);
 
     public enum RotateOutcome { Ok, Invalid, Reuse, Idle, Expired }
     public record RotateResult(RotateOutcome Outcome, AppUser? User = null, IssuedSession? Session = null);
@@ -133,7 +133,7 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         if (token.ExpiresAt <= now) { await RevokeSessionAsync(session.Id, "expired"); return new(RotateOutcome.Expired); }
         if (IsIdle(session)) { await RevokeSessionAsync(session.Id, "idle"); await audit.WriteAsync("session.idle_revoked", session.UserId); return new(RotateOutcome.Idle); }
         var user = await users.FindByIdAsync(session.UserId.ToString());
-        if (user is null) return new(RotateOutcome.Invalid);
+        if (user is null || session.Kind == "staff") return new(RotateOutcome.Invalid); // staff sessions are never refreshed: they end and the staff member signs in again
 
         token.UsedAt = now;
         session.LastActivityAt = now;
@@ -173,6 +173,7 @@ public class SessionService(AppDbContext db, UserManager<AppUser> users, JwtKeys
         if (s is null || s.RevokedAt is not null) return false;
         if (IsIdle(s)) { await RevokeSessionAsync(s.Id, "idle"); return false; }
         var now = time.UtcNow();
+        if (s.ExpiresAt is { } end && now >= end) { await RevokeSessionAsync(s.Id, "expired"); return false; }
         if (now - s.LastActivityAt > TimeSpan.FromSeconds(10)) { s.LastActivityAt = now; await db.SaveChangesAsync(); }
         return true;
     }
