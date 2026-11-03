@@ -32,6 +32,8 @@ Central table: `Teams/Permissions.cs` (`Permissions.Has(role, permission)`), enf
 | `BrandWorkRead` (products, questions … in scope) | ✔ | ✔ | ✔ | ✔ |
 | `BrandWorkWrite` | ✔ | ✔ | ✔ | – |
 | `OrderRefund` (see `docs/ORDERS.md`) | ✔ | ✔ | limit | – |
+| `PaymentsRead` (balances, ledger, transfers, payouts, statements, disputes; `docs/PAYMENTS.md`) | ✔ | ✔ | – | – |
+| `PaymentsManage` (start/continue payout onboarding, Stripe Express dashboard link) | ✔ | – | – | – |
 | `ProvidersManage` (mark members as service providers, edit anyone's hours/time off, account ICS feed; see `docs/SERVICES.md`) | ✔ | ✔ | – | – |
 
 Owner/Admin always have all-brand scope; Manager/Viewer have *all brands* or a list.

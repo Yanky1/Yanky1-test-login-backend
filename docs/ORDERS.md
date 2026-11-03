@@ -2,7 +2,7 @@
 
 Buyers order on the main Solvelt website (a separate system). Orders arrive here through a **signed internal API**; sellers see, manage and fulfil
 them in the portal; every seller-side change goes back to the marketplace through a **transactional outbox** (signed webhook). Money movement
-(charging, payouts, refunds) is done by the marketplace: the portal only records seller decisions and amounts.
+(charging, refunds) is done by the marketplace; the portal records seller decisions and amounts, keeps the seller ledger and moves released funds to the seller's Stripe account (`docs/PAYMENTS.md`: the marketplace reports `payment.captured`, `refund.processed` and `dispute.*` to `/api/internal/v1/payment-events`).
 
 Code: `src/Solvelt.Api/Orders/**`, entities `Domain/Orders.cs`, one EF migration `Orders`. Tests: `tests/Solvelt.Api.Tests/Order*Tests.cs`.
 

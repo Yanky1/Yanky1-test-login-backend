@@ -6,6 +6,7 @@ Optional **phone (IVR) and SMS channels with an AI assistant** (SignalWire/Twili
 Seller **orders** (signed marketplace API, outbox, buyer messaging, simulator): `docs/ORDERS.md`.
 Seller **services, calendars and bookings** (service listings, per-provider calendars, slot engine, bookings and quotes, ICS feeds): `docs/SERVICES.md`.
 Seller **AI assistant** (Claude, server-side agent loop, read tools + confirm-to-act cards, SSE, budgets, kill switch): `docs/ASSISTANT.md`, evals `docs/ASSISTANT-EVALS.md`.
+Seller **payments & payouts** (Stripe Connect Express, double-entry ledger, release + transfer jobs, Stripe webhooks, staff tools): `docs/PAYMENTS.md`.
 **Staff admin panel** (staff roles, 2FA staff sessions, application review, seller/user tools, moderation, support lookups, integration health, audit, platform settings): `docs/ADMIN.md`.
 Frontend: <https://github.com/Yanky1/test-login-frontend>.
 
@@ -27,11 +28,12 @@ Create the first admin by setting `AdminSeed:Email` / `AdminSeed:Password` (user
 ```bash
 dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLite, fake TimeProvider, scripted fake assistant model)
 ANTHROPIC_API_KEY=… dotnet test tests/Solvelt.Api.Evals   # optional real-model assistant evals (not part of CI)
+STRIPE_SECRET_KEY=sk_test_… dotnet test tests/Solvelt.Api.StripeTests   # optional Stripe TEST-mode tests (not part of CI)
 ```
 
 ## Configuration keys
 See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
-(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Admin` (staff session/idle/step-up minutes, IP allowlist, admin rate limits: `docs/ADMIN.md`), `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`, `Assistant` (flag, kill switch, provider/model, budgets, retention: `docs/ASSISTANT.md`; also `RateLimit:AssistantPerMinute`).
+(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Admin` (staff session/idle/step-up minutes, IP allowlist, admin rate limits: `docs/ADMIN.md`), `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Payments` + `Stripe` (release days, reserve, minimum transfer, keys: `docs/PAYMENTS.md`; also `RateLimit:PaymentsPerMinute`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`, `Assistant` (flag, kill switch, provider/model, budgets, retention: `docs/ASSISTANT.md`; also `RateLimit:AssistantPerMinute`).
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
@@ -42,11 +44,13 @@ Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
 
 Orders: `seller/orders*`, `seller/messages*`, `seller/message-templates`, `seller/notification-preferences`, `seller/events` (SSE) · marketplace-only `/api/internal/v1/*` (HMAC-signed, never a seller token) ·
 Services: `seller/services*`, `seller/providers*`, `seller/calendar`, `seller/bookings*`, `seller/quote-requests*`, public `calendar/feeds/{token}.ics`; marketplace availability/hold/booking/quote endpoints under `/api/internal/v1` (see `docs/SERVICES.md`).
+Payments: `seller/payments/*` (summary, ledger, transfers, payouts, disputes, statements + CSV, onboarding, dashboard-link), marketplace `POST /api/internal/v1/payment-events`, Stripe `POST /api/webhooks/stripe`, staff `admin/payments/*` (see `docs/PAYMENTS.md`).
 Assistant: `assistant/config`, `assistant/conversations*`, `assistant/messages` (+ `/stream` SSE), `assistant/actions/{id}/confirm|cancel` (CSRF header required), `assistant/usage`.
 Development/Testing only: `seller/dev/*` order and booking simulator, `/api/dev/outbox` sink (`scripts/post-signed.sh` signs real requests).
 
 ## Deploy notes
 * PostgreSQL: set `Database:Provider=Postgres`; apply migrations with `dotnet ef database update` (or `Database:AutoMigrate=true` for a single instance).
+* Payments: set `STRIPE_SECRET_KEY` (live key in Production; Production refuses a test key) and `STRIPE_WEBHOOK_SECRET`, register `https://<host>/api/webhooks/stripe` (platform + Connect endpoints). Go-live checklist: `docs/PAYMENTS.md`.
 * Required in Production: `Orders:InboundSecret` + `Orders:OutboundSecret` (different) and `Orders:WebhookUrl`, `App:HmacSecret`, `Jwt:PrivateKeyPem`, Turnstile keys, an email provider, `DataProtection:KeysPath` (reset links must survive restarts), shared file storage if >1 instance.
 * Run behind TLS; set `App:TrustedProxies` to your reverse proxy so per-IP rate limits use the real client IP.
 * Serve the SPA and API from the same site (e.g. `/` and `/api`) so the SameSite=Strict refresh cookie works. See `docs/SETUP-INTEGRATIONS.md`.

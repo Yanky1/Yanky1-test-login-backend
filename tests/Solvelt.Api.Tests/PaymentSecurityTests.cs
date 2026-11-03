@@ -137,4 +137,26 @@ public class PaymentSecurityTests
         Assert.Equal(HttpStatusCode.BadRequest, (await f.NewClient().SendAsync(req)).StatusCode);   // judged by its signature only
         Assert.Equal(HttpStatusCode.OK, (await f.NewClient().PostAsync("/api/dev/payments/run", null)).StatusCode);
     }
+
+    [Fact]
+    public async Task Payment_emails_go_to_owners_and_opted_in_admins_only_once_per_event()
+    {
+        using var f = new PayFactory();
+        var s = await Orders.NewShop(f);
+        var (admin, adminEmail) = await TeamHelpers.JoinAs(f, s.Owner, "Admin");
+        var (optIn, optInEmail) = await TeamHelpers.JoinAs(f, s.Owner, "Admin");
+        var (_, managerEmail) = await TeamHelpers.JoinAs(f, s.Owner, "Manager");
+        Assert.Equal(HttpStatusCode.OK, (await optIn.Put("/api/v1/seller/notification-preferences", new { paymentEmails = true })).StatusCode);
+        var pref = await Pay.Ok(await optIn.Get("/api/v1/seller/notification-preferences"));
+        Assert.True((bool)pref["paymentEmails"]!);
+        Assert.False((bool)(await Pay.Ok(await admin.Get("/api/v1/seller/notification-preferences")))["paymentEmails"]!);
+        Assert.True((bool)(await Pay.Ok(await s.Owner.Get("/api/v1/seller/notification-preferences")))["paymentEmails"]!);
+
+        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<PaymentNotifier>().NotifyAsync(s.Seller, "k1", "Subject one", "Heading", ["Line"])));
+        Assert.False(await Pay.Run(f, sp => sp.GetRequiredService<PaymentNotifier>().NotifyAsync(s.Seller, "k1", "Subject one", "Heading", ["Line"])));   // same key: not again
+        Assert.Single(Pay.Mails(f, Pay.OwnerEmail(f, s.Seller)));
+        Assert.Single(Pay.Mails(f, optInEmail));
+        Assert.Empty(Pay.Mails(f, adminEmail));
+        Assert.Empty(Pay.Mails(f, managerEmail));
+    }
 }

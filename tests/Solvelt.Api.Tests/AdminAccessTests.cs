@@ -77,6 +77,19 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("PUT", $"/api/v1/admin/staff/{G}/role", StaffPermission.StaffManage, new { role = "Support", reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/staff/{G}/deactivate", StaffPermission.StaffManage, new { reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/staff/{G}/reactivate", StaffPermission.StaffManage, new { reason = StaffKit.Why }),
+        // payments (docs/PAYMENTS.md)
+        ("GET", $"/api/v1/admin/payments/sellers/{G}", StaffPermission.PaymentsView, null),
+        ("GET", $"/api/v1/admin/payments/sellers/{G}/ledger", StaffPermission.PaymentsView, null),
+        ("POST", $"/api/v1/admin/payments/sellers/{G}/hold", StaffPermission.PaymentsHold, new { reason = StaffKit.Why }),
+        ("POST", $"/api/v1/admin/payments/sellers/{G}/hold/release", StaffPermission.PaymentsHold, new { reason = StaffKit.Why }),
+        ("POST", $"/api/v1/admin/payments/sellers/{G}/adjustments", StaffPermission.PaymentsAdjust, new { direction = "credit", amountCents = 100, currency = "USD", reason = StaffKit.Why }),
+        ("GET", "/api/v1/admin/payments/transfers", StaffPermission.PaymentsView, null),
+        ("POST", $"/api/v1/admin/payments/transfers/{G}/retry", StaffPermission.PaymentsRetry, new { reason = StaffKit.Why }),
+        ("GET", "/api/v1/admin/payments/payouts", StaffPermission.PaymentsView, null),
+        ("GET", "/api/v1/admin/payments/accounts/requirements-past-due", StaffPermission.PaymentsView, null),
+        ("GET", "/api/v1/admin/payments/reconciliation", StaffPermission.PaymentsView, null),
+        ("POST", "/api/v1/admin/payments/reconciliation/run", StaffPermission.PaymentsRetry, null),
+        ("POST", $"/api/v1/admin/payments/reconciliation/{G}/resolve", StaffPermission.PaymentsRetry, new { reason = StaffKit.Why }),
     ];
 
     private static HttpRequestMessage Req((string Method, string Url, StaffPermission Perm, object? Body) e) =>

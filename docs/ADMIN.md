@@ -34,6 +34,10 @@ One central table, `StaffPermissions.Matrix` (`Admin/AdminModel.cs`); every admi
 | Edit platform settings (fee, legal versions, wizard fields) | ✔ | | | | ✔ |
 | View staff list | ✔ | | | | |
 | Invite staff, change roles, deactivate/reactivate | ✔ | | | | ✔ |
+| Payments: view seller balances, ledger, Stripe status, failed transfers/payouts, accounts past due, reconciliation flags (`PaymentsView`) | ✔ | ✔ | ✔ | ✔ | |
+| Payments: place/release a payout hold (`PaymentsHold`) | ✔ | ✔ | | | |
+| Payments: retry a failed transfer, run/resolve reconciliation (`PaymentsRetry`) | ✔ | ✔ | | | |
+| Payments: manual balance adjustment, credit/debit, seller notified (`PaymentsAdjust`) | ✔ | | | | ✔ |
 
 The legacy Identity role `Admin` maps to **Super admin** (backfilled at start-up). It is only ever *removed* afterwards (demotion/deactivation): new Super admins do **not**
 receive it, because it opens the one old API that stays outside the staff gate, `POST /api/v1/admin/sellers/{id}/status` (seller-kind session, no 2FA, no audit).
@@ -89,6 +93,7 @@ Moderators and Super admins (roles that can act on reports) read the reported me
 | Integration health | `integrations/outbox` (+ `/{id}`, `/retry`, `/discard`), `integrations/inbound`, `integrations/phone`, `integrations/jobs` |
 | Audit | `audit`, `audit/export` |
 | Settings | `settings`, `settings/fee`, `settings/legal`, `settings/seller-fields` (+ `/preview`) |
+| Payments (`docs/PAYMENTS.md`) | `payments/sellers/{id}` (+ `/ledger`, `/hold`, `/hold/release`, `/adjustments`), `payments/transfers` (+ `/{id}/retry`), `payments/payouts`, `payments/accounts/requirements-past-due`, `payments/reconciliation` (+ `/run`, `/{id}/resolve`) |
 | Marketplace (signed, `/api/internal/v1`) | `listings/{id}/reports`, `booking-messages/{id}/reports` |
 
 ### Moderation queue sources

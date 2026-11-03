@@ -47,3 +47,13 @@ Each item lists a short design note so it can be added later.
 * **Assistant: refunds** - `propose_refund` limited by `OrderRefund` permission and `Orders:ManagerRefundLimitCents`, high-risk card with the full amount breakdown and a second confirmation for amounts above a threshold.
 * **Assistant: model streaming and cost controls** - stream tokens from the Claude API to the SSE channel, `claude-haiku-5-5` routing for simple read-only questions, prompt-cache hit-rate metrics, per-account monthly spend caps and a staff dashboard over `assistant_usage`.
 * **Assistant: attachments and bulk work** - "fix all my drafts" as a batch card with per-item diffs; image alt-text suggestions from product photos.
+
+* **Payments: buyer checkout / payment capture** - belongs to the main website; the portal only receives `payment.captured`. If ever moved here: PaymentIntents on the platform account with `transfer_group`, SCA/3DS handled by Stripe Elements.
+* **Payments: multi-currency conversion** - the ledger is already per currency (balances, transfers and statements split by currency); missing: FX quotes, settlement currency per connected account (`default_currency`), and showing a converted total.
+* **Payments: instant payouts** - Express accounts can request instant payouts in the Stripe dashboard; to expose them here add a `PayoutPolicy` (eligibility, fee passed to the seller as a `payout_fee` journal) and `POST .../payouts/instant`.
+* **Payments: invoicing marketplace fees as tax documents** - generate a monthly fee invoice per seller from `Fees` entries (`FeeInvoice(sellerId, period, number, netCents, taxCents)`), numbering and VAT/GST per jurisdiction.
+* **Payments: VAT/GST engines** - plug a tax provider behind the sale posting (`ITaxService`), record collected tax as a memo account and remittance reports.
+* **Payments: in-portal dispute evidence upload** - `POST disputes/{id}/evidence` mapped to Stripe `dispute.evidence` fields with file uploads; for now the Express dashboard link is used.
+* **Payments: PDF statements** - render the monthly statement (already computed by `statements/{month}`) with a server-side PDF library; CSV and on-screen exist.
+* **Payments: per-line release and partial release** - release only the delivered shipments of a partially shipped order (needs per-shipment ledger attribution).
+* **Payments: staff screens** - admin UI over the existing `/api/v1/admin/payments` endpoints (separate workstream).

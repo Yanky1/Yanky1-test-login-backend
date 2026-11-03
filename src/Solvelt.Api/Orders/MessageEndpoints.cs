@@ -13,7 +13,7 @@ public record AssignRequest(Guid? UserId);
 public record NoReplyRequest(bool? Value);
 public record TemplateRequest(string? Title, string? Body);
 public record StartConversationRequest(string? Text);
-public record PreferencesRequest(bool? NewOrder, bool? CancelRequest, bool? ReturnRequest, bool? BuyerMessage, bool? OverdueReply);
+public record PreferencesRequest(bool? NewOrder, bool? CancelRequest, bool? ReturnRequest, bool? BuyerMessage, bool? OverdueReply, bool? PaymentEmails = null);
 
 public static class MessageEndpoints
 {
@@ -304,6 +304,7 @@ public static class MessageEndpoints
             if (p is null) { p = new NotificationPreference { UserId = a.UserId, SellerId = a.SellerId }; db.NotificationPreferences.Add(p); }
             p.NewOrder = r.NewOrder ?? p.NewOrder; p.CancelRequest = r.CancelRequest ?? p.CancelRequest; p.ReturnRequest = r.ReturnRequest ?? p.ReturnRequest;
             p.BuyerMessage = r.BuyerMessage ?? p.BuyerMessage; p.OverdueReply = r.OverdueReply ?? p.OverdueReply;
+            if (a.Role == AccountRole.Admin) p.PaymentEmails = r.PaymentEmails ?? p.PaymentEmails;   // payment emails: Owners always, Admins opt in, nobody else
             await db.SaveChangesAsync();
             return Results.Json(PrefDto(p, a.Role), OrderJson.Opts);
         });
@@ -313,7 +314,8 @@ public static class MessageEndpoints
     {
         newOrder = OrderNotifier.Wants(p, role, NotifyKind.NewOrder), cancelRequest = OrderNotifier.Wants(p, role, NotifyKind.CancelRequest),
         returnRequest = OrderNotifier.Wants(p, role, NotifyKind.ReturnRequest), buyerMessage = OrderNotifier.Wants(p, role, NotifyKind.BuyerMessage),
-        overdueReply = OrderNotifier.Wants(p, role, NotifyKind.OverdueReply)
+        overdueReply = OrderNotifier.Wants(p, role, NotifyKind.OverdueReply),
+        paymentEmails = role == AccountRole.Owner || (role == AccountRole.Admin && p?.PaymentEmails == true)
     };
 
     private static IResult? CheckTemplate(TemplateRequest r)
