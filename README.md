@@ -26,13 +26,13 @@ dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLit
 
 ## Configuration keys
 See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
-(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Phone`, `Ai`.
+(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Phone`, `Ai`.
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
 `auth/*` signup (202, no session), verify-email (creates the session), resend-code, login, refresh, logout, logout-all, forgot/reset-password, passkey, external (Google/Apple) ·
 `account/*` me, change-password, email change, 2FA, sessions, passkeys, linked logins · `seller/*` wizard + certificate ·
-`account/phone*` number + PIN (step-up) · `channels/voice|sms|links` provider webhooks and texted links (signed; see `docs/PHONE-SMS.md`) · `session`, `session/account` (account switching) · `team/*`, `invitations/*`, `account/invitations`, `brands/*` (team members, roles, brands: see `docs/TEAMS.md`) · `admin/sellers/{id}/status` (Admin role) · `public-config`. Testing environment only: `/api/test/emails`.
+`account/phone*` number + PIN (step-up) · `channels/voice|sms|links` provider webhooks and texted links (signed; see `docs/PHONE-SMS.md`) · `session`, `session/account` (account switching) · `team/*`, `invitations/*`, `account/invitations`, `brands/*` (team members, roles, brands: see `docs/TEAMS.md`) · `seller/products*`, `seller/questions*`, `categories*` (catalog, images, variations, CSV, customer questions: see `docs/PRODUCTS.md`) · `admin/sellers/{id}/status` (Admin role) · `public-config`. Testing/Development only: `/api/test/emails` (Testing), `/api/dev/questions`.
 Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
 
 ## Deploy notes

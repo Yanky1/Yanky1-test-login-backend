@@ -12,3 +12,10 @@ Each item lists a short design note so it can be added later.
 * **SMS features (phone verification, new-device code, trusted devices, New sign-in email)** – implement `ISmsSender` (Twilio/etc.), store verified phone, add device fingerprint cookie + `TrustedDevice` table, challenge when unknown, send "New sign-in" email via a new template. Consent timestamps already stored.
 * **Magic link / email code login** – reuse `OneTimeCodeService` with purpose `login`, same throttle and captcha rules, no enumeration (generic response).
 * **Save-and-resume reminders after 3 days** – background `IHostedService` querying drafts untouched ≥3 days; send reminder email once with deep link to the wizard step (`DraftStep`).
+* **Buyer storefront (products)** – public read API over Active products only (`descriptionHtml`, current price, images through a CDN-signed URL), search index fed from `products` (+ `SearchTerms`), question submission replacing `/api/dev/questions` (rate-limited, moderated into `ProductQuestion`).
+* **Orders and payments** – workstream E: order lines reference `(ProductId, VariantId?, Sku)` and use `IInventoryService.Reserve/Commit/Release`; payments via a provider-agnostic `IPaymentProvider`.
+* **Reviews** – `ProductReview(productId, orderLineId, rating, text, state)` created only from delivered order lines; seller reply like question answers; aggregates denormalised onto `Product`.
+* **Advertising / sponsored listings** – `Promotion(productId, budget, bid, window)` + ranking hook in the search index; never mixes into seller catalog tables.
+* **External marketplace / store sync** – outbox of product change events (`Version` is the cursor) consumed by connector workers; per-connector field mapping.
+* **Image import by URL** – server-side fetch is an SSRF risk; if added: allow-listed schemes/hosts, resolved-IP checks, size/time caps, run in a sandboxed worker, then the same `ImageProcessing` pipeline.
+* **Multi-currency, tax classes, bundles, per-variation shipping, bulk edit of attributes, CSV variations** – follow-ups on the existing model.
