@@ -7,7 +7,7 @@ using Solvelt.Api.Options;
 
 namespace Solvelt.Api.Orders;
 
-public enum NotifyKind { NewOrder, CancelRequest, ReturnRequest, BuyerMessage, OverdueReply }
+public enum NotifyKind { NewOrder, CancelRequest, ReturnRequest, BuyerMessage, OverdueReply, DeliveryAlert }
 
 /// <summary>In-app (SSE) signals and opt-in emails. Mail failures never break an order flow (Mailer swallows and logs them).</summary>
 public class OrderNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOptions<AppOptions> app, ILogger<OrderNotifier> log)
@@ -19,7 +19,7 @@ public class OrderNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOption
         var v = k switch
         {
             NotifyKind.NewOrder => p?.NewOrder, NotifyKind.CancelRequest => p?.CancelRequest, NotifyKind.ReturnRequest => p?.ReturnRequest,
-            NotifyKind.BuyerMessage => p?.BuyerMessage, _ => p?.OverdueReply
+            NotifyKind.BuyerMessage => p?.BuyerMessage, NotifyKind.DeliveryAlert => null, _ => p?.OverdueReply
         };
         return v ?? Default(role);
     }
@@ -44,6 +44,13 @@ public class OrderNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOption
                 await mailer.SendAsync(Templates.Notification(to, mailKind, subject, heading, lines, button, url));
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "Notification {Kind} failed", mailKind); }
+    }
+
+    /// <summary>Local delivery alerts (failed attempt, late, route finished): in-app signal plus email to Owners/Admins (role default; Managers who can see the brand opt in through the delivery-alert default).</summary>
+    public async Task DeliveryAlertAsync(Guid sellerId, Guid brandId, string type, string subject, string heading, string line, string path, object? data = null)
+    {
+        Live(type, sellerId, brandId, data);
+        await Mail(sellerId, brandId, NotifyKind.DeliveryAlert, "delivery-alert", subject, heading, [line], path, "Open dispatch board", CancellationToken.None);
     }
 
     public void Live(string type, Guid sellerId, Guid brandId, object? data = null) => hub.Publish(new LiveEvent(type, sellerId, brandId, data));
