@@ -79,6 +79,24 @@ public class PhoneTeamsTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     }
 
     [Fact]
+    public async Task A_removed_member_hears_nothing_about_the_old_account_but_can_still_sign_in()
+    {
+        var (owner, _, _) = await TeamHelpers.NewOwner(f);
+        var (_, memberEmail) = await TeamHelpers.JoinAs(f, owner, "Viewer");
+        var phone = await GivePhone(memberEmail);
+        var p = new Phones(f);
+        await SmsLogin(p, phone);
+        Assert.Contains("Acme Co is", await p.Sms(phone, "STATUS"));
+        var members = await owner.JsonBody(await owner.Get("/api/v1/team/members"));
+        var id = members.EnumerateArray().Single(m => m.GetProperty("email").GetString() == memberEmail).GetProperty("id").GetGuid();
+        Assert.Equal(System.Net.HttpStatusCode.NoContent, (await owner.Delete($"/api/v1/team/members/{id}")).StatusCode);
+        await SmsLogin(p, phone);                       // (removal does not touch the user's phone identity)
+        var r = await p.Sms(phone, "STATUS");
+        Assert.DoesNotContain("Acme Co", r);
+        Assert.Contains("no seller application", r);
+    }
+
+    [Fact]
     public async Task A_user_with_one_account_hears_the_status_directly()
     {
         var (email, phone) = await f.SellerWithPhone("615283");
