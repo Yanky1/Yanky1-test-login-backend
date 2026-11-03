@@ -24,7 +24,7 @@ public sealed class ToolContext(AppDbContext db, AccountAccess access, IServiceP
     public T Get<T>() where T : notnull => (T)Services.GetService(typeof(T))!;
     public List<EntityRef> Refs { get; } = [];
     public List<AssistantPendingAction> Proposals { get; } = [];
-    public EntityRef Ref(string kind, Guid id, string label) { var r = new EntityRef(kind, id, label); Refs.Add(r); return r; }
+    public EntityRef Ref(string kind, Guid id, string label) { var r = new EntityRef(kind, id, OutputSanitizer.Label(label)); Refs.Add(r); return r; }
 }
 
 public sealed class ToolOutput
