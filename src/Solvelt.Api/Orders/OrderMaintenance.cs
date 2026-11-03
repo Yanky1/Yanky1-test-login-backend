@@ -10,9 +10,9 @@ namespace Solvelt.Api.Orders;
 /// Periodic jobs (hosted worker + callable from tests): auto-accept, delivered -> completed after the return window, PII redaction after retention,
 /// overdue-reply notifications, replay-table cleanup.
 /// </summary>
-public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<OrderOptions> opt, TimeProvider time, IFileStorage storage, OrderNotifier notifier)
+public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<OrderOptions> opt, TimeProvider time, IFileStorage storage, OrderNotifier notifier, ReservationDrift drift)
 {
-    public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved);
+    public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved, int ReservationsRepaired = 0);
 
     public async Task<Summary> RunAsync(CancellationToken ct = default)
     {
@@ -61,8 +61,9 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             await db.Cancellations.Where(c => c.OrderId == x.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.Note, (string?)null).SetProperty(c => c.DecisionNote, (string?)null), ct);
             await db.OrderNotes.Where(n => n.OrderId == x.Id).ExecuteDeleteAsync(ct);
             var mid = x.MarketplaceOrderId;
+            var quotedMid = "\"marketplaceOrderId\":\"" + mid + "\"";   // delimited, so MP-1 never matches MP-10
             if (!await db.Orders.AnyAsync(y => y.MarketplaceOrderId == mid && y.PiiRedactedAt == null && y.Id != x.Id, ct))
-                await db.Outbox.Where(ob => (ob.AggregateId == mid || ob.PayloadJson.Contains(mid)) && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
+                await db.Outbox.Where(ob => (ob.AggregateId == mid || ob.PayloadJson.Contains(quotedMid)) && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             db.AddEvent(x.Id, "order.pii_redacted", Party.System, null, "Buyer details removed after the retention period", now);
             redacted++;
         }
@@ -98,7 +99,55 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         await db.SaveChangesAsync(ct);
 
         var nonces = await db.InboundNonces.Where(n => n.ExpiresAt < now).ExecuteDeleteAsync(ct);
-        return new(accepted, completed, redacted, convRedacted, overdue, nonces);
+        return new(accepted, completed, redacted, convRedacted, overdue, nonces, await ReconcileReservationsAsync(now, ct));
+    }
+
+    /// <summary>
+    /// Repairs reservation leaks (a crash between "stock reserved" and "order saved", a failed release): for every product/variant the held stock must equal
+    /// the sum of the open order lines' <c>ReservedQty</c>. Because an ingest in flight legitimately holds stock for a moment, a difference is only repaired
+    /// once the SAME difference has been seen for <see cref="ReservationDrift.Grace"/>.
+    /// </summary>
+    private async Task<int> ReconcileReservationsAsync(DateTime now, CancellationToken ct)
+    {
+        var sums = (await db.OrderLines.AsNoTracking().Where(l => l.ReservedQty > 0).GroupBy(l => new { l.ProductId, l.VariantId })
+            .Select(g => new { g.Key.ProductId, g.Key.VariantId, Sum = g.Sum(x => x.ReservedQty) }).ToListAsync(ct))
+            .ToDictionary(x => (x.ProductId, x.VariantId), x => x.Sum);
+        var held = new List<(Guid Id, Guid ProductId, bool Variant, int Reserved)>();
+        held.AddRange((await db.Products.AsNoTracking().Where(p => p.Reserved > 0 && !p.HasVariants).Select(p => new { p.Id, p.Reserved }).ToListAsync(ct)).Select(p => (p.Id, p.Id, false, p.Reserved)));
+        held.AddRange((await db.Variants.AsNoTracking().Where(v => v.Reserved > 0).Select(v => new { v.Id, v.ProductId, v.Reserved }).ToListAsync(ct)).Select(v => (v.Id, v.ProductId, true, v.Reserved)));
+        var repaired = 0; var seen = new HashSet<Guid>();
+        foreach (var (id, productId, isVariant, reserved) in held)
+        {
+            var expected = sums.GetValueOrDefault((productId, isVariant ? (Guid?)id : null));
+            seen.Add(id);
+            if (reserved <= expected) { drift.Forget(id); continue; }           // only leaks (more held than any order explains) are repaired
+            if (!drift.Confirm(id, reserved, expected, now)) continue;
+            var n = isVariant
+                ? await db.Variants.Where(v => v.Id == id && v.Reserved == reserved).ExecuteUpdateAsync(u => u.SetProperty(v => v.Reserved, expected), ct)
+                : await db.Products.Where(p => p.Id == id && p.Reserved == reserved).ExecuteUpdateAsync(u => u.SetProperty(p => p.Reserved, expected), ct);
+            if (n == 1) { repaired++; drift.Forget(id); }
+        }
+        drift.Prune(seen);
+        return repaired;
     }
 }
 
+/// <summary>Remembers (in memory) since when a reservation difference has been observed unchanged.</summary>
+public class ReservationDrift
+{
+    public static readonly TimeSpan Grace = TimeSpan.FromMinutes(2);
+    private readonly Dictionary<Guid, (int Reserved, int Expected, DateTime Since)> _seen = [];
+    private readonly object _l = new();
+
+    public bool Confirm(Guid id, int reserved, int expected, DateTime now)
+    {
+        lock (_l)
+        {
+            if (_seen.TryGetValue(id, out var s) && s.Reserved == reserved && s.Expected == expected) return now - s.Since >= Grace;
+            _seen[id] = (reserved, expected, now);
+            return false;
+        }
+    }
+    public void Forget(Guid id) { lock (_l) _seen.Remove(id); }
+    public void Prune(HashSet<Guid> still) { lock (_l) foreach (var k in _seen.Keys.Where(k => !still.Contains(k)).ToList()) _seen.Remove(k); }
+}

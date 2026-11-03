@@ -18,12 +18,12 @@ public class BuyerEventService(AppDbContext db, OrderActions actions, Outbox out
 
     public record PerOrder(string Number, string Result, string? Message = null);
 
-    /// <summary>Test seam: runs right before the save of a buyer request (used to simulate a concurrent change).</summary>
-    public Func<SellerOrder, Task>? BeforeSave { get; set; }
+    /// <summary>Test seam (internal, visible to the test assembly only): runs right before the save of a buyer request (used to simulate a concurrent change).</summary>
+    internal Func<SellerOrder, Task>? BeforeSave { get; set; }
 
     /// <summary>A result of "retry" means the request was NOT stored (concurrent change): answer 409 so the marketplace sends it again; the call is idempotent.</summary>
     private static (int Status, string Code, string Message, List<PerOrder> Orders) Done(List<PerOrder> r) =>
-        r.Any(x => x.Result == "retry") ? (409, "version_conflict", "The order changed at the same moment; send the request again.", r) : (200, "ok", "", r);
+        r.Any(x => x.Result == "retry") ? (503, "version_conflict", "The order changed at the same moment; send the request again.", r) : (200, "ok", "", r);
 
     public async Task<(int Status, string Code, string Message, List<PerOrder> Orders)> CancelRequestAsync(string marketplaceOrderId, BuyerCancelRequest req)
     {

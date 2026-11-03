@@ -152,7 +152,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // lost the idempotency race to a concurrent identical request: undo our reservations and return what the winner created
             db.ChangeTracker.Clear();
-            foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
+            await ReleaseAllAsync(reservedLog);
             var winner = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mid).ToListAsync(ct);
             if (winner.Count > 0) return new(false, winner, []);
             throw;
@@ -161,11 +161,21 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             // anything else (overflow, cancellation, bug): nothing was saved, so give every hold back before surfacing the error
             db.ChangeTracker.Clear();
-            foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
+            await ReleaseAllAsync(reservedLog);
             throw;
         }
-        foreach (var order in orders) await notifier.OrderPlacedAsync(order, ct);
+        foreach (var order in orders) await notifier.OrderPlacedAsync(order, CancellationToken.None);   // the order exists: a cancelled request must not skip the notifications
         return new(true, orders, []);
+    }
+
+    /// <summary>Gives every hold back; one failing release never stops the others (the reconciliation job repairs anything left behind).</summary>
+    private async Task ReleaseAllAsync(List<(Guid SellerId, Guid ProductId, Guid? VariantId, int Qty)> held)
+    {
+        foreach (var r in held)
+        {
+            try { await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None); }
+            catch (Exception) { /* keep releasing the rest */ }
+        }
     }
 
     private static string? OptionsText(Product p, ProductVariant? v)
