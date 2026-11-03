@@ -1,6 +1,7 @@
 namespace Solvelt.Api.Domain;
 
-public enum AccountRole { Viewer = 0, Manager = 1, Admin = 2, Owner = 3 }
+/// <summary>Driver (-1) is below Viewer on purpose: every `Role >= Viewer` check excludes drivers. Drivers only ever reach /api/v1/driver (see DriverGuard).</summary>
+public enum AccountRole { Driver = -1, Viewer = 0, Manager = 1, Admin = 2, Owner = 3 }
 public enum MembershipStatus { Active, Suspended }
 public enum BrandStatus { Active, Archived }
 public enum InviteStatus { Pending, Accepted, Declined, Revoked }
