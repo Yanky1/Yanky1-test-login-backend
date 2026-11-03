@@ -234,6 +234,7 @@ app.UseCors();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseDriverGuard();
 
 await Seeder.InitAsync(app);
 
