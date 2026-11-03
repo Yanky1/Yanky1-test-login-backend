@@ -129,7 +129,8 @@ public enum StaffPermission
     AuditView, AuditExport,
     SettingsView, SettingsEdit,
     StaffView, StaffManage,
-    PaymentsView, PaymentsHold, PaymentsRetry, PaymentsAdjust
+    PaymentsView, PaymentsHold, PaymentsRetry, PaymentsAdjust,
+    DeliveryView
 }
 
 public static class StaffPermissions
@@ -138,7 +139,7 @@ public static class StaffPermissions
     [
         StaffPermission.DashboardView, StaffPermission.ApplicationsView, StaffPermission.SellersView, StaffPermission.UsersView,
         StaffPermission.ModerationView, StaffPermission.LookupsView, StaffPermission.IntegrationsView, StaffPermission.AuditView, StaffPermission.SettingsView,
-        StaffPermission.PaymentsView
+        StaffPermission.PaymentsView, StaffPermission.DeliveryView
     ];
 
     public static readonly IReadOnlyDictionary<StaffRole, HashSet<StaffPermission>> Matrix = new Dictionary<StaffRole, HashSet<StaffPermission>>
