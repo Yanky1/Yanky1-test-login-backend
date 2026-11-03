@@ -218,6 +218,18 @@ public class OrderIngestTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         Assert.Equal("shippingSpeed", await Bad(o => new { o.marketplaceOrderId, o.buyer, o.shippingAddress, o.lines, shippingSpeed = "teleport" }));
     }
 
+    [Fact]
+    public void Signing_matches_the_documented_openssl_test_vector()
+    {
+        // generated with scripts/post-signed.sh's algorithm (openssl): see docs/ORDERS.md, "Signing test vector"
+        var canonical = Signing.Canonical("1700000000", "abc123", "POST", "/api/internal/v1/orders", Encoding.UTF8.GetBytes("{\"a\":1}"));
+        Assert.Equal("1700000000\nabc123\nPOST\n/api/internal/v1/orders\n015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862", canonical);
+        Assert.Equal("v1=8a1a05a14201d38431d0c9816b6b127ff9193117e81e0530895a25934cbaadea", Signing.Sign("test-secret", canonical));
+        Assert.True(Signing.Verify("test-secret", canonical, "V1=8A1A05A14201D38431D0C9816B6B127FF9193117E81E0530895A25934CBAADEA"));
+        Assert.False(Signing.Verify("test-secret", canonical, "v1=00"));
+        Assert.False(Signing.Verify("test-secret", canonical, null));
+    }
+
     // ---- inventory -----------------------------------------------------------------------------------------------------------
     [Fact]
     public async Task Ingest_reserves_stock_and_an_oversold_order_is_flagged_but_accepted()

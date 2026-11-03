@@ -19,3 +19,11 @@ Each item lists a short design note so it can be added later.
 * **External marketplace / store sync** – outbox of product change events (`Version` is the cursor) consumed by connector workers; per-connector field mapping.
 * **Image import by URL** – server-side fetch is an SSRF risk; if added: allow-listed schemes/hosts, resolved-IP checks, size/time caps, run in a sandboxed worker, then the same `ImageProcessing` pipeline.
 * **Multi-currency, tax classes, bundles, per-variation shipping, bulk edit of attributes, CSV variations** – follow-ups on the existing model.
+* **Shipping labels / carrier rate shopping** (orders) – `IShippingProvider` (rates + label purchase + void) behind the ship dialog placeholder; store label URL and cost on `Shipment`; deduct label cost from seller net via a marketplace event.
+* **Live carrier tracking polling** – a worker polls carriers (or a tracking aggregator webhook) for open `Shipment`s and drives `order.delivered`/delay events through `BuyerEventService.DeliveryAsync`; keep the manual "mark delivered" as fallback.
+* **Buyer storefront, payment processing, payouts, marketplace fee invoicing** – belong to the main website; the portal already exposes amounts (`feeCents`, `netCents`, `refund.issued`) for a payout ledger (`Payout(sellerId, period, orders, fees, refunds)`).
+* **Multi-warehouse inventory** – `StockLocation` + per-location `Reserved/Stock`; `IInventoryService` gains a location argument; ship dialog picks the location.
+* **Fulfilment by the marketplace** – new `FulfilledBy` on `SellerOrder`; seller actions disabled, inbound shipment events from the marketplace WMS.
+* **Multi-node live updates** – replace the in-process `EventHub` with Redis pub/sub or PostgreSQL LISTEN/NOTIFY.
+* **Business-day SLA calendars and per-method transit times**, **multiple open returns per order**, **buyer-visible attachment scanning (AV)**.
+

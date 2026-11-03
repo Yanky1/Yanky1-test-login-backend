@@ -75,8 +75,8 @@ public static class OrderEndpoints
             rows = rows.Where(o => o.Status == st);
         }
         if (brandId is { } b) rows = rows.Where(o => o.BrandId == b);
-        if (from is { } f) rows = rows.Where(o => o.PlacedAt >= f);
-        if (to is { } t) rows = rows.Where(o => o.PlacedAt < t);
+        if (from is { } f0) { var f = OrderSupport.Utc(f0); rows = rows.Where(o => o.PlacedAt >= f); }
+        if (to is { } t0) { var t = OrderSupport.Utc(t0); rows = rows.Where(o => o.PlacedAt < t); }
         var now = time.UtcNow();
         if (late == true) rows = rows.Where(o => o.ShipByAt < now && Unshipped.Contains(o.Status));
         if (oversold == true) rows = rows.Where(o => o.Oversold);

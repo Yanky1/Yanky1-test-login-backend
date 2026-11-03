@@ -130,7 +130,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (!Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
         if (req.Service is { Length: > 60 }) return Res.Invalid("The service name is too long.", "service");
         var now = time.UtcNow();
-        var shippedAt = req.ShippedAt is { } s ? DateTime.SpecifyKind(s, DateTimeKind.Utc) : now;
+        var shippedAt = req.ShippedAt is { } s ? OrderSupport.Utc(s) : now;
         if (shippedAt > now.AddMinutes(5)) return Res.Invalid("The ship date can't be in the future.", "shipped_at");
         if (shippedAt < o.PlacedAt.AddMinutes(-1)) return Res.Invalid("The ship date can't be before the order was placed.", "shipped_at");
 
@@ -191,7 +191,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     public async Task<Res> MarkDeliveredAsync(SellerOrder o, Guid actor, int? version, Party by = Party.Seller, string? tracking = null, DateTime? at = null)
     {
         var now = time.UtcNow();
-        var when = at is { } a && a <= now.AddMinutes(5) ? DateTime.SpecifyKind(a, DateTimeKind.Utc) : now;
+        var when = at is { } a && a <= now.AddMinutes(5) ? OrderSupport.Utc(a) : now;
         if (o.Status == OrderStatus.PartiallyShipped && by == Party.Buyer && tracking is not null)
         {
             var s = o.Shipments.FirstOrDefault(x => x.TrackingNumber == Tracking.Normalize(tracking));

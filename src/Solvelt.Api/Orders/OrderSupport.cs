@@ -58,6 +58,9 @@ public static class OrderSupport
 
 
 
+    /// <summary>Normalises any incoming timestamp to UTC (PostgreSQL timestamptz only accepts UTC): offsets are converted, unspecified values are taken as UTC.</summary>
+    public static DateTime Utc(DateTime d) => d.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(d, DateTimeKind.Utc) : d.ToUniversalTime();
+
     public static string MaskName(string? n) => string.IsNullOrWhiteSpace(n) ? "***" : n.Trim()[0] + "***";
     public static string MaskEmail(string? e) => AuditLog.Mask(e ?? "");
 

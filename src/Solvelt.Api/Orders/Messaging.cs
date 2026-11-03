@@ -107,7 +107,7 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
             }
             db.Conversations.Add(conv);
         }
-        var sent = m.SentAt is { } s && s <= now.AddMinutes(5) && s > now.AddYears(-1) ? DateTime.SpecifyKind(s, DateTimeKind.Utc) : now;
+        var sent = m.SentAt is { } s && s <= now.AddMinutes(5) && s > now.AddYears(-1) ? OrderSupport.Utc(s) : now;
         var msg = new OrderMessage { ConversationId = conv.Id, SellerId = conv.SellerId, Direction = MessageDirection.Buyer, MarketplaceMessageId = m.MessageId, Text = text, CreatedAt = sent, Delivery = DeliveryState.Delivered };
         db.Messages.Add(msg);
         conv.LastMessageAt = sent; conv.LastBuyerMessageAt = sent; conv.BuyerMessageCount++; conv.MessageCount++; conv.NoReplyNeeded = false; conv.OverdueNotifiedAt = null;

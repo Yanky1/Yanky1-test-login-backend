@@ -58,7 +58,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         if (existing.Count > 0) return new(false, existing, []); // idempotent: same marketplace order id returns what was created before
 
         var now = time.UtcNow();
-        var placed = req.PlacedAt is { } p && p <= now.AddMinutes(5) && p > now.AddYears(-1) ? DateTime.SpecifyKind(p, DateTimeKind.Utc) : now;
+        var placed = req.PlacedAt is { } p && p <= now.AddMinutes(5) && p > now.AddYears(-1) ? OrderSupport.Utc(p) : now;
         var shippingBy = (req.Shipping ?? []).GroupBy(s => (s.SellerId, s.BrandId)).ToDictionary(g => g.Key, g => g.Sum(x => x.AmountCents));
         foreach (var s in req.Shipping ?? []) if (s.AmountCents < 0) Err(-1, "shipping", "Shipping amounts can't be negative.");
 
