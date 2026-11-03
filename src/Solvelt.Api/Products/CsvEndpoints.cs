@@ -74,10 +74,12 @@ public static class CsvFormat
 public record CsvRowError(string Field, string Message);
 public record CsvRow(int Row, bool Ok, string? Title, string? Sku, List<CsvRowError> Errors);
 
+/// <summary>Test seam, DI-scoped (so parallel tests don't share state). Production registers the no-op.</summary>
+public interface ICsvImportHooks { Task AfterValidateAsync(); }
+public sealed class NoCsvImportHooks : ICsvImportHooks { public Task AfterValidateAsync() => Task.CompletedTask; }
+
 public static class CsvEndpoints
 {
-    /// <summary>Test seam only (null in production): runs between CSV validation and the first save.</summary>
-    internal static Func<Task>? AfterValidate;
 
     private record Parsed(CsvRow Row, ProductWrite? Write, Guid BrandId, Guid? CategoryId);
 
@@ -182,13 +184,13 @@ public static class CsvEndpoints
             }, ProductJson.Opts);
         }).RequirePermission(Permission.BrandWorkWrite).DisableAntiforgery();
 
-        c.MapPost("/import", async (IFormFile file, HttpContext ctx, AppDbContext db, CategoryService cats, TimeProvider time, IAuditLog audit) =>
+        c.MapPost("/import", async (IFormFile file, HttpContext ctx, AppDbContext db, CategoryService cats, TimeProvider time, IAuditLog audit, ICsvImportHooks hooks) =>
         {
             var a = ctx.GetAccess()!;
             var (parsed, err, _) = await ParseFileAsync(file, ctx, db);
             if (err is not null) return err;
             var rows = parsed!;
-            if (AfterValidate is { } hook) await hook(); // test seam: lets a test take a SKU after validation, to exercise the unique-index path
+            await hooks.AfterValidateAsync(); // no-op in production; a test registers its own to take a SKU after validation
             var now = time.UtcNow(); var created = new List<object>(); var failed = new List<CsvRow>();
             foreach (var r in rows.Where(r => r.Row.Ok))
             {

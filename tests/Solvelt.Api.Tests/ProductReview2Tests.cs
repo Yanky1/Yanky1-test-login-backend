@@ -53,20 +53,34 @@ public class ProductReview2Tests(ApiFactory f) : IClassFixture<ApiFactory>
         // variations: a variation quantity change hits the same race
         Assert.Equal(HttpStatusCode.OK, (await api.Put($"/api/v1/seller/products/{id}/variants", new
         { hasVariants = true, options = new[] { new { name = "Size", values = new[] { "S" } } }, variants = new[] { new { values = new[] { "S" }, sku = (string?)null, price = 10, quantity = 8, barcode = (string?)null, enabled = true } } })).StatusCode);
+        var v2 = (int)(await ProdApi.Get(api, id))["version"]!;
         var vr = await api.Put($"/api/v1/seller/products/{id}/variants", new
         { hasVariants = true, options = new[] { new { name = "Size", values = new[] { "S" } } }, variants = new[] { new { values = new[] { "S" }, sku = (string?)null, price = 10, quantity = 1, barcode = (string?)null, enabled = true } } });
         Assert.Equal(HttpStatusCode.Conflict, vr.StatusCode); Assert.Equal("below_reserved", await vr.ErrCode());
-        Assert.Equal(8, (int)(await ProdApi.Get(api, id))["variants"]![0]!["quantity"]!);
+        var after = await ProdApi.Get(api, id);
+        Assert.Equal(8, (int)after["variants"]![0]!["quantity"]!);
+        Assert.Equal(0, (int)after["variants"]![0]!["reserved"]!);                       // the simulated reservation rolled back too
+        Assert.Equal(v2, (int)after["version"]!);                                         // and the document (version bump included) with it
+        Assert.Equal(new[] { 10m }, after["variants"]!.AsArray().Select(v => (decimal)v!["price"]!).ToArray());
+    }
+
+    private sealed class TakeSkuHook(Func<Task> act) : ICsvImportHooks { public Task AfterValidateAsync() => act(); }
+
+    private sealed class CsvRaceFactory : ApiFactory
+    {
+        public Func<Task> Act { get; set; } = () => Task.CompletedTask;
+        protected override void ConfigureTestServices(IServiceCollection s) { s.RemoveAll<ICsvImportHooks>(); s.AddSingleton<ICsvImportHooks>(new TakeSkuHook(() => Act())); }
     }
 
     [Fact]
     public async Task Item8_csv_import_reports_a_sku_taken_after_validation_as_a_row_error_not_a_500()
     {
-        var (api, seller) = await ProdApi.Approved(f, false);
+        using var racing = new CsvRaceFactory();
+        var (api, seller) = await ProdApi.Approved(racing, false);
         // another request takes the SKU between validation and the first save (the DB unique index is the only thing that can catch this)
-        CsvEndpoints.AfterValidate = async () =>
+        racing.Act = async () =>
         {
-            using var scope = f.Services.CreateScope();
+            using var scope = racing.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var pid = Guid.NewGuid();
             db.Products.Add(new Product { Id = pid, SellerId = seller, BrandId = db.Brands.First(b => b.SellerId == seller).Id, Title = "Grabbed it first", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow });
@@ -74,17 +88,12 @@ public class ProductReview2Tests(ApiFactory f) : IClassFixture<ApiFactory>
             db.SkuClaims.Add(new SkuClaim { SellerId = seller, ProductId = pid, Sku = "late-sku" });
             await db.SaveChangesAsync();
         };
-        try
-        {
-            var res = await ProdApi.UploadCsv(api, "/api/v1/seller/products/csv/import", "sku,title\nLATE-SKU,Loses the race\nOK-1,Fine row\n");
-            Assert.Equal(HttpStatusCode.Created, res.StatusCode);
-            var body = await api.JsonBody(res);
-            Assert.Equal(1, body.GetProperty("imported").GetInt32()); Assert.Equal(1, body.GetProperty("skipped").GetInt32());
-            var err = body.GetProperty("rows")[0];
-            Assert.Equal("sku", err.GetProperty("errors")[0].GetProperty("field").GetString());
-            Assert.Equal(1, f.WithDb(db => db.SkuClaims.Count(c => c.SellerId == seller && c.Sku == "ok-1")));
-        }
-        finally { CsvEndpoints.AfterValidate = null; }
+        var res = await ProdApi.UploadCsv(api, "/api/v1/seller/products/csv/import", "sku,title\nLATE-SKU,Loses the race\nOK-1,Fine row\n");
+        Assert.Equal(HttpStatusCode.Created, res.StatusCode);
+        var body = await api.JsonBody(res);
+        Assert.Equal(1, body.GetProperty("imported").GetInt32()); Assert.Equal(1, body.GetProperty("skipped").GetInt32());
+        Assert.Equal("sku", body.GetProperty("rows")[0].GetProperty("errors")[0].GetProperty("field").GetString());
+        Assert.Equal(1, racing.WithDb(db => db.SkuClaims.Count(c => c.SellerId == seller && c.Sku == "ok-1")));
     }
 
     [Fact]

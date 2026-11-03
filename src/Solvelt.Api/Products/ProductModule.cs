@@ -9,6 +9,7 @@ public static class ProductModule
     {
         builder.Services.AddScoped<CategoryService>();
         builder.Services.AddScoped<IInventoryService, InventoryService>();
+        builder.Services.AddSingleton<ICsvImportHooks, NoCsvImportHooks>();
         var perMinute = builder.Configuration.GetValue("RateLimit:CatalogPerMinute", 240);
         builder.Services.Configure<RateLimiterOptions>(o => o.AddPolicy("catalog", c =>
             RateLimitPartition.GetFixedWindowLimiter("catalog:" + (c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
