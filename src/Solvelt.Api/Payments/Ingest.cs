@@ -121,7 +121,9 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
                     "booking_no_show_fee" => ("policy_fee", b.CancellationFeeCents, "No-show fee"),
                     _ => ("policy_fee", b.CancellationFeeCents, "Cancellation fee")
                 };
-                var already = await db.LedgerEntries.Where(e => e.BookingId == b.Id && e.Account == LedgerAccount.Platform && e.Kind == kind).SumAsync(e => (long?)-e.AmountCents) ?? 0;
+                // cancellation and no-show fees share ONE cap (the booking ends either way); extra charges have their own
+                var kinds = kind == "booking_extra_charge" ? new[] { kind } : new[] { "booking_cancellation_fee", "booking_no_show_fee" };
+                var already = await db.LedgerEntries.Where(e => e.BookingId == b.Id && e.Account == LedgerAccount.Platform && kinds.Contains(e.Kind)).SumAsync(e => (long?)-e.AmountCents) ?? 0;
                 if (already + amount > cap) return IngestResult.Err(422, "exceeds_booking", $"{label} of {amount} exceeds what the booking allows ({cap - already} left).");
                 var fee = LedgerService.RoundHalfUp(amount * bps, 10_000);
                 await ledger.PostAsync(b.SellerId, d.Currency!, type, $"{kind}:{ev.EventId}", $"{label} {b.Number}", [
