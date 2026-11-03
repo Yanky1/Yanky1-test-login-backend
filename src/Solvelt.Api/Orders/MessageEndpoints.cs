@@ -340,6 +340,7 @@ public static class MessageEndpoints
                         // heartbeat: also re-validate that the member still has access (removal / demotion / suspension ends the stream)
                         var now = await accounts.ResolveAsync(a.UserId, a.SellerId);
                         if (now is null || !now.Has(Permission.BrandWorkRead)) break;
+                        sub.Access = now;   // role / brand scope changes apply to the open stream too
                         await ctx.Response.WriteAsync(": keep-alive\n\n", ctx.RequestAborted);
                     }
                     await ctx.Response.Body.FlushAsync(ctx.RequestAborted);

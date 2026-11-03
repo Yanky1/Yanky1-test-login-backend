@@ -35,7 +35,7 @@ public static class OrderViews
     public static object Actions(SellerOrder o, AccountAccess a, long managerRefundLimit)
     {
         var w = a.CanWorkOnBrand(o.BrandId, true);
-        var canRefund = w && o.Status != OrderStatus.Cancelled && o.RefundedCents < o.TotalCents && (a.Has(Permission.OrderRefund) || a.Role == AccountRole.Manager && managerRefundLimit > 0);
+        var canRefund = w && o.Status != OrderStatus.Cancelled && o.Lines.Any(l => l.ShippedQty > 0) && o.RefundedCents < o.TotalCents && (a.Has(Permission.OrderRefund) || a.Role == AccountRole.Manager && managerRefundLimit > 0);
         return new
         {
             accept = w && OrderStateMachine.Can(o.Status, OrderStatus.Accepted),

@@ -65,7 +65,7 @@ stateDiagram-v2
 ```
 
 Rules enforced on top of the diagram: shipping needs Accepted/PartiallyShipped and no open buyer cancellation request; an order with **any shipped
-unit cannot be cancelled** (refund the unshipped items instead); a partial refund of a delivered order keeps its status until the order is fully
+unit cannot be cancelled** (refund the unshipped items instead); **refunds only cover units that have shipped** (nothing shipped yet -> `409 refund_before_ship`, cancel instead; the full refund of a partly shipped order covers the shipped units + shipping); a partial refund of a delivered order keeps its status until the order is fully
 refunded; refunds after a received return move the order to Refunded (the refund amount tells partial from full); cancelled orders are refunded
 in full by the marketplace (`refundDueCents` is in the `order.cancelled` event).
 
@@ -99,7 +99,7 @@ outbound secret (start-up fails if they are equal, or missing outside Developmen
 strangers cannot fill the replay table; bodies larger than `Orders:MaxInboundBodyBytes` (256 KB) get `413`. Seller bearer tokens are ignored here
 and a signature opens nothing under `/api/v1`. Unsigned/wrong/stale/replayed -> `401` with `code` = `unsigned | bad_timestamp | stale | bad_signature | replayed`.
 
-**Test vector** (also a unit test): secret `test-secret`, timestamp `1700000000`, nonce `abc123`, `POST /api/internal/v1/orders`, body `{"a":1}` ->
+A timestamp outside 0..year 2100 is `401 bad_timestamp` before any arithmetic. **Test vector** (also a unit test): secret `test-secret`, timestamp `1700000000`, nonce `abc123`, `POST /api/internal/v1/orders`, body `{"a":1}` ->
 body hash `015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862`, signature `v1=8a1a05a14201d38431d0c9816b6b127ff9193117e81e0530895a25934cbaadea`.
 
 ```bash
@@ -131,7 +131,7 @@ Content-Type: application/json
 ```
 * A line names its product by `productId` (+ `variantId` when the product has variants) **or** by `sku` (product or variant SKU of that account).
 * **Splitting:** one `SellerOrder` per distinct (sellerId, brandId); shipping charged is per group via `shipping[]`.
-* **Validation (all-or-nothing):** the seller must be Approved/active; the brand must belong to the account; the product/variant must belong to that account **and brand** and be **Active** (variants Enabled). Any bad line -> `422 invalid_order` with `errors:[{index, code, message}]` (`product`, `brand`, `seller`, `sku`, `variant`, `product_inactive`, `variant_inactive`, `quantity`, `amount`, ...) and **nothing is created or reserved**.
+* **Validation (all-or-nothing):** the seller must be Approved/active; the brand must belong to the account; the product/variant must belong to that account **and brand** and be **Active** (variants Enabled). Money fields are capped (unit price/shipping <= 1,000,000,000 cents; discount/tax proportionally). Any bad line -> `422 invalid_order` with `errors:[{index, code, message}]` (`product`, `brand`, `seller`, `sku`, `variant`, `product_inactive`, `variant_inactive`, `quantity`, `amount`, ...) and **nothing is created or reserved**.
 * **Response** `201 {created:true, orders:[{sellerOrderId, number, sellerId, brandId, status, oversold, totalCents, feeCents, netCents}]}`; the same `marketplaceOrderId` again -> `200 {created:false, ...}` with the original orders (also when two deliveries race).
 * Stock short -> still `201`, `oversold:true`.
 
@@ -157,7 +157,7 @@ X-Solvelt-Event-Type: order.shipped
 X-Solvelt-Signature: v1=HMAC-SHA256(Orders:OutboundSecret, "<timestamp>.<raw body>")
 { "id": "<event id>", "type": "order.shipped", "createdAt": "...", "data": { ... } }
 ```
-Respond `2xx` to acknowledge. Anything else (or a network error) is retried with **exponential backoff** `Orders:OutboxBackoffSeconds x 2^(attempt-1)`
+Respond `2xx` to acknowledge. Each message is **leased** (`LockedUntil`, atomic UPDATE) before sending, so several portal instances never send the same event twice; delivery is still *at least once*, so dedupe on `X-Solvelt-Event-Id`. Anything else (or a network error) is retried with **exponential backoff** `Orders:OutboxBackoffSeconds x 2^(attempt-1)`
 (default 30 s, 60 s, 120 s ... capped at 1 h) up to `Orders:OutboxMaxAttempts` (8); then the message is **Dead** (visible at
 `GET /api/v1/admin/outbox?status=dead`, re-queued with `POST /api/v1/admin/outbox/{id}/retry`). With no `WebhookUrl`, Development/Testing deliver to an
 in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signature); Production keeps events pending.
@@ -222,7 +222,7 @@ Audit log: accept, ship, cancel, cancellation rejection, return approve/reject/r
 * One inbox for **order conversations** (linked to the order, also shown on the order detail) and **pre-sale product questions** (linked to the product, no order yet). A seller can also start an order thread. Buyers and sellers only ever see relay identities.
 * Inbound message -> conversation (found by the marketplace `conversationId`, else created from the order / product), unread counters, `AwaitingReplySince`. **Unread** is per user: `BuyerMessageCount > ReadBuyerCount` (counters, not timestamps). **Needs reply** = a buyer message is unanswered and nobody marked "no reply needed". **Overdue** = unanswered for more than `Orders:ReplyDueHours` (24).
 * Reply -> stored, marks all earlier buyer messages answered (`RespondedAt`, drives *average response time* and *% replied in time* on the dashboard), and goes out as `message.sent`. Delivery state `pending -> delivered -> read | failed` follows the marketplace receipts.
-* **Attachments**: JPEG/PNG/WebP/PDF only, **content-sniffed** (declared name/type ignored, extension corrected, spoofed files -> 415), <= 5 MB, <= 5 per message, random storage key, image metadata stripped (EXIF/XMP/text chunks), PDFs with `/JavaScript /JS /Launch /EmbeddedFile /AA /RichMedia` rejected, served with `X-Content-Type-Options: nosniff` and `Content-Disposition` (`attachment` for PDFs). Drafts are visible only to their uploader.
+* **Attachments** (conversations are matched per seller account: the same marketplace thread id for two sellers is two conversations; a buyer reply to a seller-started order thread joins it): JPEG/PNG/WebP/PDF only, **content-sniffed** (declared name/type ignored, extension corrected, spoofed files -> 415), <= 5 MB, <= 5 per message, random storage key, image metadata stripped (EXIF/XMP/text chunks), PDFs with `/JavaScript /JS /Launch /EmbeddedFile /AA /RichMedia` rejected after decoding `#xx` name escapes (best effort: object streams can hide tokens, which is why files are only ever served as attachment + nosniff), served with `X-Content-Type-Options: nosniff` and `Content-Disposition` (`attachment` for PDFs). Drafts are visible only to their uploader.
 * **Off-platform contact / payment links** (email, phone, links, PayPal/Venmo/Zelle/...): the first send answers `409 contact_details_warning` with `warnings`; resend with `acknowledgeWarning:true` to send anyway; with `Orders:BlockContactDetails=true` the message is refused (`422 contact_details_blocked`). Every detection is audit-logged.
 * **Team**: assign a conversation to an active Manager/Admin/Owner who can see the brand, internal notes (never in the outbox or the thread), "no reply needed", saved reply templates (per account, <= 50), search over buyer name / subject / message text.
 * **Reports**: the marketplace reports a message -> conversation `flagged` -> platform admins review (`admin/messages/reported`).
@@ -231,7 +231,7 @@ Audit log: accept, ship, cancel, cancellation rejection, return approve/reject/r
 ## 7. Privacy and retention
 * Stored for fulfilment only: buyer display name, shipping address, optional phone for the carrier; the buyer email is a **marketplace relay address**, never the real one. Emails and audit entries never contain buyer names or addresses; request logging does not log bodies.
 * `Orders:RedactAfterDays` (default **90**) after an order is Completed, Cancelled or fully Refunded the job replaces name/address/phone/relay email/gift message with `Redacted`/null, adds a timeline event and sets `PiiRedactedAt`. Money, line snapshots and the SKU history stay (accounting). A redacted order's conversation is archived the same way: buyer name redacted, message texts replaced with a notice, **attachments deleted from storage**, internal notes deleted. Product questions (no order) are redacted `RedactAfterDays` after their last message.
-* Replay nonces are removed once their window has passed.
+* Redaction also clears event texts, buyer comments, cancellation/return notes, internal notes and the payloads of delivered outbox events of that order/conversation. Abandoned draft attachments are deleted after a day. Replay nonces are removed once their window has passed.
 
 ## 8. Configuration (`Orders` section)
 `InboundSecret`, `OutboundSecret` (required in Production, must differ), `WebhookUrl`, `TimestampWindowSeconds` 300, `MaxInboundBodyBytes` 262144, `FeeBasisPoints` 1000,

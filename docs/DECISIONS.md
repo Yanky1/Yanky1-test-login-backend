@@ -98,3 +98,10 @@
 | 88 | Real-time | SSE through an in-process `EventHub` filtered by account + brand scope; the stream re-checks membership every `StreamRecheckSeconds` and closes on removal. Polling counts endpoints are the fallback. | Brief E |
 | 89 | Simulator | Mapped only when the environment is Development/Testing (tested on a Production-environment host); uses the same ingest/buyer-event services as the signed API. | Safety |
 | 90 | Shared-file touches | `Permissions.cs` (+1 enum value), `Templates.cs` (+1 public `Notification` helper), `AppDbContext.cs`/`Program.cs` (registration lines). Nothing in Products/** or Teams/** changed. | Coordination |
+| 91 | Outbox lease | Dispatchers claim a message with an atomic UPDATE (`LockedUntil` 2 min) before sending and finish with a single UPDATE; at-least-once delivery with a stable event id. | Review E1 |
+| 92 | Ingest failure | Any exception after reserving stock releases every hold (no cancellation token once reserving starts); money fields capped so sums cannot overflow. | Review E2/E9 |
+| 93 | Refund scope | Only shipped units are refundable; pre-ship money back is a cancellation. Avoids refunded-but-shippable orders. | Review E5 |
+| 94 | Oversold shipping | Units that were never reserved still reduce on-hand stock when shipped (best effort, never below zero). | Review E4 |
+| 95 | Conversation matching | Resolve seller/brand/order|product from the payload first, then look up the thread by (seller, marketplace id); mismatch is 422; a first buyer reply joins a seller-started thread. | Review E3 |
+| 96 | Concurrent buyer requests | A concurrency failure is answered `409 version_conflict` (per-order result `retry`) so the idempotent request is resent; never reported as duplicate. | Review E7 |
+

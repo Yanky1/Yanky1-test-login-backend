@@ -245,6 +245,8 @@ public class OutboxMessage
     public DateTime NextAttemptAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
     public string? LastError { get; set; }
+    /// <summary>Dispatcher lease: a message is sent only by the dispatcher that atomically set this (prevents double delivery with several instances).</summary>
+    public DateTime? LockedUntil { get; set; }
 }
 
 // ---- Messaging --------------------------------------------------------------------------------------------------------

@@ -18,6 +18,13 @@ public class BuyerEventService(AppDbContext db, OrderActions actions, Outbox out
 
     public record PerOrder(string Number, string Result, string? Message = null);
 
+    /// <summary>Test seam: runs right before the save of a buyer request (used to simulate a concurrent change).</summary>
+    public Func<SellerOrder, Task>? BeforeSave { get; set; }
+
+    /// <summary>A result of "retry" means the request was NOT stored (concurrent change): answer 409 so the marketplace sends it again; the call is idempotent.</summary>
+    private static (int Status, string Code, string Message, List<PerOrder> Orders) Done(List<PerOrder> r) =>
+        r.Any(x => x.Result == "retry") ? (409, "version_conflict", "The order changed at the same moment; send the request again.", r) : (200, "ok", "", r);
+
     public async Task<(int Status, string Code, string Message, List<PerOrder> Orders)> CancelRequestAsync(string marketplaceOrderId, BuyerCancelRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.RequestId) || req.RequestId.Length > 64) return (422, "requestId", "requestId is required (max 64 characters).", []);
@@ -49,12 +56,13 @@ public class BuyerEventService(AppDbContext db, OrderActions actions, Outbox out
             db.Cancellations.Add(c);
             o.CancelRequested = true; o.Version++; o.UpdatedAt = now;
             db.AddEvent(o.Id, "cancellation.requested", Party.Buyer, null, $"{reason}" + (req.Note is null ? "" : $": {req.Note.Trim()}"), now);
-            try { await db.SaveChangesAsync(); }
+            try { if (BeforeSave is { } hook) await hook(o); await db.SaveChangesAsync(); }
+            catch (DbUpdateConcurrencyException) { db.ChangeTracker.Clear(); results.Add(new(o.Number, "retry", "The order changed at the same moment; send the request again.")); continue; }
             catch (DbUpdateException) { db.ChangeTracker.Clear(); results.Add(new(o.Number, "duplicate")); continue; }
             await notifier.CancelRequestedAsync(o);
             results.Add(new(o.Number, "requested"));
         }
-        return (200, "ok", "", results);
+        return Done(results);
     }
 
     public async Task<(int Status, string Code, string Message, List<PerOrder> Orders)> ReturnRequestAsync(string marketplaceOrderId, BuyerReturnRequest req)
@@ -91,12 +99,13 @@ public class BuyerEventService(AppDbContext db, OrderActions actions, Outbox out
             OrderStateMachine.Move(o, OrderStatus.ReturnRequested);
             o.Version++; o.UpdatedAt = now;
             db.AddEvent(o.Id, "return.requested", Party.Buyer, null, reason, now);
-            try { await db.SaveChangesAsync(); }
+            try { if (BeforeSave is { } hook) await hook(o); await db.SaveChangesAsync(); }
+            catch (DbUpdateConcurrencyException) { db.ChangeTracker.Clear(); results.Add(new(o.Number, "retry", "The order changed at the same moment; send the request again.")); continue; }
             catch (DbUpdateException) { db.ChangeTracker.Clear(); results.Add(new(o.Number, "duplicate")); continue; }
             await notifier.ReturnRequestedAsync(o);
             results.Add(new(o.Number, "requested"));
         }
-        return (200, "ok", "", results);
+        return Done(results);
     }
 
     public async Task<(int Status, string Code, string Message, List<PerOrder> Orders)> DeliveryAsync(string marketplaceOrderId, BuyerDelivery req)

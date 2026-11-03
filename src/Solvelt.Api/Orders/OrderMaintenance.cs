@@ -55,6 +55,14 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             x.BuyerName = "Redacted"; x.BuyerPhone = null; x.BuyerRelayEmail = null; x.GiftMessage = null;
             x.ShipName = "Redacted"; x.ShipLine1 = "Redacted"; x.ShipLine2 = null; x.ShipCity = "Redacted"; x.ShipRegion = null; x.ShipPostalCode = "Redacted";
             x.PiiRedactedAt = now; x.Version++; x.UpdatedAt = now;
+            // free-text that can carry buyer data: event texts, buyer comments, cancellation notes, internal notes, outbound payloads
+            await db.OrderEvents.Where(e => e.OrderId == x.Id && e.Type != "order.pii_redacted").ExecuteUpdateAsync(u => u.SetProperty(e => e.Text, (string?)null), ct);
+            await db.Returns.Where(r => r.OrderId == x.Id).ExecuteUpdateAsync(u => u.SetProperty(r => r.BuyerComment, (string?)null).SetProperty(r => r.DecisionReason, (string?)null), ct);
+            await db.Cancellations.Where(c => c.OrderId == x.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.Note, (string?)null).SetProperty(c => c.DecisionNote, (string?)null), ct);
+            await db.OrderNotes.Where(n => n.OrderId == x.Id).ExecuteDeleteAsync(ct);
+            var mid = x.MarketplaceOrderId;
+            if (!await db.Orders.AnyAsync(y => y.MarketplaceOrderId == mid && y.PiiRedactedAt == null && y.Id != x.Id, ct))
+                await db.Outbox.Where(ob => (ob.AggregateId == mid || ob.PayloadJson.Contains(mid)) && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             db.AddEvent(x.Id, "order.pii_redacted", Party.System, null, "Buyer details removed after the retention period", now);
             redacted++;
         }
@@ -71,6 +79,8 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             db.MessageAttachments.RemoveRange(atts);
             await db.Messages.Where(m => m.ConversationId == c.Id).ExecuteUpdateAsync(s => s.SetProperty(m => m.Text, "[removed after the retention period]"), ct);
             await db.ConversationNotes.Where(n => n.ConversationId == c.Id).ExecuteDeleteAsync(ct);
+            var agg = c.MarketplaceConversationId ?? c.Id.ToString();
+            await db.Outbox.Where(ob => ob.AggregateId == agg && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
             convRedacted++;
         }
         await db.SaveChangesAsync(ct);
@@ -79,6 +89,12 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         var dueCut = now.AddHours(-o.ReplyDueHours);
         var late = await db.Conversations.Where(c => c.AwaitingReplySince != null && !c.NoReplyNeeded && c.AwaitingReplySince < dueCut && c.OverdueNotifiedAt == null && c.PiiRedactedAt == null).Take(200).ToListAsync(ct);
         foreach (var c in late) { c.OverdueNotifiedAt = now; await notifier.OverdueAsync(c, ct); overdue++; }
+        await db.SaveChangesAsync(ct);
+
+        // abandoned drafts (uploaded, never sent) disappear after a day
+        var stale = await db.MessageAttachments.Where(a => a.MessageId == null && a.CreatedAt < now.AddDays(-1)).ToListAsync(ct);
+        foreach (var a in stale) await storage.DeleteAsync(a.StorageKey, ct);
+        db.MessageAttachments.RemoveRange(stale);
         await db.SaveChangesAsync(ct);
 
         var nonces = await db.InboundNonces.Where(n => n.ExpiresAt < now).ExecuteDeleteAsync(ct);

@@ -27,6 +27,8 @@ public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineErro
 public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier)
 {
     private static readonly Dictionary<string, int> Transit = new() { ["standard"] = 5, ["expedited"] = 2, ["overnight"] = 1 };
+    /// <summary>Upper bound for any single money field (10,000,000.00): keeps every sum far inside <c>long</c> (100 lines x 10,000 units).</summary>
+    public const long MaxCents = 1_000_000_000;
     public static readonly string[] Speeds = ["standard", "expedited", "overnight"];
 
     private static bool Bad(string? s, int max, bool required = true) => string.IsNullOrWhiteSpace(s) ? required : s.Length > max;
@@ -60,7 +62,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         var now = time.UtcNow();
         var placed = req.PlacedAt is { } p && p <= now.AddMinutes(5) && p > now.AddYears(-1) ? OrderSupport.Utc(p) : now;
         var shippingBy = (req.Shipping ?? []).GroupBy(s => (s.SellerId, s.BrandId)).ToDictionary(g => g.Key, g => g.Sum(x => x.AmountCents));
-        foreach (var s in req.Shipping ?? []) if (s.AmountCents < 0) Err(-1, "shipping", "Shipping amounts can't be negative.");
+        foreach (var s in req.Shipping ?? []) if (s.AmountCents is < 0 or > MaxCents) Err(-1, "shipping", "Shipping amounts must be between 0 and 10,000,000.00.");
 
         // resolve + validate lines
         var resolved = new List<(IngestLine L, Product P, ProductVariant? V, int Index)>();
@@ -69,7 +71,8 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             var l = req.Lines[i];
             if (l.Quantity is < 1 or > 10000) { Err(i, "quantity", "quantity must be between 1 and 10000."); continue; }
-            if (l.UnitPriceCents < 0 || l.DiscountCents < 0 || l.TaxCents < 0 || l.DiscountCents > l.UnitPriceCents * l.Quantity) { Err(i, "amount", "Amounts must be >= 0 and the discount can't exceed the line price."); continue; }
+            if (l.UnitPriceCents is < 0 or > MaxCents || l.DiscountCents is < 0 or > MaxCents * 10000L || l.TaxCents is < 0 or > MaxCents * 10000L
+                || l.DiscountCents > l.UnitPriceCents * l.Quantity) { Err(i, "amount", "Amounts must be >= 0 and the discount can't exceed the line price."); continue; }
             if (l.MarketplaceLineId is { Length: > 64 }) { Err(i, "marketplaceLineId", "marketplaceLineId is too long."); continue; }
             if (!sellers.TryGetValue(l.SellerId, out var st))
                 sellers[l.SellerId] = st = await db.Sellers.AsNoTracking().Where(s => s.Id == l.SellerId).Select(s => (SellerStatus?)s.Status).FirstOrDefaultAsync(ct);
@@ -131,19 +134,19 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     var img = prod.Images.Where(x => variant != null && x.VariantId == variant.Id).OrderBy(x => x.SortOrder).FirstOrDefault()
                               ?? prod.Images.Where(x => x.VariantId == null).OrderByDescending(x => x.IsMain).ThenBy(x => x.SortOrder).FirstOrDefault();
                     if (img is not null) { line.ImageKey = img.StorageKey; line.ImageContentType = img.ContentType; }
-                    var r = await inventory.ReserveAsync(prod.SellerId, prod.Id, variant?.Id, l.Quantity, ct);
+                    var r = await inventory.ReserveAsync(prod.SellerId, prod.Id, variant?.Id, l.Quantity, CancellationToken.None);
                     if (r.Ok) { line.ReservedQty = l.Quantity; reservedLog.Add((prod.SellerId, prod.Id, variant?.Id, l.Quantity)); }
                     else order.Oversold = true;
                     order.Lines.Add(line);
                 }
                 OrderSupport.Recalculate(order, o.FeeBasisPoints);
                 order.Number = await OrderSupport.NextNumberAsync(db, now);
-                db.AddEvent(order.Id, "order.placed", Party.Buyer, null, $"Order placed by {order.BuyerName}", now);
+                db.AddEvent(order.Id, "order.placed", Party.Buyer, null, "Order placed", now);
                 if (order.Oversold) db.AddEvent(order.Id, "order.oversold", Party.System, null, "Not enough stock for every item: needs attention", now);
                 db.Orders.Add(order);
                 orders.Add(order);
             }
-            await db.SaveChangesAsync(ct);
+            await db.SaveChangesAsync(CancellationToken.None);
         }
         catch (DbUpdateException)
         {
@@ -152,6 +155,13 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
             foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
             var winner = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mid).ToListAsync(ct);
             if (winner.Count > 0) return new(false, winner, []);
+            throw;
+        }
+        catch
+        {
+            // anything else (overflow, cancellation, bug): nothing was saved, so give every hold back before surfacing the error
+            db.ChangeTracker.Clear();
+            foreach (var r in reservedLog) await inventory.ReleaseAsync(r.SellerId, r.ProductId, r.VariantId, r.Qty, CancellationToken.None);
             throw;
         }
         foreach (var order in orders) await notifier.OrderPlacedAsync(order, ct);

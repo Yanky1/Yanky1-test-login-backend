@@ -55,6 +55,7 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
         if (ts.Length == 0 || nonce.Length is 0 or > 100 || sig.Length == 0) return new(null, 401, "unsigned", "Missing signature headers.");
         if (!long.TryParse(ts, out var unix)) return new(null, 401, "bad_timestamp", "Invalid timestamp.");
         var now = time.GetUtcNow().ToUnixTimeSeconds();
+        if (unix < 0 || unix > 4_102_444_800L) return new(null, 401, "bad_timestamp", "Invalid timestamp.");   // range first: keeps the arithmetic below overflow-free
         if (Math.Abs(now - unix) > o.TimestampWindowSeconds) return new(null, 401, "stale", "The request timestamp is outside the allowed window.");
 
         if (req.ContentLength > o.MaxInboundBodyBytes) return new(null, 413, "too_large", "Request body too large.");
@@ -112,10 +113,18 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
     {
         var o = opt.Value;
         var now = time.UtcNow();
-        var due = await db.Outbox.Where(m => m.Status == OutboxStatus.Pending && m.NextAttemptAt <= now).OrderBy(m => m.CreatedAt).Take(batch).ToListAsync(ct);
+        var due = await db.Outbox.AsNoTracking().Where(m => m.Status == OutboxStatus.Pending && m.NextAttemptAt <= now && (m.LockedUntil == null || m.LockedUntil < now))
+            .OrderBy(m => m.CreatedAt).Take(batch).ToListAsync(ct);
         var done = 0;
-        foreach (var m in due)
+        foreach (var candidate in due)
         {
+            // claim atomically: only the dispatcher whose UPDATE touches the row sends it (lease expires if that instance dies mid-send)
+            var id = candidate.Id;
+            var lease = time.UtcNow().AddMinutes(2);
+            var claimed = await db.Outbox.Where(x => x.Id == id && x.Status == OutboxStatus.Pending && (x.LockedUntil == null || x.LockedUntil < now))
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.LockedUntil, lease), ct);
+            if (claimed != 1) continue;
+            var m = await db.Outbox.AsNoTracking().FirstAsync(x => x.Id == id, ct);
             var ok = false; string? err = null;
             var ts = time.GetUtcNow().ToUnixTimeSeconds().ToString();
             var sig = Signing.SignOutbound(o.OutboundSecret, ts, m.PayloadJson);
@@ -140,15 +149,13 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException) { err = ex.GetType().Name; }
 
-            m.Attempts++;
-            if (ok) { m.Status = OutboxStatus.Delivered; m.DeliveredAt = time.UtcNow(); m.LastError = null; done++; }
-            else
-            {
-                m.LastError = err;
-                if (m.Attempts >= o.OutboxMaxAttempts) { m.Status = OutboxStatus.Dead; log.LogWarning("Outbox message {Id} ({Type}) is dead after {N} attempts", m.Id, m.EventType, m.Attempts); }
-                else m.NextAttemptAt = time.UtcNow().AddSeconds(Math.Min(3600, o.OutboxBackoffSeconds * Math.Pow(2, m.Attempts - 1)));
-            }
-            await db.SaveChangesAsync(ct);
+            var attempts = m.Attempts + 1;
+            var status = OutboxStatus.Pending; DateTime? deliveredAt = null; var next = m.NextAttemptAt; string? lastErr = err;
+            if (ok) { status = OutboxStatus.Delivered; deliveredAt = time.UtcNow(); lastErr = null; done++; }
+            else if (attempts >= o.OutboxMaxAttempts) { status = OutboxStatus.Dead; log.LogWarning("Outbox message {Id} ({Type}) is dead after {N} attempts", m.Id, m.EventType, attempts); }
+            else next = time.UtcNow().AddSeconds(Math.Min(3600, o.OutboxBackoffSeconds * Math.Pow(2, attempts - 1)));
+            await db.Outbox.Where(x => x.Id == id).ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, status).SetProperty(x => x.Attempts, attempts)
+                .SetProperty(x => x.DeliveredAt, deliveredAt).SetProperty(x => x.NextAttemptAt, next).SetProperty(x => x.LastError, lastErr).SetProperty(x => x.LockedUntil, (DateTime?)null), CancellationToken.None);
         }
         return done;
     }

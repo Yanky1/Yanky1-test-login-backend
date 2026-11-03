@@ -13,7 +13,7 @@ public class EventHub
 {
     public sealed class Subscription(EventHub hub, AccountAccess access) : IDisposable
     {
-        public AccountAccess Access { get; } = access;
+        public AccountAccess Access { get; set; } = access;
         public Channel<LiveEvent> Channel { get; } = System.Threading.Channels.Channel.CreateBounded<LiveEvent>(
             new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.DropOldest });
         public void Dispose() => hub.Remove(this);

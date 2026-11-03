@@ -154,6 +154,9 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             line.ShippedQty += w.Quantity;
             var consume = Math.Min(w.Quantity, line.ReservedQty);
             if (consume > 0) { await inventory.CommitAsync(o.SellerId, line.ProductId, line.VariantId, consume); line.ReservedQty -= consume; }
+            // units that were never reserved (oversold, stock added later) still leave on-hand stock when they ship (best effort: never below zero)
+            var unreserved = w.Quantity - consume;
+            if (unreserved > 0) await inventory.AdjustAsync(o.SellerId, line.ProductId, line.VariantId, -unreserved);
         }
         db.Shipments.Add(ship);
         o.Shipments.Add(ship);
@@ -334,12 +337,19 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         var priorShip = await db.Refunds.Where(r => r.OrderId == o.Id).SumAsync(r => (long?)r.ShippingCents) ?? 0;
         var plan = new List<(OrderLine, int, long)>();
         var ids = new HashSet<Guid>();
+        if (!o.Lines.Any(l => l.ShippedQty > 0))
+            return (Res.Conflict("Nothing has shipped yet. Cancel the order instead of refunding it.", "refund_before_ship"), 0, 0, plan);
+        // only units that actually shipped can be refunded; unshipped units are cancelled (stock + reservation are handled there)
+        static int Refundable(OrderLine l) => l.ShippedQty - l.RefundedQty;
+        long Cents(OrderLine l, int q, long done) => q == l.Quantity - l.RefundedQty - l.CancelledQty
+            ? OrderSupport.LineNet(l) - done            // everything that is left of the line: takes the rounding remainder
+            : OrderSupport.Prorate(OrderSupport.LineNet(l), q, l.Quantity);
         if (req.Full == true)
         {
             foreach (var l in o.Lines)
             {
-                var q = l.Quantity - l.RefundedQty - l.CancelledQty;
-                if (q > 0) plan.Add((l, q, OrderSupport.LineNet(l) - (prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0)));
+                var q = Refundable(l);
+                if (q > 0) plan.Add((l, q, Math.Max(0, Cents(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0))));
             }
             var ship = o.ShippingCents - priorShip;
             var amt = plan.Sum(p => p.Item3) + ship;
@@ -349,12 +359,10 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         {
             var l = o.Lines.FirstOrDefault(x => x.Id == w.LineId);
             if (l is null || !ids.Add(l.Id)) return (Res.Invalid("An item doesn't belong to this order, or appears twice.", "lines"), 0, 0, plan);
-            var avail = l.Quantity - l.RefundedQty - l.CancelledQty;
-            if (w.Quantity < 1 || w.Quantity > avail) return (Res.Invalid($"You can refund at most {avail} of \"{l.Title}\".", "quantity"), 0, 0, plan);
+            var avail = Refundable(l);
+            if (w.Quantity < 1 || w.Quantity > avail) return (Res.Invalid($"You can refund at most {Math.Max(0, avail)} shipped unit(s) of \"{l.Title}\".", "quantity"), 0, 0, plan);
             var done = prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
-            // the last unit takes the rounding remainder so the sum of partial refunds never exceeds the line total
-            var cents = w.Quantity == avail ? OrderSupport.LineNet(l) - done : OrderSupport.Prorate(OrderSupport.LineNet(l), w.Quantity, l.Quantity);
-            plan.Add((l, w.Quantity, Math.Max(0, cents)));
+            plan.Add((l, w.Quantity, Math.Max(0, Cents(l, w.Quantity, done))));
         }
         var shipping = req.ShippingCents ?? 0;
         if (shipping < 0 || shipping > o.ShippingCents - priorShip) return (Res.Invalid("The shipping refund can't exceed the shipping that was charged.", "shipping"), 0, 0, plan);

@@ -46,8 +46,10 @@ public static class AttachmentRules
         }
         var head = System.Text.Encoding.ASCII.GetString(data, 0, Math.Min(1024, data.Length));
         if (!head.Contains("%PDF-") || head.IndexOf("%PDF-", StringComparison.Ordinal) > 8) return null;
-        var all = System.Text.Encoding.Latin1.GetString(data);
-        if (BadPdfTokens.Any(t => all.Contains(t, StringComparison.Ordinal))) return null;
+        // PDF names may hide characters as #xx (/J#61vaScript): decode them before matching. Best effort only: files are always served as
+        // attachments with nosniff, never rendered by the portal.
+        var all = System.Text.RegularExpressions.Regex.Replace(System.Text.Encoding.Latin1.GetString(data), "#([0-9A-Fa-f]{2})", mm => ((char)Convert.ToInt32(mm.Groups[1].Value, 16)).ToString());
+        if (BadPdfTokens.Any(t => all.Contains(t, StringComparison.OrdinalIgnoreCase))) return null;
         return new("application/pdf", data, ".pdf");
     }
 
@@ -85,26 +87,37 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         if (dup is not null) return new(200, "duplicate", "", await db.Conversations.FirstAsync(c => c.Id == dup.ConversationId, ct), dup, true);
 
         var now = time.UtcNow();
-        var conv = await db.Conversations.FirstOrDefaultAsync(c => c.MarketplaceConversationId == m.ConversationId, ct);
+        // 1. resolve WHO the message is for from the payload (never from the thread id alone)
+        Guid sellerId, brandId; Guid? orderId = null, productId = null; string subject;
+        if (m.Kind == "order")
+        {
+            if (string.IsNullOrWhiteSpace(m.MarketplaceOrderId)) return new(422, "marketplaceOrderId", "marketplaceOrderId is required for order messages.");
+            var orders = await db.Orders.AsNoTracking().Where(o => o.MarketplaceOrderId == m.MarketplaceOrderId && (m.SellerOrderNumber == null || o.Number == m.SellerOrderNumber)).ToListAsync(ct);
+            if (orders.Count == 0) return new(404, "not_found", "Unknown order.");
+            if (orders.Count > 1) return new(422, "ambiguous_order", "The marketplace order was split across several sellers: send sellerOrderNumber.");
+            (sellerId, brandId, orderId, subject) = (orders[0].SellerId, orders[0].BrandId, orders[0].Id, $"Order {orders[0].Number}");
+        }
+        else
+        {
+            if (m.ProductId is null) return new(422, "productId", "productId is required for product questions.");
+            var p = await db.Products.AsNoTracking().Where(x => x.Id == m.ProductId && x.Status == ProductStatus.Active).Select(x => new { x.Id, x.SellerId, x.BrandId, x.Title }).FirstOrDefaultAsync(ct);
+            if (p is null) return new(404, "not_found", "Unknown or inactive product.");
+            (sellerId, brandId, productId, subject) = (p.SellerId, p.BrandId, p.Id, p.Title);
+        }
+        // 2. find the thread INSIDE that seller account: the same marketplace thread id used for two sellers is two conversations
+        var conv = await db.Conversations.FirstOrDefaultAsync(c => c.SellerId == sellerId && c.MarketplaceConversationId == m.ConversationId, ct);
+        if (conv is not null && (conv.OrderId != orderId || conv.ProductId != productId))
+            return new(422, "conversation_mismatch", "This conversationId already belongs to a different order or product.");
+        // a thread the seller started has no marketplace id yet: the buyer's first reply joins it instead of opening a second one
+        conv ??= orderId is null ? null : await db.Conversations.FirstOrDefaultAsync(c => c.OrderId == orderId && c.MarketplaceConversationId == null, ct);
+        if (conv is not null && conv.MarketplaceConversationId is null) conv.MarketplaceConversationId = m.ConversationId;
         if (conv is null)
         {
-            conv = new Conversation { MarketplaceConversationId = m.ConversationId, BuyerName = m.BuyerName.Trim(), CreatedAt = now, LastMessageAt = now };
-            if (m.Kind == "order")
+            conv = new Conversation
             {
-                if (string.IsNullOrWhiteSpace(m.MarketplaceOrderId)) return new(422, "marketplaceOrderId", "marketplaceOrderId is required for order messages.");
-                var orders = await db.Orders.AsNoTracking().Where(o => o.MarketplaceOrderId == m.MarketplaceOrderId && (m.SellerOrderNumber == null || o.Number == m.SellerOrderNumber)).ToListAsync(ct);
-                if (orders.Count == 0) return new(404, "not_found", "Unknown order.");
-                if (orders.Count > 1) return new(422, "ambiguous_order", "The marketplace order was split across several sellers: send sellerOrderNumber.");
-                var o = orders[0];
-                (conv.Kind, conv.SellerId, conv.BrandId, conv.OrderId, conv.Subject) = (ConversationKind.Order, o.SellerId, o.BrandId, o.Id, $"Order {o.Number}");
-            }
-            else
-            {
-                if (m.ProductId is null) return new(422, "productId", "productId is required for product questions.");
-                var p = await db.Products.AsNoTracking().Where(x => x.Id == m.ProductId && x.Status == ProductStatus.Active).Select(x => new { x.Id, x.SellerId, x.BrandId, x.Title }).FirstOrDefaultAsync(ct);
-                if (p is null) return new(404, "not_found", "Unknown or inactive product.");
-                (conv.Kind, conv.SellerId, conv.BrandId, conv.ProductId, conv.Subject) = (ConversationKind.Product, p.SellerId, p.BrandId, p.Id, p.Title);
-            }
+                MarketplaceConversationId = m.ConversationId, BuyerName = m.BuyerName.Trim(), CreatedAt = now, LastMessageAt = now, SellerId = sellerId, BrandId = brandId,
+                Kind = orderId is null ? ConversationKind.Product : ConversationKind.Order, OrderId = orderId, ProductId = productId, Subject = subject
+            };
             db.Conversations.Add(conv);
         }
         var sent = m.SentAt is { } s && s <= now.AddMinutes(5) && s > now.AddYears(-1) ? OrderSupport.Utc(s) : now;
