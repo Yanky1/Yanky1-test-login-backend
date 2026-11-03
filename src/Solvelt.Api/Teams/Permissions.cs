@@ -18,7 +18,11 @@ public enum Permission
     ProvidersManage,        // mark team members as service providers, edit anyone's working hours/time off (Owner/Admin); providers always manage their own
     OrderRefund,            // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
     PaymentsRead,           // balances, ledger, transfers, payouts, statements, disputes (Owner/Admin; never Manager/Viewer)
-    PaymentsManage          // start/continue payout onboarding, open the Stripe Express dashboard (Owner only)
+    PaymentsManage,         // start/continue payout onboarding, open the Stripe Express dashboard (Owner only)
+    DeliveryRead,           // local delivery: see zones, windows, the dispatch board and routes (everyone except Drivers)
+    DeliverySettings,       // local delivery: edit zones, fees, windows, cutoff (Owner/Admin)
+    DeliveryDispatch,       // local delivery: assign drivers, build/optimize routes, convert orders (Owner/Admin/Manager for their brands)
+    DeliveryDrive           // the driver app: own route and stops (Driver; Owner/Admin/Manager can act as a driver too)
 }
 
 /// <summary>The central role -> permission matrix. Documented in docs/TEAMS.md; enforced by endpoint filters.</summary>
@@ -29,8 +33,11 @@ public static class Permissions
         [AccountRole.Owner] = [.. Enum.GetValues<Permission>()],
         [AccountRole.Admin] = [.. Enum.GetValues<Permission>().Except([
             Permission.AccountEditBusiness, Permission.AgreementAccept, Permission.OwnershipTransfer, Permission.AccountClose, Permission.PaymentsManage])],
-        [AccountRole.Manager] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead, Permission.BrandWorkWrite],
-        [AccountRole.Viewer] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead],
+        [AccountRole.Manager] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead, Permission.BrandWorkWrite,
+            Permission.DeliveryRead, Permission.DeliveryDispatch, Permission.DeliveryDrive],
+        [AccountRole.Viewer] = [Permission.AccountRead, Permission.BrandsRead, Permission.BrandWorkRead, Permission.DeliveryRead],
+        // Driver: nothing but the driver app. No products, money, settings or other orders.
+        [AccountRole.Driver] = [Permission.DeliveryDrive],
     };
 
     public static bool Has(AccountRole role, Permission p) => Matrix[role].Contains(p);
