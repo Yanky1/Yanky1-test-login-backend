@@ -1841,6 +1841,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<bool?>("ReturnRequest")
                         .HasColumnType("boolean");
 
+                    b.Property<bool?>("ShippingEmails")
+                        .HasColumnType("boolean");
+
                     b.HasKey("UserId", "SellerId");
 
                     b.ToTable("notification_preferences", (string)null);
@@ -2247,6 +2250,53 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("Status", "NextAttemptAt");
 
                     b.ToTable("outbox_messages", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.PackagePreset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("EmptyWeightGrams")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("HeightMm")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)");
+
+                    b.Property<int>("LengthMm")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("WidthMm")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId");
+
+                    b.ToTable("package_presets", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.PaymentDispute", b =>
@@ -2808,6 +2858,9 @@ namespace Solvelt.Api.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("DefaultPackageId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Description")
@@ -3538,6 +3591,79 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("order_returns", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.ReturnShipment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Carrier")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeliveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LabelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LastTrackingAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("PollLockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ReturnId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Service")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<DateTime?>("TrackingEta")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingNumber")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<DateTime?>("TrackingRegisteredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingStatus")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("TrackingStatusAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingStatusDetail")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("TrackingStoppedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("ReturnId");
+
+                    b.HasIndex("TrackingNumber");
+
+                    b.ToTable("return_shipments", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.SellerAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3718,6 +3844,12 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime?>("AcceptedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("AttentionAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AttentionReason")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("BrandId")
                         .HasColumnType("uuid");
 
@@ -3787,6 +3919,9 @@ namespace Solvelt.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<bool>("NeedsAttention")
+                        .HasColumnType("boolean");
 
                     b.Property<long>("NetCents")
                         .HasColumnType("bigint");
@@ -3894,6 +4029,42 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("SellerId", "BrandId", "PlacedAt");
 
                     b.ToTable("seller_orders", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.SellerShippingSettings", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("HandlingDays")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("LabelFormat")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<Guid?>("ReturnAddressId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ScopeKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId", "ScopeKey")
+                        .IsUnique();
+
+                    b.ToTable("shipping_settings", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.ServiceDetails", b =>
@@ -4032,6 +4203,108 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("service_providers", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.ShipFromAddress", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Company")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Country")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DefaultKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Line1")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Line2")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("PostalCode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Region")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("ScopeKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ValidatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Validation")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)");
+
+                    b.Property<string>("ValidationMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId", "DefaultKey")
+                        .IsUnique();
+
+                    b.HasIndex("SellerId", "ScopeKey");
+
+                    b.ToTable("ship_from_addresses", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.Shipment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4049,8 +4322,24 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime?>("DeliveredAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("LabelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LastTrackingAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("carrier");
+
                     b.Property<Guid>("OrderId")
                         .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("PollLockedUntil")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Service")
                         .HasMaxLength(60)
@@ -4059,16 +4348,38 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime>("ShippedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("TrackingEta")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("TrackingNumber")
                         .IsRequired()
                         .HasMaxLength(60)
                         .HasColumnType("character varying(60)");
+
+                    b.Property<DateTime?>("TrackingRegisteredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingStatus")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<DateTime?>("TrackingStatusAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingStatusDetail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime?>("TrackingStoppedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
                     b.HasIndex("OrderId");
 
                     b.HasIndex("TrackingNumber");
+
+                    b.HasIndex("TrackingStoppedAt", "LastTrackingAt");
 
                     b.ToTable("order_shipments", (string)null);
                 });
@@ -4087,6 +4398,313 @@ namespace Solvelt.Api.Migrations
                     b.HasKey("ShipmentId", "OrderLineId");
 
                     b.ToTable("order_shipment_lines", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ShippingLabel", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ActiveShipmentKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AddressOverrideReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<Guid>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Carrier")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<long>("CostCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<string>("CustomsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTime?>("EstimatedDelivery")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<string>("LabelContentType")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("LabelFormat")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("LabelKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime?>("NextRefundCheckAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("PrintedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("ProviderRateId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ProviderRefundId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ProviderShipmentId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ProviderTransactionId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<DateTime?>("PurchasedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("PurchasedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("QuoteId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("QuoteRateKey")
+                        .HasMaxLength(140)
+                        .HasColumnType("character varying(140)");
+
+                    b.Property<int>("RefundAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RefundError")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTime?>("RefundRequestedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RefundStatus")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<DateTime?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ReturnId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ReturnShipmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Service")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid?>("ShipmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(14)
+                        .HasColumnType("character varying(14)");
+
+                    b.Property<string>("TrackingNumber")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActiveShipmentKey")
+                        .IsUnique();
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("ProviderTransactionId");
+
+                    b.HasIndex("QuoteRateKey")
+                        .IsUnique();
+
+                    b.HasIndex("RefundStatus", "NextRefundCheckAt");
+
+                    b.HasIndex("SellerId", "CreatedAt");
+
+                    b.ToTable("shipping_labels", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ShippingProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<long?>("FreeShippingThresholdCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ZonesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SellerId");
+
+                    b.ToTable("shipping_profiles", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ShippingQuote", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AddressStatus")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ProviderShipmentId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RatesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequestJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("OrderId");
+
+                    b.ToTable("shipping_quotes", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.ShippingWebhookEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("EventId")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TrackingNumber")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReceivedAt");
+
+                    b.HasIndex("Provider", "EventId")
+                        .IsUnique();
+
+                    b.ToTable("shipping_webhook_events", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.SkuClaim", b =>
@@ -4117,6 +4735,58 @@ namespace Solvelt.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("sku_claims", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.TrackingEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DedupeKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Location")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ReturnShipmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ShipmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReturnShipmentId", "DedupeKey")
+                        .IsUnique();
+
+                    b.HasIndex("ShipmentId", "DedupeKey")
+                        .IsUnique();
+
+                    b.ToTable("tracking_events", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.UserSession", b =>
@@ -4673,6 +5343,19 @@ namespace Solvelt.Api.Migrations
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.TrackingEvent", b =>
+                {
+                    b.HasOne("Solvelt.Api.Domain.ReturnShipment", null)
+                        .WithMany()
+                        .HasForeignKey("ReturnShipmentId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Solvelt.Api.Domain.Shipment", null)
+                        .WithMany()
+                        .HasForeignKey("ShipmentId")
+                        .OnDelete(DeleteBehavior.Cascade);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.WorkingHour", b =>
