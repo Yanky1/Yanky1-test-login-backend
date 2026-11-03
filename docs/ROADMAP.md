@@ -2,7 +2,12 @@
 
 Each item lists a short design note so it can be added later.
 
-* **Admin UI (approval queue, staff roles, admin login, mandatory admin 2FA, impersonation, audit viewer)** – add `AdminUser` roles + a separate admin SPA/origin; reuse `SellerStatusService`; require TOTP/passkey for the `Admin` role at login; impersonation as a short-lived, audited token with `act` claim; viewer reads `AuditEvents` with paging/filters.
+* **Staff admin: impersonation / "log in as"** - not built on purpose. Design note: a short-lived (<=15 min), single-seller *impersonation token* minted only for Super admin with step-up and a ticket reason, carrying an `act` claim (`sub` = seller user, `act.sub` = staff id), read-only by default (writes need a second explicit "allow writes" step-up), never allowed for staff or other Super admins, shown with a permanent banner, every request audited as `admin.impersonation.*`, and revoked on staff logout.
+* **Staff admin: SSO for staff** - OIDC (Entra/Google Workspace) with `amr` containing a second factor, mapped by group claim to `StaffRole`; keeps the staff session kind, step-up and IP allowlist, replaces the password+TOTP form.
+* **Staff admin: passkeys as the staff second factor** - an `admin/auth/passkey/*` ceremony that mints a `Kind=staff` session with `MfaAt` (user-verified passkeys are already treated as two factors in `IdentityPasskeyOptions`).
+* **Staff admin: four-eyes approvals** - `PendingAdminAction(kind, payload, requestedBy, reason)`; close account, ownership transfer, 2FA disable, dead-letter discard and fee changes need a second Super admin to approve (cannot be the requester) before they apply.
+* **Forced re-acceptance of new Terms / Seller Agreement** - on bump, compare `SellerAccount.TermsVersion/SellerAgreementVersion` with the platform version at sign-in and route to an acceptance screen; the admin settings page already counts affected sellers.
+* **Moderation extras** - reported product Q&A, review moderation, automatic hold of listings with N open reports, appeal flow for hidden listings.
 * **Business switcher / multi-brand** – split `SellerAccount` into `Organization` + `Brand`, add membership table; token carries active `org` claim and a `switch` endpoint reissues it.
 * **Shop staff invitations and roles** – `Membership(userId, orgId, role)` + signed single-use invitation tokens by email; role claims scoped per org.
 * **Guest mode** – anonymous browsing token with read-only scope; the placeholder `/guest` route is the entry point.

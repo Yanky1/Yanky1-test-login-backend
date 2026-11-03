@@ -6,6 +6,7 @@ Optional **phone (IVR) and SMS channels with an AI assistant** (SignalWire/Twili
 Seller **orders** (signed marketplace API, outbox, buyer messaging, simulator): `docs/ORDERS.md`.
 Seller **services, calendars and bookings** (service listings, per-provider calendars, slot engine, bookings and quotes, ICS feeds): `docs/SERVICES.md`.
 Seller **AI assistant** (Claude, server-side agent loop, read tools + confirm-to-act cards, SSE, budgets, kill switch): `docs/ASSISTANT.md`, evals `docs/ASSISTANT-EVALS.md`.
+**Staff admin panel** (staff roles, 2FA staff sessions, application review, seller/user tools, moderation, support lookups, integration health, audit, platform settings): `docs/ADMIN.md`.
 Frontend: <https://github.com/Yanky1/test-login-frontend>.
 
 ## Prerequisites
@@ -30,13 +31,13 @@ ANTHROPIC_API_KEY=… dotnet test tests/Solvelt.Api.Evals   # optional real-mode
 
 ## Configuration keys
 See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
-(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`, `Assistant` (flag, kill switch, provider/model, budgets, retention: `docs/ASSISTANT.md`; also `RateLimit:AssistantPerMinute`).
+(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Admin` (staff session/idle/step-up minutes, IP allowlist, admin rate limits: `docs/ADMIN.md`), `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`, `Assistant` (flag, kill switch, provider/model, budgets, retention: `docs/ASSISTANT.md`; also `RateLimit:AssistantPerMinute`).
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
 `auth/*` signup (202, no session), verify-email (creates the session), resend-code, login, refresh, logout, logout-all, forgot/reset-password, passkey, external (Google/Apple) ·
 `account/*` me, change-password, email change, 2FA, sessions, passkeys, linked logins · `seller/*` wizard + certificate ·
-`account/phone*` number + PIN (step-up) · `channels/voice|sms|links` provider webhooks and texted links (signed; see `docs/PHONE-SMS.md`) · `session`, `session/account` (account switching) · `team/*`, `invitations/*`, `account/invitations`, `brands/*` (team members, roles, brands: see `docs/TEAMS.md`) · `seller/products*`, `seller/questions*`, `categories*` (catalog, images, variations, CSV, customer questions: see `docs/PRODUCTS.md`) · `admin/sellers/{id}/status` (Admin role) · `public-config`. Testing/Development only: `/api/test/emails` (Testing), `/api/dev/questions`.
+`account/phone*` number + PIN (step-up) · `channels/voice|sms|links` provider webhooks and texted links (signed; see `docs/PHONE-SMS.md`) · `session`, `session/account` (account switching) · `team/*`, `invitations/*`, `account/invitations`, `brands/*` (team members, roles, brands: see `docs/TEAMS.md`) · `seller/products*`, `seller/questions*`, `categories*` (catalog, images, variations, CSV, customer questions: see `docs/PRODUCTS.md`) · `admin/sellers/{id}/status` (legacy Admin role) · `admin/*` staff back-office (staff sessions only; see `docs/ADMIN.md`) · `public-config`. Testing/Development only: `/api/test/emails` (Testing), `/api/dev/questions`.
 Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
 
 Orders: `seller/orders*`, `seller/messages*`, `seller/message-templates`, `seller/notification-preferences`, `seller/events` (SSE) · marketplace-only `/api/internal/v1/*` (HMAC-signed, never a seller token) ·
