@@ -97,6 +97,27 @@ public class PhoneTeamsTests(PhoneApiFactory f) : IClassFixture<PhoneApiFactory>
     }
 
     [Fact]
+    public async Task A_removed_former_owner_hears_no_status_for_the_old_account()
+    {
+        var (owner, ownerEmail, _) = await TeamHelpers.NewOwner(f);
+        var (heir, heirEmail) = await TeamHelpers.JoinAs(f, owner, "Admin");
+        var phone = await GivePhone(ownerEmail);
+        var p = new Phones(f);
+        await SmsLogin(p, phone);
+        Assert.Contains("Acme Co is", await p.Sms(phone, "STATUS"));
+        var members = await owner.JsonBody(await owner.Get("/api/v1/team/members"));
+        Guid Member(string email) => members.EnumerateArray().Single(m => m.GetProperty("email").GetString() == email).GetProperty("id").GetGuid();
+        Assert.Equal(System.Net.HttpStatusCode.OK, (await owner.Post("/api/v1/team/transfer-ownership", new { memberId = Member(heirEmail), currentPassword = ApiFactory.Strong })).StatusCode);
+        var after = await heir.JsonBody(await heir.Get("/api/v1/team/members"));
+        var formerId = after.EnumerateArray().Single(m => m.GetProperty("email").GetString() == ownerEmail).GetProperty("id").GetGuid();
+        Assert.Equal(System.Net.HttpStatusCode.NoContent, (await heir.Delete($"/api/v1/team/members/{formerId}")).StatusCode);
+        await SmsLogin(p, phone);
+        var r = await p.Sms(phone, "STATUS");
+        Assert.DoesNotContain("Acme Co", r);
+        Assert.Contains("no seller application", r);
+    }
+
+    [Fact]
     public async Task A_user_with_one_account_hears_the_status_directly()
     {
         var (email, phone) = await f.SellerWithPhone("615283");

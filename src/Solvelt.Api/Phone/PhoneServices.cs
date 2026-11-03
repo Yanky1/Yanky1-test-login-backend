@@ -110,27 +110,46 @@ public class PhoneIdentityService(UserManager<AppUser> users, PinService pins, L
 }
 
 /// <summary>
-/// A number + PIN chosen during a phone/link sign-up are only HELD (protected, in phone_links) until the mailbox is proven. They attach to the account
-/// when its email is verified, so nobody can plant a login number on an account whose email they do not control (pre-hijacking).
+/// A number + PIN chosen during a phone/link sign-up are only HELD (protected, in phone_links) until the mailbox is proven, and they attach ONLY where
+/// the person who chose them proves it:
+///  * phone/SMS sign-up: when the emailed code is entered in the same phone conversation (never through the web verify path);
+///  * link sign-up: when the web verify happens in the browser that completed the link (an HttpOnly cookie carries a nonce).
+/// Any other verification of the email (e.g. the real owner verifying on the web) drops the held credentials. Pre-hijacking defence.
 /// </summary>
 public class PendingPhoneService(AppDbContext db, PhoneLinkService links, UserManager<AppUser> users, PinService pins, TimeProvider time, IAuditLog audit)
 {
     public const string Purpose = "phone-pending";
+    public const string Cookie = "sl_pp";
 
-    public async Task HoldAsync(Guid userId, string phone, string pinHash)
+    /// <param name="nonce">Set for link sign-ups (the same value goes to the completing browser in a cookie); null for phone-conversation sign-ups.</param>
+    public async Task HoldAsync(Guid userId, string phone, string pinHash, string? nonce = null)
     {
         await db.PhoneLinks.Where(l => l.UserId == userId && l.Purpose == Purpose).ExecuteDeleteAsync();
-        await links.CreateAsync(Purpose, userId, phone, pinHash, minutes: 24 * 60);
+        await links.CreateAsync(Purpose, userId, phone, pinHash + "|" + (nonce is null ? "" : Crypto.Sha256(nonce)), minutes: 24 * 60);
     }
 
-    /// <summary>Returns true when the number was attached. Fails quietly (the account just has no phone) when the number was taken meanwhile.</summary>
-    public async Task<bool> AttachAsync(AppUser user)
+    public Task DropAsync(Guid userId) => db.PhoneLinks.Where(l => l.UserId == userId && l.Purpose == Purpose).ExecuteDeleteAsync();
+
+    /// <summary>
+    /// Attaches the held number + PIN when allowed (see class comment) and always discards the held data. Returns true when attached.
+    /// <paramref name="phoneConversation"/>: called from the phone/SMS email-code step; otherwise from web verify with the browser's nonce cookie.
+    /// </summary>
+    public async Task<bool> AttachAsync(AppUser user, bool phoneConversation, string? webNonce = null)
     {
         var now = time.UtcNow();
         var row = await db.PhoneLinks.FirstOrDefaultAsync(l => l.UserId == user.Id && l.Purpose == Purpose && l.UsedAt == null && l.ExpiresAt > now);
         if (row is null || row.Phone is null) return false;
         if (!await links.ConsumeAsync(row)) return false;
-        var pinHash = links.Unprotect(row);
+        var parts = (links.Unprotect(row) ?? "|").Split('|');
+        var pinHash = parts[0]; var nonceHash = parts.Length > 1 ? parts[1] : "";
+        await db.PhoneLinks.Where(l => l.Id == row.Id).ExecuteDeleteAsync(); // the held credentials never outlive this decision
+        var allowed = phoneConversation ? nonceHash.Length == 0
+            : nonceHash.Length > 0 && !string.IsNullOrEmpty(webNonce) && Crypto.FixedEquals(nonceHash, Crypto.Sha256(webNonce));
+        if (!allowed || pinHash.Length == 0)
+        {
+            await audit.WriteAsync("phone.pending_dropped", user.Id, null, $"channel={(phoneConversation ? "phone" : "web")}");
+            return false;
+        }
         user.PhoneNumber = row.Phone; user.PhoneNumberConfirmed = true;
         try
         {
@@ -142,7 +161,7 @@ public class PendingPhoneService(AppDbContext db, PhoneLinkService links, UserMa
             user.PhoneNumber = null; user.PhoneNumberConfirmed = false;
             return false;
         }
-        if (pinHash is not null) await pins.SetHashAsync(user.Id, pinHash);
+        await pins.SetHashAsync(user.Id, pinHash);
         await audit.WriteAsync("phone.attached", user.Id, null, $"phone={PhoneFormat.Mask(row.Phone)}");
         return true;
     }

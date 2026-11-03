@@ -148,7 +148,7 @@ public static class PhoneWebhooks
             return Results.Ok(new { purpose = "reset", email = user.Email, token = payload });
         }).RequireRateLimiting("sensitive");
 
-        c.MapPost("/links/complete-signup", async (CompleteSignupRequest r, PhoneLinkService links, PinService pins, UserManager<AppUser> users, AuthFlows flows,
+        c.MapPost("/links/complete-signup", async (CompleteSignupRequest r, HttpContext ctx, PhoneLinkService links, PinService pins, UserManager<AppUser> users, AuthFlows flows,
             OneTimeCodeService codes, Mailer mailer, AccountSecurityService security, IAuditLog audit, IOptions<AppOptions> app, AppDbContext db, PendingPhoneService pending) =>
         {
             var l = await links.FindAsync(r.Token);
@@ -175,7 +175,13 @@ public static class PhoneWebhooks
                     user = await flows.CreateSellerUserAsync(email, r.Password, false, true);
                 }
                 catch (AccountCreationException ex) { return Validation.Invalid("password", ex.Errors); }
-                if (links.Unprotect(l) is { } pinHash && l.Phone is not null) await pending.HoldAsync(user.Id, l.Phone, pinHash); // attached when the emailed code is entered
+                if (links.Unprotect(l) is { } pinHash && l.Phone is not null)
+                {
+                    // Held; attaches only when the email is verified in THIS browser (nonce cookie), never by someone else verifying on the web.
+                    var nonce = Crypto.RandomToken(24);
+                    await pending.HoldAsync(user.Id, l.Phone, pinHash, nonce);
+                    ctx.Response.Cookies.Append(PendingPhoneService.Cookie, nonce, new CookieOptions { HttpOnly = true, Secure = true, SameSite = SameSiteMode.Strict, Path = "/api/v1/auth", MaxAge = TimeSpan.FromHours(24) });
+                }
                 var issued = await codes.IssueAsync(user.Id, "verify-email");
                 if (issued.Code is not null) await mailer.SendAsync(Templates.VerifyCode(email, issued.Code));
                 await audit.WriteAsync("signup.created", user.Id, email, "method=phone-link");

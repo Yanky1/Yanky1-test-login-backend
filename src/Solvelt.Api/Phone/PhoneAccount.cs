@@ -81,7 +81,7 @@ public static class PhoneAccountEndpoints
             return Results.Accepted(value: new { message = "If this number can be used, we texted a 6-digit code to it.", resendAfterSeconds = OneTimeCodeService.ResendSeconds });
         }).RequireRateLimiting("sensitive");
 
-        a.MapPost("/verify", async (PhoneVerifyRequest r, ClaimsPrincipal p, UserManager<AppUser> users, OneTimeCodeService codes, Mailer mailer, IAuditLog audit) =>
+        a.MapPost("/verify", async (PhoneVerifyRequest r, ClaimsPrincipal p, UserManager<AppUser> users, OneTimeCodeService codes, Mailer mailer, IAuditLog audit, AppDbContext db) =>
         {
             var u = await users.FindByIdAsync(p.UserId().ToString());
             if (u is null) return Results.Unauthorized();
@@ -92,6 +92,7 @@ public static class PhoneAccountEndpoints
             u.PhoneNumber = row.Target; u.PhoneNumberConfirmed = true;
             try { if (!(await users.UpdateAsync(u)).Succeeded) return Bad("That number can't be used.", "phone_unavailable"); }
             catch (DbUpdateException) { return Bad("That number can't be used.", "phone_unavailable"); } // unique index: somebody verified it first
+            await db.PhoneStates.Where(x => x.UserId == u.Id).ExecuteDeleteAsync(); // phone/SMS sessions opened with the old number end
             await mailer.SendAsync(changed ? PhoneTemplates.PhoneChanged(u.Email!, u.PhoneNumber) : PhoneTemplates.PhoneAdded(u.Email!, u.PhoneNumber));
             await audit.WriteAsync(changed ? "phone.changed" : "phone.added", u.Id, u.Email, $"phone={PhoneFormat.Mask(u.PhoneNumber)}");
             return Results.Ok(new { numberEnding = u.PhoneNumber[^4..] });

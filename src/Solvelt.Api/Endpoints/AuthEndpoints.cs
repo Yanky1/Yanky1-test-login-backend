@@ -206,7 +206,9 @@ public static class AuthEndpoints
             }
             user.EmailConfirmed = true;
             await users.UpdateAsync(user);
-            await ctx.RequestServices.GetService<Solvelt.Api.Phone.PendingPhoneService>()!.AttachAsync(user); // number+PIN chosen by phone/link sign-up attach only now
+            // number+PIN chosen by a phone/link sign-up attach only in the browser that completed the link; any other verification drops them
+            await ctx.RequestServices.GetService<Solvelt.Api.Phone.PendingPhoneService>()!.AttachAsync(user, phoneConversation: false, ctx.Request.Cookies[Solvelt.Api.Phone.PendingPhoneService.Cookie]);
+            ctx.Response.Cookies.Delete(Solvelt.Api.Phone.PendingPhoneService.Cookie, new CookieOptions { Path = "/api/v1/auth", Secure = true, SameSite = SameSiteMode.Strict, HttpOnly = true });
             var seller = await db.Sellers.FirstOrDefaultAsync(s => s.UserId == user.Id);
             if (seller is not null && seller.DraftStep < 3) { seller.DraftStep = 3; await db.SaveChangesAsync(); }
             await audit.WriteAsync("email.verified", user.Id, email);

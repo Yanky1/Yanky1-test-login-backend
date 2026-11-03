@@ -236,10 +236,11 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
         return true;
     }
 
-    private async Task<(AppUser? User, Turn? Out)> AuthedUserAsync(Conv c, Turn t)
+    private async Task<(AppUser? User, Turn? Out)> AuthedUserAsync(Conv c, Turn t, bool requireNumber = true)
     {
         var user = c.St.UserId is { } id ? await users.FindByIdAsync(id.ToString()) : null;
-        if (user is null || !await ident.CanSignInAsync(user))
+        // The session belongs to the number it was opened with: if the account's number changed (or was removed) it ends.
+        if (user is null || !await ident.CanSignInAsync(user) || (requireNumber && (user.PhoneNumber is null || user.PhoneNumber != (c.D.Target ?? c.St.Phone))))
         {
             c.St.UserId = null; c.St.AuthUntil = null; c.Step = "menu";
             return (null, Prompt(c, t.Add("Your session ended. Please sign in again.")));
@@ -574,7 +575,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
         var seller = await db.Sellers.FirstOrDefaultAsync(s => s.UserId == user.Id);
         if (seller is not null && seller.DraftStep < 3) { seller.DraftStep = 3; await db.SaveChangesAsync(); }
         await audit.WriteAsync("email.verified", user.Id, user.Email, "channel=phone");
-        await pending.AttachAsync(user);
+        await pending.AttachAsync(user, phoneConversation: true);
         c.St.UserId = user.Id; c.St.AuthUntil = time.UtcNow().AddMinutes(c.Voice ? O.PhoneSessionMinutes : O.SmsSessionMinutes);
         c.D.Field = 0; c.D.Biz = []; c.St.Retries = 0; c.Step = "biz";
         return Prompt(c, t.Add("Your email is verified.", "Now a few details about your business."));
@@ -584,7 +585,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
 
     private async Task<Turn> BizAsync(Conv c, Turn t, string text, bool dtmf, CancellationToken ct)
     {
-        var (user, bad) = await AuthedUserAsync(c, t);
+        var (user, bad) = await AuthedUserAsync(c, t, requireNumber: false);
         if (bad is not null) return bad;
         var field = BizRules.Order[c.D.Field];
         var kw = Keyword(text);
