@@ -209,6 +209,8 @@ public static partial class SellerEndpoints
     {
         g.MapPost("/admin/sellers/{id:guid}/status", async (Guid id, StatusRequest r, ClaimsPrincipal p, AppDbContext db, SellerStatusService status) =>
         {
+            if (string.Equals(r.Status?.Trim(), "Live", StringComparison.OrdinalIgnoreCase))
+                return Validation.Invalid("status", "Live was removed; use Approved.");
             if (!Enum.TryParse<SellerStatus>(r.Status, true, out var to) || !Enum.IsDefined(to))
                 return Validation.Invalid("status", "Unknown status.");
             if (r.Note is { Length: > 1000 }) return Validation.Invalid("note", "Maximum 1000 characters.");

@@ -183,7 +183,7 @@ public static class UserAdminEndpoints
                 generatedAt = now,
                 applications = new { waiting = await waiting.CountAsync(), pendingReview = submitted.Count, needsInfo = await db.Sellers.CountAsync(s => s.Status == SellerStatus.NeedsInfo), oldestPendingDays = oldest, averagePendingDays = avg },
                 sellers = new { newLast7Days = await db.Sellers.CountAsync(s => s.CreatedAt >= since7), newLast30Days = await db.Sellers.CountAsync(s => s.CreatedAt >= since30),
-                    approved = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Approved || s.Status == SellerStatus.Live), suspended = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Suspended) },
+                    approved = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Approved), suspended = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Suspended) },
                 listings = new { active = await db.Products.CountAsync(p => p.Status == ProductStatus.Active), activeServices = await db.Products.CountAsync(p => p.Status == ProductStatus.Active && p.Type == ListingType.Service),
                     hiddenByStaff = await db.Products.CountAsync(p => p.ModeratedAt != null) },
                 today = new { orders = await db.Orders.CountAsync(o => o.PlacedAt >= today), bookings = await db.Bookings.CountAsync(b => b.CreatedAt >= today) },

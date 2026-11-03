@@ -102,9 +102,8 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
         [SellerStatus.Draft] = [SellerStatus.PendingReview],
         [SellerStatus.PendingReview] = [SellerStatus.NeedsInfo, SellerStatus.Approved, SellerStatus.Rejected],
         [SellerStatus.NeedsInfo] = [SellerStatus.PendingReview, SellerStatus.Approved, SellerStatus.Rejected],
-        [SellerStatus.Approved] = [SellerStatus.Live, SellerStatus.Suspended],
-        [SellerStatus.Live] = [SellerStatus.Suspended],
-        [SellerStatus.Suspended] = [SellerStatus.Live, SellerStatus.Approved],
+        [SellerStatus.Approved] = [SellerStatus.Suspended],   // Approved is the final selling state
+        [SellerStatus.Suspended] = [SellerStatus.Approved],   // reactivation
         [SellerStatus.Rejected] = [SellerStatus.PendingReview]
     };
 

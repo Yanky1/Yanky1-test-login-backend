@@ -252,7 +252,7 @@ public sealed class SetListingStatusAction : ActionDef
         if (p.Status == ProductStatus.Archived) return Prepared.Fail("Restore the archived listing first.");
         if (target == ProductStatus.Active)
         {
-            if (c.Access.AccountStatus is not (SellerStatus.Approved or SellerStatus.Live)) return Prepared.Fail("Your seller account must be approved before listings can be activated.");
+            if (c.Access.AccountStatus != SellerStatus.Approved) return Prepared.Fail("Your seller account must be approved before listings can be activated.");
             var r = ProductRules.Evaluate(p, await c.Get<CategoryService>().AttributesAsync(p.CategoryId));
             if (!r.CanPublish) return Prepared.Fail("The listing isn't ready to publish: " + string.Join(" ", r.Issues.Where(x => x.Severity == "blocker").Take(4).Select(x => x.Message)));
         }

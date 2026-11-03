@@ -211,7 +211,7 @@ public class WizardTests(ApiFactory f) : IClassFixture<ApiFactory>
         var admin = new Api(f);
         await admin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
         var url = $"/api/v1/admin/sellers/{id}/status";
-        Assert.Equal(HttpStatusCode.Conflict, (await admin.Post(url, new { status = "Live" })).StatusCode);        // PendingReview -> Live illegal
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.Post(url, new { status = "Suspended" })).StatusCode);   // PendingReview -> Suspended illegal
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.Post(url, new { status = "Nonsense" })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await admin.Post(url, new { status = "NeedsInfo", note = "Please upload your license." })).StatusCode);
         Assert.Contains("Please upload your license.", f.Mails(email, "needs-info").Single().Text);
@@ -220,7 +220,7 @@ public class WizardTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, (await api.Post("/api/v1/seller/application/submit", new { acceptSellerAgreement = true })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await admin.Post(url, new { status = "Approved" })).StatusCode);
         Assert.Single(f.Mails(email, "approved"));
-        Assert.Equal(HttpStatusCode.OK, (await admin.Post(url, new { status = "Live" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.Post(url, new { status = "Live" })).StatusCode);   // Live was removed as a step
         Assert.Equal(HttpStatusCode.OK, (await admin.Post(url, new { status = "Suspended" })).StatusCode);
         Assert.True(f.WithDb(db => db.AuditEvents.Count(a => a.Type == "seller.status_changed") >= 5));
         var rej = new Api(f);

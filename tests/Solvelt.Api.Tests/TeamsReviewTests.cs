@@ -227,7 +227,7 @@ public class TeamsReviewTests(ApiFactory f) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.NotFound, await back.Post("/api/v1/session/account", new { sellerId = seller }).Code());
         // the platform admin API cannot resurrect it
         var plat = new Api(f); await plat.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
-        Assert.Equal(HttpStatusCode.Conflict, await plat.Post($"/api/v1/admin/sellers/{seller}/status", new { status = "Live" }).Code());
+        Assert.Equal(HttpStatusCode.Conflict, await plat.Post($"/api/v1/admin/sellers/{seller}/status", new { status = "Approved" }).Code());
         Assert.Equal(HttpStatusCode.Conflict, await plat.Post($"/api/v1/admin/sellers/{seller}/status", new { status = "Closed" }).Code());
     }
 }

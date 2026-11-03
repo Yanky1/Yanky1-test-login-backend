@@ -161,7 +161,7 @@ public class AdminSellerAccountTests(OrdersFactory f) : IClassFixture<OrdersFact
     }
 
     [Fact]
-    public async Task Suspend_ends_member_sessions_and_reactivate_restores_the_previous_status()
+    public async Task Suspend_ends_member_sessions_and_reactivate_makes_the_account_Approved_again()
     {
         var shop = await Orders.NewShop(f);
         var mod = await StaffKit.LoginNew(f, StaffRole.Moderator);
@@ -173,12 +173,10 @@ public class AdminSellerAccountTests(OrdersFactory f) : IClassFixture<OrdersFact
         Assert.Equal(HttpStatusCode.OK, (await mod.Post($"/api/v1/admin/sellers/{shop.Seller}/reactivate", new { reason = "Appeal accepted" })).StatusCode);
         Assert.Equal("Approved", f.WithDb(db => db.Sellers.Single(s => s.Id == shop.Seller).Status.ToString()));
 
-        // an account that was Live goes back to Live
-        var admin = new Api(f); await admin.LoginAs(ApiFactory.AdminEmail, ApiFactory.AdminPassword);
-        await admin.Post($"/api/v1/admin/sellers/{shop.Seller}/status", new { status = "Live" });
+        // a second round: Approved <-> Suspended is the whole cycle (Live no longer exists)
         await mod.Post($"/api/v1/admin/sellers/{shop.Seller}/suspend", new { reason = "Second incident" });
         await mod.Post($"/api/v1/admin/sellers/{shop.Seller}/reactivate", new { reason = "Resolved" });
-        Assert.Equal("Live", f.WithDb(db => db.Sellers.Single(s => s.Id == shop.Seller).Status.ToString()));
+        Assert.Equal("Approved", f.WithDb(db => db.Sellers.Single(s => s.Id == shop.Seller).Status.ToString()));
         Assert.Equal(HttpStatusCode.Conflict, (await mod.Post($"/api/v1/admin/sellers/{shop.Seller}/reactivate", new { reason = StaffKit.Why })).StatusCode);
         var support = await StaffKit.LoginNew(f, StaffRole.Support);
         Assert.Equal(HttpStatusCode.Forbidden, (await support.Post($"/api/v1/admin/sellers/{shop.Seller}/suspend", new { reason = StaffKit.Why })).StatusCode);

@@ -651,7 +651,7 @@ public class PhoneEngine(PhoneIdentityService ident, PendingPhoneService pending
     private static string StatusText(SellerStatus s) => s switch
     {
         SellerStatus.Draft => "not yet submitted", SellerStatus.PendingReview => "pending review", SellerStatus.NeedsInfo => "waiting for more information from you",
-        SellerStatus.Approved => "approved", SellerStatus.Live => "approved and live", SellerStatus.Rejected => "not approved", _ => "suspended"
+        SellerStatus.Approved => "approved", SellerStatus.Rejected => "not approved", _ => "suspended"
     };
 
     private async Task<Turn> AuthMenuAsync(Conv c, Turn t, string text, bool dtmf, CancellationToken ct)

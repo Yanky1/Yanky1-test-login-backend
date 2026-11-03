@@ -419,7 +419,7 @@ public static class ProductEndpoints
             case ProductStatus.Active:
                 if (prod.ModeratedAt is not null) return Problem(409, "hidden_by_staff", "Solvelt staff hid this listing: " + (prod.ModerationReason ?? "see your email") + ". Contact support to have it restored.");
                 if (from == ProductStatus.Archived) return Problem(409, "restore_first", "Restore the listing before activating it.");
-                if (a.AccountStatus is not (SellerStatus.Approved or SellerStatus.Live))
+                if (a.AccountStatus != SellerStatus.Approved)
                     return Problem(403, "seller_not_approved", "Your seller account must be approved before you can activate listings. You can keep saving drafts.");
                 var r = await ProductRules.RefreshAsync(db, cats, prod);
                 if (!r.CanPublish) return Problem(422, "not_publishable", "This listing isn't ready to publish yet.", r.Issues);

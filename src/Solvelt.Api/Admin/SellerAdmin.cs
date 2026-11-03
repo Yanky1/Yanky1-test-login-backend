@@ -43,12 +43,7 @@ public class SellerAdminService(AppDbContext db, SellerStatusService status, Ses
         var sel = await db.Sellers.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id);
         if (sel is null) return Results.NotFound();
         if (sel.Status != SellerStatus.Suspended) return AdminHttp.Err(409, "invalid_transition", $"Cannot reactivate an account that is {sel.Status}.");
-        // back to where it was before the suspension (Live or Approved)
-        var tag = $"seller={id}";
-        var last = await db.AuditEvents.AsNoTracking().Where(e => e.Type == "seller.status_changed" && e.Detail!.EndsWith(tag) && e.Detail.Contains("->Suspended"))
-            .OrderByDescending(e => e.At).ThenByDescending(e => e.Id).Select(e => e.Detail).FirstOrDefaultAsync();
-        var to = last is not null && last.StartsWith("Live->") ? SellerStatus.Live : SellerStatus.Approved;
-        return await ChangeStatusAsync(actor, id, to, "seller.reactivated", reason);
+        return await ChangeStatusAsync(actor, id, SellerStatus.Approved, "seller.reactivated", reason); // Approved is the only active state
     }
 
     public async Task<IResult> CloseAsync(StaffContext actor, Guid id, string reason)
@@ -157,6 +152,7 @@ public static class SellerAdminEndpoints
             var query = db.Sellers.AsNoTracking().AsQueryable();
             if (!string.IsNullOrWhiteSpace(status))
             {
+                if (string.Equals(status, "Live", StringComparison.OrdinalIgnoreCase)) return Validation.Invalid("status", "Live was removed; use Approved.");
                 if (!Enum.TryParse<SellerStatus>(status, true, out var st)) return Validation.Invalid("status", "Unknown status.");
                 query = query.Where(x => x.Status == st);
             }
@@ -201,7 +197,7 @@ public static class SellerAdminEndpoints
             var now = time.UtcNow();
             var query = db.Sellers.AsNoTracking().Where(x => x.Status != SellerStatus.Draft);
             if (string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == SellerStatus.PendingReview || x.Status == SellerStatus.NeedsInfo);
-            else if (Enum.TryParse<SellerStatus>(status, true, out var st) && st != SellerStatus.Draft) query = query.Where(x => x.Status == st);
+            else if (!string.Equals(status, "Live", StringComparison.OrdinalIgnoreCase) && Enum.TryParse<SellerStatus>(status, true, out var st) && st != SellerStatus.Draft) query = query.Where(x => x.Status == st);
             else return Validation.Invalid("status", "Unknown status.");
             if (!string.IsNullOrWhiteSpace(country)) { var c = country.Trim().ToLower(); query = query.Where(x => x.Country != null && x.Country.ToLower() == c); }
             if (minAgeDays is > 0) { var cutoff = now.AddDays(-minAgeDays.Value); query = query.Where(x => x.SubmittedAt != null && x.SubmittedAt <= cutoff); }

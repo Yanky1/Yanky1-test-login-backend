@@ -140,7 +140,7 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
         if (p is null) return Results.NotFound();
         if (p.ModeratedAt is null) return AdminHttp.Err(409, "not_hidden", "This listing is not hidden by staff.");
         var prev = p.ModerationPrevStatus;
-        var sellerUsable = await db.Sellers.AnyAsync(x => x.Id == p.SellerId && (x.Status == SellerStatus.Approved || x.Status == SellerStatus.Live));
+        var sellerUsable = await db.Sellers.AnyAsync(x => x.Id == p.SellerId && x.Status == SellerStatus.Approved);
         p.ModeratedAt = null; p.ModerationReason = null; p.ModeratedBy = null; p.ModerationPrevStatus = null;
         if (prev == ProductStatus.Active && sellerUsable && p.Status == ProductStatus.Inactive) p.Status = ProductStatus.Active;
         p.Version++; p.UpdatedAt = time.UtcNow();

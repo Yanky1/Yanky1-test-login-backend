@@ -163,7 +163,7 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         Assert.Equal("not_staff_session", await StaffKit.Err(res));
         Assert.Equal(HttpStatusCode.Unauthorized, (await new Api(f).Get("/api/v1/admin/dashboard", false)).StatusCode);
         // ...while the existing admin seller-status API keeps working with that session
-        Assert.Equal(HttpStatusCode.OK, (await admin.Post($"/api/v1/admin/sellers/{shop.Seller}/status", new { status = "Live" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await admin.Post($"/api/v1/admin/sellers/{shop.Seller}/status", new { status = "Suspended" })).StatusCode);
     }
 
     [Fact]

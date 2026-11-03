@@ -129,10 +129,12 @@ public class UnitTests
     [InlineData(Domain.SellerStatus.Draft, Domain.SellerStatus.PendingReview, true)]
     [InlineData(Domain.SellerStatus.Draft, Domain.SellerStatus.Approved, false)]
     [InlineData(Domain.SellerStatus.PendingReview, Domain.SellerStatus.NeedsInfo, true)]
-    [InlineData(Domain.SellerStatus.PendingReview, Domain.SellerStatus.Live, false)]
-    [InlineData(Domain.SellerStatus.Approved, Domain.SellerStatus.Live, true)]
-    [InlineData(Domain.SellerStatus.Live, Domain.SellerStatus.Suspended, true)]
-    [InlineData(Domain.SellerStatus.Rejected, Domain.SellerStatus.Live, false)]
+    // Live was removed as a step (spec change): Approved is the final selling state; Approved <-> Suspended
+    [InlineData(Domain.SellerStatus.PendingReview, Domain.SellerStatus.Suspended, false)]
+    [InlineData(Domain.SellerStatus.Approved, Domain.SellerStatus.Suspended, true)]
+    [InlineData(Domain.SellerStatus.Suspended, Domain.SellerStatus.Approved, true)]
+    [InlineData(Domain.SellerStatus.Rejected, Domain.SellerStatus.Approved, false)]
+    [InlineData(Domain.SellerStatus.Approved, Domain.SellerStatus.PendingReview, false)]
     public void Status_transitions(Domain.SellerStatus from, Domain.SellerStatus to, bool ok) =>
         Assert.Equal(ok, SellerStatusService.CanTransition(from, to));
 

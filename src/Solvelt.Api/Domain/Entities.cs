@@ -10,7 +10,22 @@ public class AppUser : IdentityUser<Guid>
     public Guid? LastAccountId { get; set; }
 }
 
-public enum SellerStatus { Draft, PendingReview, NeedsInfo, Approved, Live, Rejected, Suspended, Closed }
+public enum SellerStatus
+{
+    Draft, PendingReview, NeedsInfo, Approved,
+    /// <summary>REMOVED as a step: Approved is the final selling state. Kept only so legacy rows can still be read until <see cref="LegacyStatus.NormalizeAsync"/> has converted them; nothing sets or checks it.</summary>
+    [Obsolete("Live was removed; use Approved.")] Live,
+    Rejected, Suspended, Closed
+}
+
+public static class LegacyStatus
+{
+    /// <summary>The one conversion used by the EF migration AND at start-up (SQLite/dev databases are created, not migrated). Idempotent.</summary>
+    public const string ConvertLiveSql = "UPDATE seller_accounts SET \"Status\" = 'Approved' WHERE \"Status\" = 'Live'";
+
+    public static Task<int> NormalizeAsync(Microsoft.EntityFrameworkCore.DbContext db) =>
+        Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(db.Database, ConvertLiveSql);
+}
 
 public class SellerAccount
 {

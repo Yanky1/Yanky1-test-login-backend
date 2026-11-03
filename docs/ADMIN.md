@@ -118,7 +118,7 @@ Outbox payload previews are PII-redacted (`PayloadRedactor`: personal field name
 `integrations/inbound` for signature/stale/replay spikes (clock drift, rotated secret) and `integrations/jobs` for a job whose last run is old or failed.
 
 **Suspending a seller.** Moderator/Super admin: `suspend` with a reason (members whose only usable account it is lose their sessions at once; the owners are mailed
-by the status service where a template exists). `reactivate` restores the pre-suspension status (Live or Approved). Closing is Super admin + step-up, irreversible
+by the status service where a template exists). `reactivate` makes the account Approved again (the only active state; `Live` no longer exists). Closing is Super admin + step-up, irreversible
 through the panel, owners are mailed. For a stuck account where the owner cannot be reached: `transfer-ownership` (Super admin, step-up; the previous and the new owner are emailed).
 
 **Locked-out / lost-device user.** Verify identity out of band, then Support: `clear-lockout` or `send-password-reset`; for a lost authenticator: Super admin `disable-2fa`
