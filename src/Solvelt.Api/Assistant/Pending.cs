@@ -69,7 +69,7 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
         return fresh.Status == PendingStatus.Cancelled ? new(200, "cancelled", "Already cancelled.", fresh, AlreadyDone: true) : new(409, "not_pending", $"This action is already {fresh.Status.ToString().ToLowerInvariant()}.", fresh);
     }
 
-    public async Task<ConfirmOutcome> ConfirmAsync(AccountAccess a, Guid id)
+    public async Task<ConfirmOutcome> ConfirmAsync(AccountAccess a, Guid id, bool retried = false)
     {
         var act = await Mine(a, id).AsNoTracking().FirstOrDefaultAsync();
         if (act is null) return new(404, "not_found", "Action not found.", null);
@@ -94,7 +94,7 @@ public sealed class PendingActionService(AppDbContext db, ActionRegistry defs, I
         if (!a.Has(def.Permission)) { await Resolve(a, act, PendingStatus.Cancelled, "forbidden", "You no longer have permission to do this."); return new(403, "forbidden", "You don't have permission to do this.", await GetAsync(a, id)); }
         // atomic claim: only one concurrent confirm gets to execute
         var claimed = await Mine(a, id).Where(x => x.Status == PendingStatus.Pending && x.ExpiresAt > now).ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, PendingStatus.Executing));
-        if (claimed == 0) return await ConfirmAsync(a, id);
+        if (claimed == 0) return retried ? new(409, "in_progress", "This action is already being carried out.", await GetAsync(a, id)) : await ConfirmAsync(a, id, retried: true); // lost the race: report what the winner left behind
         db.ChangeTracker.Clear();
         var ctx = new ToolContext(db, a, sp, time, act.ConversationId, opt.CurrentValue);
         var payload = JsonDocument.Parse(act.PayloadJson).RootElement;

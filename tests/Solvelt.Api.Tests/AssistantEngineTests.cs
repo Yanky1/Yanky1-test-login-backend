@@ -135,11 +135,13 @@ public class AssistantEngineTests : IClassFixture<AssistantFactory>
         await Asst.BuyerMessage(s, id, number, "Please call me on +1 212 555 0199 or mail jane.private@example.com, or see https://evil.example/x");
         Asst.Script(_f.Model, ("list_orders", new { }), ("get_order", new { orderId = id }), ("list_conversations", new { }), ("get_stats", new { }), ("list_team", new { }));
         await Asst.Chat(s.Owner, "show me everything");
+        var first = _f.Model.Wire;
+        Assert.Contains("Order " + number.Replace("Order ", ""), first); // the tools really returned the order
         _f.Model.Reset();
         var (_, conv) = (0, _f.WithDb(db => db.Conversations.Where(c => c.SellerId == s.Seller).Select(c => c.Id).First()));
         Asst.Script(_f.Model, ("get_conversation", new { conversationId = conv }));
         await Asst.Chat(s.Owner, "read it");
-        var wire = _f.Model.Wire;
+        var wire = first + "\n" + _f.Model.Wire;
         foreach (var banned in new[] { "1 Main St", "Apt 2", "11201", "555 000 1111", "relay-abc", "212 555 0199", "jane.private@example.com", "evil.example", "Jane Buyer", AssistantFactory.Secret, "sk-ant" })
             Assert.DoesNotContain(banned, wire);
         Assert.Contains("Jane B.", wire); // first name + initial is enough to recognise an order

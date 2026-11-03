@@ -233,6 +233,22 @@ public class AssistantActionTests : IClassFixture<AssistantFactory>
     }
 
     [Fact]
+    public async Task One_user_in_two_accounts_cannot_confirm_an_action_while_working_in_the_other_account()
+    {
+        var (s, _, id) = await ProposeChallah();                       // proposed in account A
+        var other = await NewShop(_f);                                 // account B, whose owner invites A's owner
+        var userEmail = s.Owner.Session!.Email;
+        Assert.Equal(HttpStatusCode.Accepted, (await other.Owner.Post("/api/v1/team/invitations", new { email = userEmail, role = "admin" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await s.Owner.Post($"/api/v1/invitations/{TeamHelpers.TokenFor(_f, userEmail)}/accept")).StatusCode);
+        await s.Owner.Switch(other.Seller);                            // same user, now acting in account B
+        Assert.Equal(HttpStatusCode.NotFound, (await Asst.Confirm(s.Owner, id)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Asst.Cancel(s.Owner, id)).StatusCode);
+        Assert.Equal(0, Products(s.Seller, "Challah board"));
+        await s.Owner.Switch(s.Seller);                                // back in account A it works
+        Assert.Equal(HttpStatusCode.OK, (await Asst.Confirm(s.Owner, id)).StatusCode);
+    }
+
+    [Fact]
     public async Task Cancel_changes_nothing_and_blocks_a_later_confirm()
     {
         var (s, chat, id) = await ProposeChallah();

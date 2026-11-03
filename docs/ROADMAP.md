@@ -35,3 +35,10 @@ Each item lists a short design note so it can be added later.
 * **Payments and payouts for services** - belong to the marketplace; the portal already emits the amounts (`booking.cancelled`, `booking.no_show`, `booking.additional_charge_requested`, `booking.completed`).
 * **Buyer-side booking UI** - part of the main website; consumes the signed availability/hold/confirm API.
 * **Booking threads in the Messages inbox** - move `booking_messages` into E's `Conversation` model (`ConversationKind.Booking`) once the order workstream is stable.
+
+* **Assistant: staff tools** (`/admin`) - a second `ToolRegistry`/`ActionDef` set for support staff on the same engine (approve seller applications, add notes, look up orders across accounts with explicit staff permissions); needs a staff `AccessContext`, its own system prompt, and conversations with `Surface=admin`.
+* **Assistant: voice** - reuse the phone/IVR layer: speech -> `AssistantEngine` with a short-answer prompt and the read-only tool subset, confirmations by spoken PIN step-up (never "yes" alone).
+* **Assistant: proactive suggestions** - a nightly job computes "late orders", "unanswered messages", "listings below 60 quality" per account and surfaces them as dismissible cards in the portal; actions still go through confirm cards.
+* **Assistant: refunds** - `propose_refund` limited by `OrderRefund` permission and `Orders:ManagerRefundLimitCents`, high-risk card with the full amount breakdown and a second confirmation for amounts above a threshold.
+* **Assistant: model streaming and cost controls** - stream tokens from the Claude API to the SSE channel, `claude-haiku-5-5` routing for simple read-only questions, prompt-cache hit-rate metrics, per-account monthly spend caps and a staff dashboard over `assistant_usage`.
+* **Assistant: attachments and bulk work** - "fix all my drafts" as a batch card with per-item diffs; image alt-text suggestions from product photos.

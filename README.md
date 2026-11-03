@@ -5,6 +5,7 @@ lockout, passkeys (built-in Identity passkey support), Google/Apple sign-in, TOT
 Optional **phone (IVR) and SMS channels with an AI assistant** (SignalWire/Twilio, Claude): `docs/PHONE-SMS.md`.
 Seller **orders** (signed marketplace API, outbox, buyer messaging, simulator): `docs/ORDERS.md`.
 Seller **services, calendars and bookings** (service listings, per-provider calendars, slot engine, bookings and quotes, ICS feeds): `docs/SERVICES.md`.
+Seller **AI assistant** (Claude, server-side agent loop, read tools + confirm-to-act cards, SSE, budgets, kill switch): `docs/ASSISTANT.md`, evals `docs/ASSISTANT-EVALS.md`.
 Frontend: <https://github.com/Yanky1/test-login-frontend>.
 
 ## Prerequisites
@@ -23,12 +24,13 @@ Create the first admin by setting `AdminSeed:Email` / `AdminSeed:Password` (user
 
 ## Tests
 ```bash
-dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLite, fake TimeProvider)
+dotnet test        # xUnit unit + WebApplicationFactory integration tests (SQLite, fake TimeProvider, scripted fake assistant model)
+ANTHROPIC_API_KEY=… dotnet test tests/Solvelt.Api.Evals   # optional real-model assistant evals (not part of CI)
 ```
 
 ## Configuration keys
 See `appsettings.json` (defaults) and `appsettings.Example.json` / `.env.example` (placeholders). Sections: `Database`, `App`, `Jwt`, `Session`
-(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`.
+(server idle limit), `Lockout`, `RateLimit` (incl. `TeamPerMinute`, `CatalogPerMinute`, `OrdersPerMinute`, `InternalPerMinute`, `BookingsPerMinute`, `AvailabilityPerMinute`), `Turnstile`, `Email`, `Passkeys`, `Storage`, `ExternalAuth`, `AdminSeed`, `Passwords`, `DataProtection`, `Orders` (secrets, webhook, fee, retention: `docs/ORDERS.md`), `Bookings` (hold minutes, retention, default time zone: `docs/SERVICES.md`), `Phone`, `Ai`, `Assistant` (flag, kill switch, provider/model, budgets, retention: `docs/ASSISTANT.md`; also `RateLimit:AssistantPerMinute`).
 The frontend idle timeout is separate (frontend `config.json`); keep `Session:IdleTimeoutMinutes` slightly larger than it.
 
 ## API (all under `/api/v1`)
@@ -39,6 +41,7 @@ Login contract details and the failure `hint` field: `docs/DECISIONS.md`.
 
 Orders: `seller/orders*`, `seller/messages*`, `seller/message-templates`, `seller/notification-preferences`, `seller/events` (SSE) · marketplace-only `/api/internal/v1/*` (HMAC-signed, never a seller token) ·
 Services: `seller/services*`, `seller/providers*`, `seller/calendar`, `seller/bookings*`, `seller/quote-requests*`, public `calendar/feeds/{token}.ics`; marketplace availability/hold/booking/quote endpoints under `/api/internal/v1` (see `docs/SERVICES.md`).
+Assistant: `assistant/config`, `assistant/conversations*`, `assistant/messages` (+ `/stream` SSE), `assistant/actions/{id}/confirm|cancel` (CSRF header required), `assistant/usage`.
 Development/Testing only: `seller/dev/*` order and booking simulator, `/api/dev/outbox` sink (`scripts/post-signed.sh` signs real requests).
 
 ## Deploy notes
