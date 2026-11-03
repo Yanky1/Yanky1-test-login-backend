@@ -101,7 +101,7 @@ Offered per user: a tool is listed only if the user has its permission **and** (
 | `Provider` | `Fake` | `Fake` (scripted, offline) or `Anthropic` |
 | `Model` | `claude-opus-5-5` | `claude-haiku-5-5` is the cheaper/faster option (weaker at multi-step tool use) |
 | `Effort` | `medium` | `low`/`medium`/`high` |
-| `MaxTokens` / `MaxIterations` | 4096 / 8 | per call / per user message |
+| `MaxTokens` / `MaxIterations` | 16000 / 8 | per call / per user message |
 | `CallTimeoutSeconds` / `ToolTimeoutSeconds` | 60 / 20 | |
 | `DailyMessagesPerUser` / `PerAccount` | 150 / 1500 | |
 | `DailyTokensPerUser` / `PerAccount` | 600k / 6M | |

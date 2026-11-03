@@ -14,7 +14,8 @@ public class AssistantOptions
     public string Model { get; set; } = "claude-opus-5-5";
     /// <summary>Thinking depth for the Claude API: low | medium | high.</summary>
     public string Effort { get; set; } = "medium";
-    public int MaxTokens { get; set; } = 4096;
+    /// <summary>Per model call. Generous on purpose: adaptive thinking spends output tokens before the answer, and a tool call cut off mid-JSON is useless.</summary>
+    public int MaxTokens { get; set; } = 16000;
     /// <summary>Model calls per user message (each tool round trip is one).</summary>
     public int MaxIterations { get; set; } = 8;
     public int CallTimeoutSeconds { get; set; } = 60;

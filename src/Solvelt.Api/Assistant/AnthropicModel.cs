@@ -14,6 +14,8 @@ namespace Solvelt.Api.Assistant;
 public sealed class AnthropicAssistantModel(IOptions<AiOptions> ai, IOptionsMonitor<AssistantOptions> opt) : IAssistantModel
 {
     private AnthropicClient? _client;
+    /// <summary>Test seam: point the model at a fake transport.</summary>
+    internal AnthropicAssistantModel WithClient(AnthropicClient c) { _client = c; return this; }
     private AnthropicClient Client => _client ??= new AnthropicClient { ApiKey = string.IsNullOrEmpty(ai.Value.ApiKey) ? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") : ai.Value.ApiKey };
 
     public async Task<ModelResponse> CompleteAsync(ModelRequest r, CancellationToken ct)
@@ -42,6 +44,8 @@ public sealed class AnthropicAssistantModel(IOptions<AiOptions> ai, IOptionsMoni
                 switch (b)
                 {
                     case AText tx when tx.Text.Length > 0: content.Add(new TextBlockParam { Text = tx.Text }); break;
+                    case AThinking th: content.Add(new ThinkingBlockParam { Thinking = th.Thinking, Signature = th.Signature }); break;
+                    case ARedactedThinking rt: content.Add(new RedactedThinkingBlockParam { Data = rt.Data }); break;
                     case AToolUse tu: content.Add(new ToolUseBlockParam { ID = tu.Id, Name = tu.Name, Input = ToInput(tu.Input) }); break;
                     case AToolResult tr: content.Add(new ToolResultBlockParam { ToolUseID = tr.ToolUseId, Content = tr.Content, IsError = tr.IsError }); break;
                 }
@@ -59,10 +63,12 @@ public sealed class AnthropicAssistantModel(IOptions<AiOptions> ai, IOptionsMoni
         var blocks = new List<ABlock>();
         foreach (var cb in resp.Content)
         {
-            if (cb.TryPickText(out var text)) blocks.Add(new AText(text.Text));
+            if (cb.TryPickThinking(out var th)) blocks.Add(new AThinking(th.Thinking, th.Signature));
+            else if (cb.TryPickRedactedThinking(out var rt)) blocks.Add(new ARedactedThinking(rt.Data));
+            else if (cb.TryPickText(out var text)) blocks.Add(new AText(text.Text));
             else if (cb.TryPickToolUse(out var tu)) blocks.Add(new AToolUse(tu.ID, tu.Name, JsonSerializer.SerializeToElement(tu.Input)));
         }
-        var stop = resp.StopReason?.ToString()?.ToLowerInvariant() switch
+        var stop = resp.StopReason?.Raw()?.ToString()?.ToLowerInvariant() switch
         {
             "tool_use" or "tooluse" => "tool_use", "end_turn" or "endturn" => "end_turn", "max_tokens" or "maxtokens" => "max_tokens", "refusal" => "refusal", _ => blocks.Any(b => b is AToolUse) ? "tool_use" : "other"
         };
