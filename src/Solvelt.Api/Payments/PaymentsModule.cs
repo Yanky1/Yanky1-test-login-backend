@@ -27,11 +27,7 @@ public static class PaymentsModule
         var prod = env.IsProduction();
         if (key.Length > 0)
         {
-            var test = key.StartsWith("sk_test_") || key.StartsWith("rk_test_");
-            var live = key.StartsWith("sk_live_") || key.StartsWith("rk_live_");
-            if (!test && !live) throw new InvalidOperationException("Stripe:SecretKey must be a Stripe secret or restricted key (sk_test_..., sk_live_..., rk_...).");
-            if (prod && test && !p.AllowTestKeysInProduction) throw new InvalidOperationException("Production refuses a Stripe TEST key. Use a live key, or set Payments:AllowTestKeysInProduction=true on purpose.");
-            if (!prod && live && !p.AllowLiveKeysOutsideProduction) throw new InvalidOperationException("A Stripe LIVE key is only accepted in Production (set Payments:AllowLiveKeysOutsideProduction=true to override).");
+            ValidateKey(key, prod, p.AllowTestKeysInProduction, p.AllowLiveKeysOutsideProduction);
             builder.Services.AddSingleton<IPaymentProvider, StripePaymentProvider>();
         }
         else if (dev) { builder.Services.AddSingleton<FakePaymentProvider>(); builder.Services.AddSingleton<IPaymentProvider>(sp => sp.GetRequiredService<FakePaymentProvider>()); }
@@ -57,6 +53,17 @@ public static class PaymentsModule
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = p.WebhooksPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
         return builder;
+    }
+
+    /// <summary>Separate test/live key handling: a secret key must look like one; production refuses test keys and other environments refuse live keys unless allowed on purpose.</summary>
+    public static void ValidateKey(string key, bool production, bool allowTestInProduction, bool allowLiveOutsideProduction)
+    {
+        if (key.Length == 0) return;
+        var test = key.StartsWith("sk_test_") || key.StartsWith("rk_test_");
+        var live = key.StartsWith("sk_live_") || key.StartsWith("rk_live_");
+        if (!test && !live) throw new InvalidOperationException("Stripe:SecretKey must be a Stripe secret or restricted key (sk_test_..., sk_live_..., rk_...).");
+        if (production && test && !allowTestInProduction) throw new InvalidOperationException("Production refuses a Stripe TEST key. Use a live key, or set Payments:AllowTestKeysInProduction=true on purpose.");
+        if (!production && live && !allowLiveOutsideProduction) throw new InvalidOperationException("A Stripe LIVE key is only accepted in Production (set Payments:AllowLiveKeysOutsideProduction=true to override).");
     }
 
     public static void MapPayments(this WebApplication app, RouteGroupBuilder v1)
