@@ -28,14 +28,33 @@ public static partial class OutputSanitizer
     [GeneratedRegex(@"\[[^\]]*\]:\s*\S+.*$", RegexOptions.Multiline)] private static partial Regex RefDefRx();
     [GeneratedRegex(@"\b(?:https?|ftp|data|javascript|file)://\S+|\bdata:\S+|\bjavascript:\S+|\bwww\.\S+", RegexOptions.IgnoreCase)] private static partial Regex UrlRx();
 
+    [GeneratedRegex(@"\bmailto:\S+", RegexOptions.IgnoreCase)] private static partial Regex MailtoRx();
+    [GeneratedRegex(@"[\[\]()<>`!*_#|\\{}]")] private static partial Regex LabelCharsRx();
+    [GeneratedRegex(@"\s+")] private static partial Regex SpaceRx();
+
+    /// <summary>Strips everything that can become a link, image or markup. Runs to a fixed point, so nested constructs such as [[a](b)](c) cannot survive.</summary>
     public static string Clean(string s)
     {
-        s = ImageRx().Replace(s, "");
-        s = LinkRx().Replace(s, "$1");
-        s = RefDefRx().Replace(s, "");
-        s = TagRx().Replace(s, "");
-        s = UrlRx().Replace(s, "[link removed]");
-        return s.Trim();
+        for (var i = 0; i < 8; i++)
+        {
+            var before = s;
+            s = ImageRx().Replace(s, "");
+            s = LinkRx().Replace(s, "$1");
+            s = RefDefRx().Replace(s, "");
+            s = TagRx().Replace(s, "");
+            s = MailtoRx().Replace(s, "[link removed]");
+            s = UrlRx().Replace(s, "[link removed]");
+            if (s == before) break;
+        }
+        return s.Replace("](", "] (").Trim(); // whatever is left can no longer form [text](url)
+    }
+
+    /// <summary>Entity labels (product titles, buyer names…) are DATA: shown as plain words, never as markup.</summary>
+    public static string Label(string? label)
+    {
+        var t = UrlRx().Replace(MailtoRx().Replace(label ?? "", " "), " ");
+        t = SpaceRx().Replace(LabelCharsRx().Replace(t, " "), " ").Trim();
+        return t.Length > 80 ? t[..80] : t.Length == 0 ? "item" : t;
     }
 }
 
@@ -109,6 +128,16 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
         var ctx = new ToolContext(db, a, sp, time, conv.Id, o);
         var messages = new List<AMessage>(history) { new("user", [new AText(await ContextNote(a, req.Page)), new AText(text)]) };
 
+        var links = new List<EntityRef>();
+        // Placeholders become plain-text labels FIRST (labels are sanitised as data), then the whole text is cleaned to a fixed point.
+        string Render(string raw) => OutputSanitizer.Clean(LinkToken.Replace(raw, mt =>
+        {
+            var id = Guid.Parse(mt.Groups[2].Value); var kind = mt.Groups[1].Value;
+            var r = ctx.Refs.FirstOrDefault(x => x.Id == id && x.Kind == kind);
+            if (r is null) return ""; // not something this turn looked up (or invented): no link
+            if (!links.Any(l => l.Id == id)) links.Add(r);
+            return r.Label;
+        }));
         var final = new System.Text.StringBuilder(); var summaries = new List<object>(); var total = new ModelUsage(0, 0);
         var status = "ok"; var iterations = 0;
         try
@@ -133,9 +162,9 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
                 var uses = resp.Blocks.OfType<AToolUse>().ToList();
                 if (said.Length > 0)
                 {
-                    var piece = (final.Length > 0 ? "\n\n" : "") + said.Trim();
-                    final.Append(piece);
-                    await Stream(emit, piece);
+                    // everything the user can see (stream, stored text, done event) goes through the SAME cleaning, so the raw model text is never shown
+                    var shown = Render(said.Trim());
+                    if (shown.Length > 0) { var piece = (final.Length > 0 ? "\n\n" : "") + shown; final.Append(piece); await Stream(emit, piece); }
                 }
                 if (resp.StopReason == "refusal") { status = "refused"; var m = "I can't help with that request."; if (final.Length == 0) { final.Append(m); await Stream(emit, m); } break; }
                 if (uses.Count == 0) { if (resp.StopReason == "max_tokens") status = "truncated"; break; }
@@ -160,16 +189,7 @@ public sealed class AssistantEngine(AppDbContext db, IAssistantModel model, IOpt
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { status = "stopped"; }
 
-        var clean = OutputSanitizer.Clean(final.ToString());
-        var links = new List<EntityRef>();
-        clean = LinkToken.Replace(clean, mt =>
-        {
-            var id = Guid.Parse(mt.Groups[2].Value); var kind = mt.Groups[1].Value;
-            var r = ctx.Refs.FirstOrDefault(x => x.Id == id && x.Kind == kind);
-            if (r is null) return ""; // not something this turn looked up (or invented): no link
-            if (!links.Any(l => l.Id == id)) links.Add(r);
-            return r.Label;
-        });
+        var clean = final.ToString().Trim();
         if (clean.Length == 0 && status == "stopped") clean = "(stopped)";
         var actions = ctx.Proposals.DistinctBy(p => p.Id).ToList();
         var saved = await convs.AppendAsync(conv.Id, a.SellerId, a.UserId, "assistant", clean, actions.Select(p => p.Id), JsonSerializer.Serialize(summaries), JsonSerializer.Serialize(links.Select(l => new { kind = l.Kind, id = l.Id, label = l.Label })), status, total.InputTokens, total.OutputTokens);
