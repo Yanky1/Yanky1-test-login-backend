@@ -32,7 +32,7 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
     /// conditional UPDATE (<c>WHERE Decision IS NULL</c>) and its event is queued only if this call won the claim, so concurrent decisions can never emit an event twice. Runs inside the
     /// decision's transaction; the caller's SaveChanges (the audit entry) commits the events with it.
     /// </summary>
-    private async Task DecideAsync(ModerationReport row, string decision, string? shownToUser)
+    public async Task DecideAsync(ModerationReport row, string decision, string? shownToUser)
     {
         var open = await db.ContentReports.AsNoTracking().Where(c => c.ModerationReportId == row.Id && c.Decision == null).ToListAsync();
         var now = time.UtcNow();
