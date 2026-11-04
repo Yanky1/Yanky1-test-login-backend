@@ -104,6 +104,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
     /// <summary>pending_then_success (default: pending on request, success when polled), success, hold (stays pending), error.</summary>
     public string RefundMode { get; set; } = "pending_then_success";
     public bool FailRegistration { get; set; }
+    /// <summary>The stuck-purchase lookup cannot finish (provider down / search incomplete).</summary>
+    public bool FailLookup { get; set; }
     /// <summary>A poll of this tracking number blows up with an unexpected (non-provider) exception: proves one bad parcel never stops the reconciler.</summary>
     public string? ThrowForTracking { get; set; }
     public bool UnsupportedCarriers { get; set; }
@@ -174,6 +176,7 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
 
     public Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, DateTime since, CancellationToken ct = default)
     {
+        if (FailLookup) throw new ShippingProviderException("provider_error", "The purchase search could not finish.", true);
         lock (_gate) return Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var p) ? p : null);
     }
 
@@ -226,7 +229,7 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
 }
 
 /// <summary>Shippo REST client (https://docs.goshippo.com). Test mode only in this iteration: keys must be shippo_test_... unless explicitly allowed.</summary>
-public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> opt, ILogger<ShippoShippingProvider> log) : IShippingProvider
+public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> opt, ILogger<ShippoShippingProvider> log, TimeProvider? clock = null) : IShippingProvider
 {
     public string Name => "shippo";
     private static readonly Dictionary<string, string> Tokens = new() { ["UPS"] = "ups", ["USPS"] = "usps", ["FedEx"] = "fedex", ["DHL"] = "dhl_express" };
@@ -296,7 +299,7 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
             var days = x["estimated_days"]?.GetValue<int>();
             return new RateOffer(x["object_id"]!.GetValue<string>(), CarrierName(x["provider"]?.GetValue<string>()?.ToLowerInvariant().Replace(" ", "_")),
                 x["servicelevel"]?["name"]?.GetValue<string>() ?? "", ShippingMoney.ToMinor(x["amount"]!.GetValue<string>(), cur), cur, days,
-                days is { } d ? DateTime.UtcNow.Date.AddDays(d) : null);
+                days is { } d ? (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime.Date.AddDays(d) : null);
         }).ToList();
         return new RateSet(res["object_id"]!.GetValue<string>(), rates);
     }
@@ -320,7 +323,7 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
         var days = rate["estimated_days"]?.GetValue<int>();
         return new PurchasedLabel(tx["object_id"]!.GetValue<string>(), CarrierName(rate["provider"]?.GetValue<string>()?.ToLowerInvariant().Replace(" ", "_")),
             rate["servicelevel"]?["name"]?.GetValue<string>(), tx["tracking_number"]!.GetValue<string>(), bytes, LabelFormats.ContentType(r.LabelFormat),
-            days is { } d ? DateTime.UtcNow.Date.AddDays(d) : null);
+            days is { } d ? (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime.Date.AddDays(d) : null);
     }
 
     /// <summary>Pages through the transactions (newest first) until it passes <paramref name="since"/> minus a margin: an older stuck purchase must still be found, and only a COMPLETE search may conclude "never bought".</summary>
@@ -352,7 +355,7 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
         var days = rate["estimated_days"]?.GetValue<int>();
         return new PurchasedLabel(tx["object_id"]!.GetValue<string>(), CarrierName(rate["provider"]?.GetValue<string>()?.ToLowerInvariant().Replace(" ", "_")),
             rate["servicelevel"]?["name"]?.GetValue<string>(), tx["tracking_number"]!.GetValue<string>(), bytes, LabelFormats.ContentType(labelFormat),
-            days is { } d ? DateTime.UtcNow.Date.AddDays(d) : null);
+            days is { } d ? (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime.Date.AddDays(d) : null);
     }
 
     private static RefundResult Refund(JsonNode n) => new(n["object_id"]!.GetValue<string>(), (n["status"]?.GetValue<string>() ?? "").ToUpperInvariant() switch
@@ -375,7 +378,7 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
     {
         if (!Tokens.TryGetValue(carrier, out var token)) return null;
         var n = await Send(HttpMethod.Get, $"/tracks/{token}/{Uri.EscapeDataString(trackingNumber)}", null, ct);
-        return ShippoPayload.Snapshot(n, carrier, trackingNumber, heardAt: DateTime.UtcNow);
+        return ShippoPayload.Snapshot(n, carrier, trackingNumber, heardAt: (clock ?? TimeProvider.System).GetUtcNow().UtcDateTime);
     }
 }
 

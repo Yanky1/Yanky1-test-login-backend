@@ -157,11 +157,19 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         }
     }
 
-    /// <summary>The earliest moment a carrier fact can belong to this parcel: a purchased label's purchase time, or a manual shipment's entry time minus the grace period.</summary>
-    private async Task<DateTime> ParcelFloorAsync(Shipment s)
+    /// <summary>
+    /// True when a carrier "delivered" stamped <paramref name="at"/> cannot belong to this parcel:
+    /// (1) it is not later than the last report of an EARLIER parcel that used the same number (delivered, or tracking stopped): a reused number must not be delivered by the previous parcel's own delivery;
+    /// (2) it is before the parcel existed: a purchased label's purchase time, or the ENTRY time of a manual shipment minus the grace period (the seller often types the number in after drop-off).
+    /// The entry time is CreatedAt, not the seller-editable ShippedAt: backdating the ship date must not widen the window.
+    /// </summary>
+    private async Task<bool> BeforeParcelAsync(Shipment s, DateTime at)
     {
-        if (s.LabelId is { } lid && await db.ShippingLabels.Where(l => l.Id == lid).Select(l => l.PurchasedAt).FirstOrDefaultAsync() is { } bought) return bought;
-        return s.ShippedAt.AddHours(-opt.Value.ManualDeliveryGraceHours);
+        var finished = await db.Shipments.Where(x => x.Id != s.Id && x.TrackingNumber == s.TrackingNumber && x.Carrier == s.Carrier && (x.DeliveredAt != null || x.TrackingStoppedAt != null))
+            .Select(x => x.DeliveredAt ?? x.TrackingStoppedAt).ToListAsync();
+        if (finished.Count > 0 && at <= finished.Max()!.Value) return true;
+        if (s.LabelId is { } lid && await db.ShippingLabels.Where(l => l.Id == lid).Select(l => l.PurchasedAt).FirstOrDefaultAsync() is { } bought) return at < bought;
+        return at < s.CreatedAt.AddHours(-opt.Value.ManualDeliveryGraceHours);
     }
 
     private async Task<TrackingApplied> ApplyToAsync(Parcel p, TrackingSnapshot snap, string source)
@@ -187,11 +195,11 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         // "delivered" is final: it replaces any earlier stage even when a skewed carrier clock stamped that stage later (nothing ever replaces delivered)
         var newer = p.DeliveredAt is null && (p.StatusAt is null || status == TrackingStatuses.Delivered && p.Status != TrackingStatuses.Delivered || at > p.StatusAt
             || (at == p.StatusAt && TrackingStatuses.Rank(status) > TrackingStatuses.Rank(p.Status)));
-        // the same status again with nothing new in the history is a replay, even when we stamped it a moment later (no carrier date)
-        if (newer && fresh.Count == 0 && status == p.Status) newer = false;
+        // an UNDATED fact we have already stored (nothing fresh) is a replay: stamping it "now" must not roll the current status back to an older one
+        if (newer && fresh.Count == 0 && snap.StatusAtEstimated) newer = false;
         // a delivery stamped before this parcel existed belongs to some other parcel that reused the number: never deliver (or pay out) on it.
         // Manual entries get a grace period (the seller often types the number in after drop-off); the clamp in ShipmentDeliveredAsync then bounds the time.
-        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && at < await ParcelFloorAsync(p.Ship)) newer = false;
+        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && await BeforeParcelAsync(p.Ship, at)) newer = false;
         if (!newer)
         {
             await db.SaveChangesAsync();
