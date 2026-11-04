@@ -29,6 +29,7 @@ public static class OrdersModule
         builder.Services.AddSingleton<ReservationDrift>();
         builder.Services.AddSingleton<InflightHolds>();
         builder.Services.AddHttpClient("outbox", c => c.Timeout = TimeSpan.FromSeconds(10));
+        builder.Services.AddSingleton<InboundRejectedSampler>();
         builder.Services.AddScoped<InboundVerifier>();
         builder.Services.AddScoped<Outbox>();
         builder.Services.AddScoped<OutboxDispatcher>();
