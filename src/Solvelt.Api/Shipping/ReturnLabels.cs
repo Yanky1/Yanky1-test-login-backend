@@ -100,7 +100,12 @@ public class ReturnLabelService(AppDbContext db, IShippingProvider provider, IFi
 public record MaintenanceSummary(int Registered, int Polled, int Stopped, int RefundsChecked, int RefundsConfirmed, int OrphansVoided, int PurchasesRecovered = 0);
 
 /// <summary>Test seam: lets a test hold two job instances between "selected the shipment" and "claimed it" so the lease is exercised deterministically.</summary>
-public class ShippingTestHooks { public Func<Guid, Task>? AfterPollCandidate { get; set; } }
+public class ShippingTestHooks
+{
+    public Func<Guid, Task>? AfterPollCandidate { get; set; }
+    /// <summary>Runs after a manually entered tracking number passed the duplicate check and before it is saved: lets a test make two entries race for real.</summary>
+    public Func<Task>? AfterTrackingCheck { get; set; }
+}
 
 public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, TrackingService tracking, ShipmentTracker tracker, LabelService labels, IOptions<ShippingOptions> opt, TimeProvider time, ShippingTestHooks hooks, ILogger<ShippingMaintenance> log)
 {
@@ -180,7 +185,15 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
                     await labels.RecordPurchaseAsync(l, pl, number); recovered++;
                 }
             }
-            catch (ShippingProviderException ex) { log.LogInformation("Stuck purchase check deferred ({Code})", ex.Code); }
+            catch (ShippingProviderException ex)
+            {
+                log.LogInformation("Stuck purchase check deferred ({Code})", ex.Code);
+                if (l.CreatedAt < now.AddDays(-o.PurchaseAbandonDays))
+                {   // still unresolved after days of retries: stop, release the spend limit, and put it in front of staff (admin/shipping/refunds?state=review)
+                    l.Status = LabelStatus.Failed; l.RefundStatus = "review"; l.Error = "purchase_unresolved"; await db.SaveChangesAsync(ct);
+                    log.LogWarning("Label purchase {LabelId} could not be resolved with the provider after {Days} days; flagged for staff review", l.Id, o.PurchaseAbandonDays);
+                }
+            }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Could not recover stuck label purchase {LabelId}", id); }
         }
         return new(registered, polled, stopped, checks, confirmed, orphans, recovered);

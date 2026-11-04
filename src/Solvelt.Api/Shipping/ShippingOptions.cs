@@ -32,6 +32,8 @@ public class ShippingOptions
     public int PollBatch { get; set; } = 50;
     /// <summary>A label still "Purchasing" after this long was lost to a crash: the sweep asks the provider whether it was bought.</summary>
     public int PurchaseStuckMinutes { get; set; } = 10;
+    /// <summary>A purchase the provider search could not resolve for this many days stops being retried and is flagged for staff (a Failed label with RefundStatus "review").</summary>
+    public int PurchaseAbandonDays { get; set; } = 3;
     /// <summary>A carrier "delivered" may be stamped this long before a MANUALLY entered shipment's entry time (the number is often typed in after drop-off).</summary>
     public int ManualDeliveryGraceHours { get; set; } = 48;
     public int PollLeaseMinutes { get; set; } = 5;
