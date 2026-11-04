@@ -15,18 +15,27 @@ public class CatalogFactory : OrdersFactory
     public CatalogFactory()
     {
         Extra["RateLimit:InternalCatalogPerMinute"] = "100000";
-        Extra["RateLimit:InternalQuestionsPerMinute"] = "100000";
-        Extra["RateLimit:InternalReportsPerMinute"] = "100000";
+        Extra["RateLimit:InternalQuestionsPerListingPerMinute"] = "100000";
+        Extra["RateLimit:InternalQuestionsPerCallerPerMinute"] = "100000";
+        Extra["RateLimit:InternalReportsPerTargetPerMinute"] = "100000";
+        Extra["RateLimit:InternalReportsPerCallerPerMinute"] = "100000";
+        Extra["RateLimit:InternalUnsignedPerMinute"] = "100000";
     }
 }
 
-public class CatalogLimitedFactory : OrdersFactory
+/// <summary>Default marketplace write limits (nothing overridden): what production runs with.</summary>
+public class CatalogDefaultLimitsFactory : OrdersFactory { }
+
+/// <summary>Tiny limits so a test can reach them: 5 questions per listing, 3 reports per target, 40 per caller, 4 failed requests per IP.</summary>
+public class CatalogTightLimitsFactory : OrdersFactory
 {
-    public CatalogLimitedFactory()
+    public CatalogTightLimitsFactory()
     {
-        Extra["RateLimit:InternalCatalogPerMinute"] = "100000";
-        Extra["RateLimit:InternalQuestionsPerMinute"] = "3";
-        Extra["RateLimit:InternalReportsPerMinute"] = "3";
+        Extra["RateLimit:InternalQuestionsPerListingPerMinute"] = "5";
+        Extra["RateLimit:InternalQuestionsPerCallerPerMinute"] = "40";
+        Extra["RateLimit:InternalReportsPerTargetPerMinute"] = "3";
+        Extra["RateLimit:InternalReportsPerCallerPerMinute"] = "40";
+        Extra["RateLimit:InternalUnsignedPerMinute"] = "4";
     }
 }
 
