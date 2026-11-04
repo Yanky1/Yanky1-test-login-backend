@@ -85,6 +85,9 @@ public static class CatalogTracking
         public readonly HashSet<Guid> Products = [], Sellers = [], Brands = [], Categories = [];
         /// <summary>Delivery settings changed for (seller, brand or null = whole account): the refresh job re-derives the delivery options of those listings.</summary>
         public readonly HashSet<(Guid Seller, Guid? Brand)> Refresh = [];
+        /// <summary>Products whose CHILD rows changed (variant, image, FAQ, attribute, option, service details, published answer): the product row is written too, see <see cref="ApplyAsync"/>.</summary>
+        public readonly HashSet<Guid> Children = [];
+        public void Child(Guid productId) { Products.Add(productId); Children.Add(productId); }
         public bool IsEmpty => Products.Count == 0 && Sellers.Count == 0 && Brands.Count == 0 && Categories.Count == 0 && Refresh.Count == 0;
     }
 
@@ -121,17 +124,17 @@ public static class CatalogTracking
                 case Product p:
                     if (e.State != EntityState.Modified || e.Properties.Any(x => x.IsModified && !IgnoredProductColumns.Contains(x.Metadata.Name))) t.Products.Add(p.Id);
                     break;
-                case ProductVariant v: t.Products.Add(v.ProductId); break;
-                case ProductOption o: t.Products.Add(o.ProductId); break;
-                case ProductImage i: t.Products.Add(i.ProductId); break;
-                case ProductAttributeValue a: t.Products.Add(a.ProductId); break;
-                case ProductFaq f: t.Products.Add(f.ProductId); break;
-                case ServiceDetails s: t.Products.Add(s.ProductId); break;
+                case ProductVariant v: t.Child(v.ProductId); break;
+                case ProductOption o: t.Child(o.ProductId); break;
+                case ProductImage i: t.Child(i.ProductId); break;
+                case ProductAttributeValue a: t.Child(a.ProductId); break;
+                case ProductFaq f: t.Child(f.ProductId); break;
+                case ServiceDetails s: t.Child(s.ProductId); break;
                 case ProductQuestion q:
                     {
                         var was = e.State == EntityState.Added ? QuestionState.Hidden : (QuestionState)e.OriginalValues[nameof(ProductQuestion.State)]!;
                         var now = e.State == EntityState.Deleted ? QuestionState.Hidden : q.State;
-                        if (was == QuestionState.Published || now == QuestionState.Published) t.Products.Add(q.ProductId);
+                        if (was == QuestionState.Published || now == QuestionState.Published) t.Child(q.ProductId);
                         break;
                     }
                 case Brand b:
@@ -200,6 +203,18 @@ public static class CatalogTracking
         // delivery settings changed: leave a request for the refresh job (cheap, same transaction; the heavy part runs in the background in chunks)
         foreach (var (seller, brand) in t.Refresh)
             undo.Requests.Add(db.Entry(db.CatalogRefreshRequests.Add(new CatalogRefreshRequest { SellerId = seller, BrandId = brand, CreatedAt = clock.UtcNow() }).Entity));
+        // A change to a child row (variant, image, FAQ, published answer...) also WRITES THE PRODUCT ROW (UpdatedAt). Whether the listing is visible is decided from the product row, and
+        // a racing change of that row (activation, hiding, suspension...) must not be able to slip past a child edit that read the old state: both write the same row, so one of them waits
+        // for the other and then fails the Version / ImageSeq concurrency token (a 409 the caller can retry) instead of committing without the version bump the marketplace needs.
+        var direct = db.ChangeTracker.Entries<Product>().Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted).Select(e => e.Entity.Id).ToHashSet();
+        var touch = t.Children.Where(id => !direct.Contains(id)).ToList();
+        if (touch.Count > 0)
+        {
+            var rows = db.ChangeTracker.Entries<Product>().Where(e => touch.Contains(e.Entity.Id) && e.State == EntityState.Unchanged).Select(e => e.Entity).ToDictionary(p => p.Id);
+            var unloaded = touch.Where(id => !rows.ContainsKey(id) && !db.ChangeTracker.Entries<Product>().Any(e => e.Entity.Id == id)).ToList();
+            foreach (var p in await db.Products.Where(p => unloaded.Contains(p.Id)).ToListAsync(ct)) rows[p.Id] = p;
+            foreach (var p in rows.Values) p.UpdatedAt = clock.UtcNow();
+        }
         if (!await MayBeVisibleAsync(db, await AffectedAsync(db, t, ct), ct)) return;
         await LockCounterAsync(db, ct);
         var ids = await AffectedAsync(db, t, ct);                  // again under the lock: what is committed now decides

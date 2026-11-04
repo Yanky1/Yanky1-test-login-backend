@@ -146,5 +146,92 @@ public class CatalogReviewFixTests(CatalogFactory f) : IClassFixture<CatalogFact
         Assert.Equal("removed", (string)Assert.Single(Decided(rid2))["data"]!["decision"]!);
         Assert.Equal(ProductStatus.Archived, f.WithDb(db => db.Products.AsNoTracking().Single(p => p.Id == s.Product).Status));
     }
+
+    // ---- 4. visibility race -----------------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_child_row_change_writes_the_product_row_so_it_cannot_slip_past_a_racing_change_of_that_row()
+    {
+        // The catalog decides "is this listing visible?" from the product row. A published answer (a child row) that read the row BEFORE a racing change of it (activation, hiding,
+        // a suspension...) must not commit without a version bump: it writes the product row too, so the two serialize and the loser fails the Version token (a retryable 409).
+        var s = await Orders.NewShop(f);
+        var asked = await PostSigned(f, $"/api/internal/v1/products/{s.Product}/questions", new { questionId = "Q-" + Guid.NewGuid().ToString("N"), text = "Is it sturdy?" });
+        var qid = (await Orders.Node(asked))["id"]!.GetValue<Guid>();
+
+        using var scope = f.Services.CreateScope();
+        var db1 = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Data.AppDbContext>();
+        var question = await db1.Questions.FirstAsync(x => x.Id == qid);
+        await db1.Products.FirstAsync(x => x.Id == s.Product);                                           // this context has seen the product row as it is NOW
+        await SetPrice(s.Owner, s.Product, 88);                                                          // ...then somebody else changes the same row (the racing writer)
+        question.Answer = "Yes."; question.State = QuestionState.Published;
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => db1.SaveChangesAsync());            // the stale writer is refused instead of committing silently
+
+        // with a fresh view the same change goes through, writes the product row and bumps the version
+        db1.ChangeTracker.Clear();
+        var v0 = Version(f, s.Product); var up0 = f.WithDb(db => db.Products.AsNoTracking().Single(p => p.Id == s.Product).UpdatedAt);
+        f.Time.Advance(TimeSpan.FromMinutes(1));
+        var again = await db1.Questions.FirstAsync(x => x.Id == qid);
+        again.Answer = "Yes."; again.State = QuestionState.Published;
+        await db1.SaveChangesAsync();
+        Assert.True(Version(f, s.Product) > v0);
+        Assert.True(f.WithDb(db => db.Products.AsNoTracking().Single(p => p.Id == s.Product).UpdatedAt) > up0);
+    }
+
+    // ---- 5. search terms --------------------------------------------------------------------------------------------------------------
+
+    private static string Terms(int n, int len = 5) => string.Join(", ", Enumerable.Range(1, n).Select(i => ("t" + i).PadRight(len, 'x')));
+
+    [Fact]
+    public async Task Search_terms_are_capped_free_of_contact_data_and_published_cleaned()
+    {
+        var s = await Orders.NewShop(f);
+        async Task<HttpResponseMessage> Put(string terms) => await ProdApi.Put(s.Owner, s.Product, d => d["searchTerms"] = terms);
+        async Task Rejected(string terms)
+        {
+            var r = await Put(terms);
+            Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+            Assert.Contains("searchTerms", await r.Content.ReadAsStringAsync());
+        }
+        await Rejected(Terms(21));                                              // at most 20 terms
+        await Rejected(new string('x', 51));                                    // at most 50 characters each
+        await Rejected("mug, write to me@example.com");                         // no e-mail addresses...
+        await Rejected("jane@example.com");
+        await Rejected("mug, +1 (555) 123-4567");                               // ...and no phone numbers
+        await Rejected("555-123-4567");
+        Assert.Equal(HttpStatusCode.OK, (await Put(Terms(20, 8))).StatusCode);                     // exactly 20 terms is fine
+        Assert.Equal(HttpStatusCode.OK, (await Put(new string('y', 50))).StatusCode);              // exactly 50 characters is fine
+        Assert.Equal(HttpStatusCode.OK, (await Put("model 3000, size 12, 2 pack")).StatusCode);    // digits alone are not a phone number
+
+        // control characters are stripped, terms trimmed, duplicates (any case) removed
+        Assert.Equal(HttpStatusCode.OK, (await Put("tea\u0007,   Coffee Cup , coffee cup,\u0001")).StatusCode);
+        Assert.Equal(["tea", "Coffee Cup"], (await Listing(f, s.Product))!["searchTerms"]!.AsArray().Select(x => (string)x!).ToArray());
+    }
+
+    [Fact]
+    public async Task Legacy_search_terms_are_cleaned_when_published()
+    {
+        var s = await Orders.NewShop(f);
+        var legacy = Terms(24) + ", bob@example.com, 555 123 4567, " + new string('z', 60) + ", kept";
+        f.WithDb(db => db.Products.Where(p => p.Id == s.Product).ExecuteUpdate(u => u.SetProperty(p => p.SearchTerms, legacy)));   // written before the rules existed
+        var terms = (await Listing(f, s.Product))!["searchTerms"]!.AsArray().Select(x => (string)x!).ToList();
+        Assert.Equal(20, terms.Count);                                                                   // capped
+        Assert.DoesNotContain(terms, t => t.Contains('@') || t.Contains("555") || t.Length > 50);       // contact data and over-long terms never reach the marketplace
+        Assert.Equal("t1xxx", terms[0]);
+    }
+
+    [Fact]
+    public async Task The_csv_template_separates_search_terms_with_commas_and_imports_validate_them()
+    {
+        var (api, _) = await ProdApi.Approved(f, false);
+        var template = await api.Get("/api/v1/seller/products/csv/template");
+        var text = await template.Content.ReadAsStringAsync();
+        Assert.Contains("mug, coffee cup, tea, ceramic", text);                                          // one term per comma, not "mug cup coffee tea ceramic" (a single term)
+        var ok = await api.JsonBody(await ProdApi.UploadCsv(api, "/api/v1/seller/products/csv/validate", text));
+        Assert.True(ok.GetProperty("rows")[0].GetProperty("ok").GetBoolean());
+        var csv = "title,category,price,quantity,search_terms\nCSV mug,kitchen-dining,10,5,\"mug, call me 555-123-4567\"\n";
+        var bad = await api.JsonBody(await ProdApi.UploadCsv(api, "/api/v1/seller/products/csv/validate", csv));
+        Assert.False(bad.GetProperty("rows")[0].GetProperty("ok").GetBoolean());
+        Assert.Contains(bad.GetProperty("rows")[0].GetProperty("errors").EnumerateArray(), e => e.GetProperty("field").GetString() == "searchTerms");
+    }
 }
 
