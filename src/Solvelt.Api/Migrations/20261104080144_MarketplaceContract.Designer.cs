@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261104060021_MarketplaceContract")]
+    [Migration("20261104080144_MarketplaceContract")]
     partial class MarketplaceContract
     {
         /// <inheritdoc />
@@ -5034,7 +5034,10 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("OrderId");
 
-                    b.HasIndex("TrackingNumber");
+                    b.HasIndex("TrackingNumber")
+                        .IsUnique()
+                        .HasDatabaseName("UX_order_shipments_live_tracking")
+                        .HasFilter("\"Method\" = 'carrier' AND \"DeliveredAt\" IS NULL AND \"TrackingStoppedAt\" IS NULL");
 
                     b.HasIndex("TrackingStoppedAt", "LastTrackingAt");
 
