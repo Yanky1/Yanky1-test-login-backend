@@ -145,4 +145,22 @@ public class OrderEventOrderingTests : IClassFixture<WebhookFactory>
         var other = _f.WithDb(db => db.Outbox.AsNoTracking().Where(m => m.AggregateId == mid2).OrderBy(m => m.OrderKey).ToList());
         Assert.NotEqual(rows[0].SequenceScope, other[0].SequenceScope); Assert.Equal(1, other[0].OrderKey);        // its own sequence
     }
+
+    [Fact]
+    public async Task Many_blocked_events_of_one_order_do_not_starve_the_events_of_other_orders_in_a_dispatch_batch()
+    {
+        var (midA, idA, numberA, sA, lineA) = await PartlyShipped();
+        FailOnly("refund.issued", numberA);
+        await Ok(Act(sA.Owner, idA, "refunds", new { reason = "goodwill", lines = new[] { new { lineId = lineA, quantity = 1 } } }));
+        await Dispatch();                                                                    // the refund fails once and goes into backoff
+        for (var i = 0; i < 26; i++) { await Ok(Act(sA.Owner, idA, "hold", new { note = "n" + i })); await Ok(Act(sA.Owner, idA, "resume")); }   // 52 later events of the same order: all due, all blocked behind the refund
+        var sB = await NewShop(_f);
+        var (midB, idB, numberB, _) = await Place(sB);
+        await Ok(Act(sB.Owner, idB, "accept"));                                              // written after all of them
+        int mark; lock (_f.Calls) mark = _f.Calls.Count;
+        await Dispatch();                                                                    // ONE batch (50): it must not be filled with the blocked events
+        Assert.Contains(Received(mark), x => x.Type == "order.accepted" && x.Number == numberB);
+        _f.Handler = _ => new HttpResponseMessage(HttpStatusCode.OK);
+        _f.Time.Advance(TimeSpan.FromMinutes(5)); await Drain();
+    }
 }
