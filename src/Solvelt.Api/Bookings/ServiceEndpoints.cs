@@ -211,12 +211,23 @@ public static partial class ServiceEndpoints
             return Results.Json(new { providers = members.Select(m => new { membershipId = m.Id, email = m.Email, role = m.Role.ToString(), timeZone = m.TimeZone, eligible = linked.Contains(m.Id) }) });
         }).RequirePermission(Permission.BrandWorkRead);
 
-        // Seller-side view of the same slot engine the marketplace uses: the times a buyer could book right now (for proposing / reschedule / quote times).
-        // Same brand scoping as the rest of the listing; the booking service enforces the window and the per-call day limit.
-        s.MapGet("/{id:guid}/slots", async (Guid id, HttpContext ctx, AppDbContext db, BookingService svc, DateTime? from, DateTime? to, Guid? providerId, string? location, string? postalCode, int? minutes) =>
+        // Seller-side view of the slot engine, for the portal's time pickers.
+        //  - with bookingId: the times THAT booking can be moved to (own duration incl. add-ons, own calendar slot free, notice rules as the real move applies them);
+        //    allowed for whoever may act on the booking (Owner/Admin, a Manager of its brand, its assigned provider).
+        //  - without: the times a buyer could book now. Owner/Admin may ask for anyone; everybody else only for their OWN calendar (same rule as providers/{id}/availability).
+        s.MapGet("/{id:guid}/slots", async (Guid id, HttpContext ctx, AppDbContext db, BookingService svc, DateTime? from, DateTime? to, Guid? providerId, Guid? bookingId, string? location, string? postalCode, int? minutes) =>
         {
             var a = ctx.GetAccess()!;
+            if (bookingId is { } bid)
+            {
+                var bk = await (await db.BookingsForAsync(a)).AsNoTracking().FirstOrDefaultAsync(x => x.Id == bid && x.ProductId == id);
+                if (bk is null || !BookingAccess.CanAct(a, bk)) return Results.NotFound();
+                if (from is null || to is null) return Validation.Invalid("from", "from and to are required.");
+                var mv = await svc.MoveSlotsAsync(bk, from.Value, to.Value);
+                return mv.Ok ? Results.Json(mv.Data, BJson.Opts) : ProviderEndpoints.Problem(mv.Status, mv.Code, mv.Message);
+            }
             if (await LoadService(db, a, id, false) is null) return Results.NotFound();
+            if (a.Role < AccountRole.Admin && providerId != a.MembershipId) return Results.NotFound();
             if (from is null || to is null) return Validation.Invalid("from", "from and to are required.");
             var r = await svc.AvailabilityAsync(id, from.Value, to.Value, providerId, location, postalCode, null, null, minutes, null);
             return r.Ok ? Results.Json(r.Data ?? new { ok = true }, BJson.Opts) : ProviderEndpoints.Problem(r.Status, r.Code, r.Message);
