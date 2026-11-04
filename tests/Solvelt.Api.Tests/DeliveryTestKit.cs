@@ -36,7 +36,7 @@ public static class Dlv
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         var n = await Node(r);
         var w = n["windows"]!.AsArray().OrderBy(x => (string)x!["start"]!).ToList();
-        return new(s, Guid.Parse((string)w[0]!["id"]!), Guid.Parse((string)w[1]!["id"]!));
+        return new(s, Guid.Parse((string)w[0]!["id"]!), Guid.Parse((string)w[Math.Min(1, w.Count - 1)]!["id"]!));
     }
 
     public static async Task<(string Mid, Guid OrderId, JsonNode Body)> PlaceLocal(DShop d, Guid? window = null, DateOnly? date = null, double lat = HomeLat, double lng = HomeLng,

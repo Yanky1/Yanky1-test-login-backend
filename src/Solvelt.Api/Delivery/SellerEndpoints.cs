@@ -97,7 +97,7 @@ public static class DeliverySellerEndpoints
             foreach (var z in zones)
             {
                 var row = z.Id is { } zid ? s.Zones.FirstOrDefault(x => x.Id == zid) : null;
-                if (row is null) { row = new DeliveryZone { SettingId = s.Id, SellerId = a.SellerId }; s.Zones.Add(row); }
+                if (row is null) { row = new DeliveryZone { SettingId = s.Id, SellerId = a.SellerId }; db.DeliveryZones.Add(row); }
                 row.Name = z.Name!.Trim(); row.Country = (z.Country ?? "US").Trim().ToUpperInvariant(); row.OriginLat = z.OriginLat; row.OriginLng = z.OriginLng; row.RadiusKm = z.RadiusKm;
                 row.PostcodesJson = JsonSerializer.Serialize((z.Postcodes ?? []).Select(p => p.Trim()).Where(p => p.Length > 0).Distinct().ToList());
                 row.PolygonJson = z.Polygon is { Count: >= 3 } ? JsonSerializer.Serialize(z.Polygon) : null;
@@ -113,7 +113,7 @@ public static class DeliverySellerEndpoints
             foreach (var w in windows)
             {
                 var row = w.Id is { } wid ? s.Windows.FirstOrDefault(x => x.Id == wid) : null;
-                if (row is null) { row = new DeliveryWindow { SettingId = s.Id, SellerId = a.SellerId }; s.Windows.Add(row); }
+                if (row is null) { row = new DeliveryWindow { SettingId = s.Id, SellerId = a.SellerId }; db.DeliveryWindows.Add(row); }
                 row.StartMinutes = Minutes(w.Start)!.Value; row.EndMinutes = Minutes(w.End)!.Value; row.Capacity = w.Capacity!.Value; row.DaysMask = MaskOf(w.Days ?? [1, 2, 3, 4, 5]); row.Active = w.Active ?? true;
             }
             try { await db.SaveChangesAsync(); }
