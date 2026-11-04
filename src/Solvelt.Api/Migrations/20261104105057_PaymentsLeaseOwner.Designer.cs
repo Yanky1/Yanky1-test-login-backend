@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261104102140_PaymentsLeaseOwner")]
+    [Migration("20261104105057_PaymentsLeaseOwner")]
     partial class PaymentsLeaseOwner
     {
         /// <inheritdoc />
@@ -1373,6 +1373,31 @@ namespace Solvelt.Api.Migrations
                             Id = 1,
                             Value = 0L
                         });
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.CatalogRefreshRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProcessedAt", "CreatedAt");
+
+                    b.ToTable("catalog_refresh_requests", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.Category", b =>
@@ -3467,6 +3492,10 @@ namespace Solvelt.Api.Migrations
                     b.Property<string>("BulletsJson")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("CatalogDeliveryState")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<bool>("CatalogEverListed")
                         .HasColumnType("boolean");
