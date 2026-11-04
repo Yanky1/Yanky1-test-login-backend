@@ -238,29 +238,37 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     {
         var d = ev.Data.Deserialize<DisputeData>(J)!;
         if (string.IsNullOrWhiteSpace(d.DisputeId) || d.DisputeId.Length > 100) return IngestResult.Err(422, "invalid_event", "disputeId is required.");
-        var existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId);
-        Guid seller; string currency; Guid? orderId = existing?.OrderId, bookingId = existing?.BookingId;
-        if (existing is not null) { seller = existing.SellerId; currency = existing.Currency; }
+        // One Stripe dispute can span several seller orders: the key is (disputeId, seller order) and every event carries that seller order's share.
+        PaymentDispute? existing; Guid seller; string currency; Guid? orderId = null, bookingId = null; long? sale = null;
+        if (!string.IsNullOrWhiteSpace(d.MarketplaceOrderId))
+        {
+            var orders = await FindOrders(d.MarketplaceOrderId, d.SellerOrderNumber);
+            if (orders.Count == 0) return IngestResult.Err(404, "order_not_found", "No such order.");
+            if (orders.Count > 1) return IngestResult.Err(422, "seller_order_required", "The marketplace order has several seller orders: send sellerOrderNumber (amountCents and feeCents are that seller order's share).");
+            var o = orders[0];
+            seller = o.SellerId; currency = o.Currency; orderId = o.Id; sale = o.ItemsCents - o.DiscountCents + o.ShippingCents;
+            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.OrderId == o.Id);
+        }
+        else if (!string.IsNullOrWhiteSpace(d.MarketplaceBookingId))
+        {
+            var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == d.MarketplaceBookingId);
+            if (b is null) return IngestResult.Err(404, "booking_not_found", "No such booking.");
+            seller = b.SellerId; bookingId = b.Id;
+            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.BookingId == b.Id);
+            currency = existing?.Currency ?? (ValidCurrency(d.Currency) ? d.Currency! : "USD");
+        }
         else
         {
-            if (!string.IsNullOrWhiteSpace(d.MarketplaceOrderId))
-            {
-                var orders = await FindOrders(d.MarketplaceOrderId, d.SellerOrderNumber);
-                if (orders.Count == 0) return IngestResult.Err(404, "order_not_found", "No such order.");
-                if (orders.Count > 1) return IngestResult.Err(422, "ambiguous_order", "The marketplace order has several seller orders: send sellerOrderNumber.");
-                seller = orders[0].SellerId; currency = orders[0].Currency; orderId = orders[0].Id;
-            }
-            else if (!string.IsNullOrWhiteSpace(d.MarketplaceBookingId))
-            {
-                var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == d.MarketplaceBookingId);
-                if (b is null) return IngestResult.Err(404, "booking_not_found", "No such booking.");
-                seller = b.SellerId; bookingId = b.Id;
-                currency = ValidCurrency(d.Currency) ? d.Currency! : "USD";
-            }
-            else return IngestResult.Err(422, "invalid_event", "marketplaceOrderId or marketplaceBookingId is required.");
+            // no order reference: accepted only as a status update of a dispute that is already known by id alone
+            var rows = await db.PaymentDisputes.Where(x => x.ExternalId == d.DisputeId).Take(2).ToListAsync();
+            if (rows.Count > 1) return IngestResult.Err(422, "seller_order_required", "The dispute covers several seller orders: send marketplaceOrderId and sellerOrderNumber.");
+            if (rows.Count == 0) return IngestResult.Err(422, "invalid_event", "marketplaceOrderId or marketplaceBookingId is required.");
+            existing = rows[0]; seller = existing.SellerId; currency = existing.Currency; orderId = existing.OrderId; bookingId = existing.BookingId;
         }
+        if (existing is not null) { seller = existing.SellerId; currency = existing.Currency; }
         var amount = existing?.AmountCents ?? d.AmountCents ?? 0;
         if (amount <= 0 || amount > MaxCents) return IngestResult.Err(422, "invalid_amount", "amountCents must be a positive integer.");
+        if (existing is null && sale is { } s && amount > s) return IngestResult.Err(422, "exceeds_sale", "amountCents is above this seller order's sale (items plus shipping).");
         var fee = existing?.FeeCents ?? d.FeeCents ?? opt.Value.DefaultDisputeFeeCents;
         if (fee < 0 || fee > MaxCents) return IngestResult.Err(422, "invalid_amount", "feeCents must be a non-negative integer.");
         var status = (d.Status ?? (ev.Type == "dispute.created" ? "needs_response" : existing?.Status ?? "needs_response")).ToLowerInvariant();
@@ -269,20 +277,13 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         var now = time.UtcNow();
         var evAt = d.CreatedAt ?? now;
         await ApplyDisputeAsync(existing, d.DisputeId, seller, currency, orderId, bookingId, amount, fee, status, d.Reason, d.EvidenceDueBy, evAt, now);
-        return IngestResult.Ok(new { disputeId = d.DisputeId, status });
+        await SyncUnallocatedAsync(d.DisputeId, now);   // a Stripe dispute that waited for its allocation is linked / cleared once the shares add up
+        return IngestResult.Ok(new { disputeId = d.DisputeId, status, sellerOrderId = orderId });
     }
 
-    /// <summary>Shared by the marketplace events and the Stripe charge.dispute.* webhooks. Order independent: the debit is posted whatever event comes first.</summary>
-    public async Task ApplyDisputeAsync(PaymentDispute? row, string externalId, Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string status,
-        string? reason, DateTime? evidenceDue, DateTime eventAt, DateTime now)
+    /// <summary>The status / evidence part of a dispute update: event-time ordered, and a closed dispute is never reopened.</summary>
+    public static void ApplyDisputeStatus(PaymentDispute row, string status, string? reason, DateTime? evidenceDue, DateTime eventAt, DateTime now)
     {
-        var isNew = row is null;
-        row ??= db.PaymentDisputes.Local.FirstOrDefault(x => x.ExternalId == externalId);
-        if (row is null)
-        {
-            row = new PaymentDispute { SellerId = seller, ExternalId = externalId, OrderId = orderId, BookingId = bookingId, Currency = currency, AmountCents = amount, FeeCents = fee, CreatedAt = now, EventAt = DateTime.MinValue };
-            db.PaymentDisputes.Add(row);
-        }
         var closedAlready = row.Status is "won" or "lost" or "warning_closed";
         if (eventAt >= row.EventAt && !(closedAlready && status is "needs_response" or "under_review" or "inquiry" or "inquiry_review"))
         {
@@ -291,24 +292,112 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             if (evidenceDue is not null) row.EvidenceDueBy = evidenceDue;
             if (status is "won" or "lost" or "warning_closed") row.ClosedAt ??= now;
         }
+    }
+
+    /// <summary>Shared by the marketplace events and the Stripe charge.dispute.* webhooks (single-seller charges). Order independent: the debit is posted whatever event comes first,
+    /// and under one idempotency key per (dispute, seller order), so the two sources can never debit twice.</summary>
+    public async Task ApplyDisputeAsync(PaymentDispute? row, string externalId, Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string status,
+        string? reason, DateTime? evidenceDue, DateTime eventAt, DateTime now)
+    {
+        var isNew = row is null;
+        row ??= db.PaymentDisputes.Local.FirstOrDefault(x => x.ExternalId == externalId && x.OrderId == orderId && x.BookingId == bookingId);
+        if (row is null)
+        {
+            row = new PaymentDispute { SellerId = seller, ExternalId = externalId, OrderId = orderId, BookingId = bookingId, Currency = currency, AmountCents = amount, FeeCents = fee, CreatedAt = now, EventAt = DateTime.MinValue };
+            db.PaymentDisputes.Add(row);
+        }
+        ApplyDisputeStatus(row, status, reason, evidenceDue, eventAt, now);
+        // a multi-seller Stripe event that arrived before this allocation only recorded its state: a newer Stripe state (won, lost, ...) applies to the new row too
+        if (isNew && await db.UnallocatedDisputes.AsNoTracking().FirstOrDefaultAsync(x => x.ExternalId == externalId) is { } waiting)
+            ApplyDisputeStatus(row, waiting.Status, waiting.Reason, waiting.EvidenceDueBy, waiting.EventAt, now);
         // An inquiry (Stripe warning_*) moves no money at Stripe, so nothing is debited for it or for its warning_closed; the debit + fee are posted once,
         // the first time the dispute reaches a state in which money moves (escalation to needs_response, or a marketplace event that is already past that).
         var moves = row.Status is not ("inquiry" or "inquiry_review" or "warning_closed");
+        var sfx = "";
         if (moves)
         {
-            if (isNew || !await ledger.ExistsAsync($"dispute:{externalId}")) await TrackNegativeAsync(seller, currency);
-            await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, row.Status);
+            sfx = await KeySuffixAsync(externalId, orderId, bookingId);
+            if (isNew || !await ledger.ExistsAsync($"dispute:{externalId}{sfx}")) await TrackNegativeAsync(seller, currency);
+            await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, sfx, row.Status);
         }
-        if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
-        if (row.Status == "inquiry" && isNew) _inquiryMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
+        if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, externalId + sfx, amount, currency, row.EvidenceDueBy));
+        if (row.Status == "inquiry" && isNew) _inquiryMails.Add((seller, externalId + ":" + (orderId ?? bookingId), amount, currency, row.EvidenceDueBy));
     }
 
-    private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string status)
+    /// <summary>Rows booked before the key became (dispute, seller order) keep their original idempotency keys ("dispute:{id}"), so a replay never posts twice.</summary>
+    private async Task<string> KeySuffixAsync(string dp, Guid? orderId, Guid? bookingId)
     {
-        await ledger.PostAsync(seller, currency, "dispute", $"dispute:{externalId}", "Dispute", [new(LedgerAccount.Platform, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, externalId);
-        await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId);
+        var legacy = $"dispute:{dp}";
+        var old = await db.LedgerJournals.AsNoTracking().AnyAsync(j => j.IdempotencyKey == legacy && j.OrderId == orderId && j.BookingId == bookingId);
+        return old ? "" : ":" + (orderId ?? bookingId);
+    }
+
+    private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string sfx, string status)
+    {
+        await ledger.PostAsync(seller, currency, "dispute", $"dispute:{externalId}{sfx}", "Dispute", [new(LedgerAccount.Platform, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, externalId);
+        await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}{sfx}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId);
         if (status == "won")
-            await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
+            await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}{sfx}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
+    }
+
+    // ---- Stripe disputes on a charge that covers several seller orders ----------------------------------------------------------
+    private async Task<long> AllocatedAsync(string dp)
+    {
+        var saved = await db.PaymentDisputes.AsNoTracking().Where(x => x.ExternalId == dp).Select(x => new { x.Id, x.AmountCents }).ToListAsync();
+        var ids = saved.Select(x => x.Id).ToHashSet();
+        return saved.Sum(x => x.AmountCents) + db.PaymentDisputes.Local.Where(x => x.ExternalId == dp && !ids.Contains(x.Id)).Sum(x => x.AmountCents);
+    }
+
+    /// <summary>Records what Stripe says about a multi-seller dispute WITHOUT moving money: status and evidence date go to every allocated row, and an open "unallocated" item
+    /// (plus a reconciliation flag staff already look at) exists while the allocated shares are below the Stripe amount.</summary>
+    public async Task<string> RecordStripeMultiSellerAsync(string dp, List<PaymentDispute> rows, string? marketplaceOrderId, string? chargeRef, string currency, long amount, string status,
+        string? reason, DateTime? due, DateTime eventAt, DateTime now)
+    {
+        foreach (var r in rows) ApplyDisputeStatus(r, status, reason, due, eventAt, now);
+        var item = db.UnallocatedDisputes.Local.FirstOrDefault(x => x.ExternalId == dp) ?? await db.UnallocatedDisputes.FirstOrDefaultAsync(x => x.ExternalId == dp);
+        if (item is null)
+        {
+            if (await AllocatedAsync(dp) >= amount) return "applied_multi";
+            item = new UnallocatedDispute { ExternalId = dp, MarketplaceOrderId = marketplaceOrderId, ChargeRef = chargeRef, Currency = currency, Status = status, Reason = reason, EvidenceDueBy = due, EventAt = eventAt, CreatedAt = now };
+            db.UnallocatedDisputes.Add(item);
+        }
+        else
+        {
+            var closed = item.Status is "won" or "lost" or "warning_closed";
+            if (eventAt >= item.EventAt && !(closed && status is "needs_response" or "under_review" or "inquiry" or "inquiry_review"))
+            {
+                item.Status = status; item.EventAt = eventAt;
+                if (reason is not null) item.Reason = reason;
+                if (due is not null) item.EvidenceDueBy = due;
+            }
+        }
+        item.AmountCents = amount; item.Currency = currency; item.MarketplaceOrderId ??= marketplaceOrderId; item.ChargeRef ??= chargeRef;
+        await SyncUnallocatedAsync(dp, now);
+        return rows.Count > 0 ? "applied_multi" : "unallocated";
+    }
+
+    /// <summary>Opens or clears the unallocated item (and its flag) from the shares allocated so far. A staff resolution is final.</summary>
+    public async Task SyncUnallocatedAsync(string dp, DateTime now)
+    {
+        var item = db.UnallocatedDisputes.Local.FirstOrDefault(x => x.ExternalId == dp) ?? await db.UnallocatedDisputes.FirstOrDefaultAsync(x => x.ExternalId == dp);
+        if (item is null) return;
+        var allocated = await AllocatedAsync(dp);
+        item.AllocatedCents = allocated; item.UpdatedAt = now;
+        var open = allocated < item.AmountCents;
+        var byStaff = item.Note?.StartsWith("staff", StringComparison.Ordinal) == true;
+        if (open && item.ResolvedAt is null && item.FlagId is not null) return;
+        if (open && !byStaff)
+        {
+            var flag = new ReconciliationFlag { Kind = "dispute_unallocated", CreatedAt = now,
+                Detail = $"Stripe dispute {dp}{(item.MarketplaceOrderId is { } mo ? $" on marketplace order {mo}" : "")} covers several seller orders: Stripe reports {item.AmountCents} {item.Currency} (minor units), {allocated} are allocated to seller orders. No seller was debited; waiting for the marketplace's per-seller-order dispute.* events." };
+            db.ReconciliationFlags.Add(flag);
+            item.FlagId = flag.Id; item.ResolvedAt = null; item.Note = null;
+        }
+        else if (!open && item.ResolvedAt is null)
+        {
+            item.ResolvedAt = now; item.Note = $"allocated {allocated} of {item.AmountCents}";
+            if (item.FlagId is { } fid && await db.ReconciliationFlags.FirstOrDefaultAsync(f => f.Id == fid && f.ResolvedAt == null) is { } f) f.ResolvedAt = now;
+        }
     }
 
     private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _disputeMails = [];

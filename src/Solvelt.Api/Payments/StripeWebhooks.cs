@@ -199,39 +199,39 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
     private async Task<string> DisputeEvent(JsonElement o, DateTime created)
     {
         var did = Str(o, "id"); if (did is null) return "invalid";
-        var existing = await db.PaymentDisputes.FirstOrDefaultAsync(d => d.ExternalId == did);
+        var rows = await db.PaymentDisputes.Where(d => d.ExternalId == did).ToListAsync();   // one row per seller order the marketplace allocated a share to
         var amount = Long(o, "amount") ?? 0; var cur = (Str(o, "currency") ?? "usd").ToUpperInvariant();
         var raw = (Str(o, "status") ?? "needs_response").ToLowerInvariant();
         // Stripe inquiries (warning_*) are early warnings that move no money: kept as "inquiry" without a debit or fee
         var status = raw switch { "warning_needs_response" => "inquiry", "warning_under_review" => "inquiry_review", "charge_refunded" => "warning_closed", _ => raw };
         if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry" or "inquiry_review")) status = "needs_response";
         var due = o.TryGetProperty("evidence_details", out var ev) ? Unix(ev, "due_by") : null;
-        Guid seller; Guid? orderId = existing?.OrderId, bookingId = existing?.BookingId; string currency = existing?.Currency ?? cur;
-        if (existing is not null) seller = existing.SellerId;
+        var charge = Str(o, "charge") ?? Str(o, "payment_intent");
+        var refs = new[] { Str(o, "charge"), Str(o, "payment_intent") }.Where(x => !string.IsNullOrEmpty(x)).ToList();
+        var pr = await db.PaymentReferences.AsNoTracking().Where(r => refs.Contains(r.Ref)).OrderBy(r => r.CapturedAt).FirstOrDefaultAsync();
+        List<SellerOrder> orders = []; Booking? booking = null;
+        if (pr?.MarketplaceOrderId is { } mo) orders = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mo).ToListAsync();
+        else if (pr?.MarketplaceBookingId is { } mb) booking = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == mb);
+        var now = time.UtcNow();
+        // One charge, several seller orders: Stripe cannot say how the dispute splits, so it never debits anybody. It only records status / evidence date on the rows the marketplace
+        // already allocated, and keeps a staff-visible item open while the allocated shares are below the Stripe amount. The money comes from the marketplace's per-seller-order events.
+        if (orders.Count > 1 || rows.Count > 1)
+        {
+            if (amount <= 0) return "invalid";
+            return await ingest.RecordStripeMultiSellerAsync(did, rows, pr?.MarketplaceOrderId, charge, rows.FirstOrDefault()?.Currency ?? orders.FirstOrDefault()?.Currency ?? cur, amount, status, Str(o, "reason"), due, created, now);
+        }
+        PaymentDispute? existing = null; Guid seller; Guid? orderId = null, bookingId = null; var currency = cur;
+        if (orders.Count == 1) { existing = rows.FirstOrDefault(r => r.OrderId == orders[0].Id); seller = orders[0].SellerId; orderId = orders[0].Id; currency = orders[0].Currency; }
+        else if (booking is not null) { existing = rows.FirstOrDefault(r => r.BookingId == booking.Id); seller = booking.SellerId; bookingId = booking.Id; }
+        else if (rows.Count == 1) { existing = rows[0]; seller = existing.SellerId; orderId = existing.OrderId; bookingId = existing.BookingId; currency = existing.Currency; }
         else
         {
-            var refs = new[] { Str(o, "charge"), Str(o, "payment_intent") }.Where(x => !string.IsNullOrEmpty(x)).ToList();
-            var pr = await db.PaymentReferences.AsNoTracking().Where(r => refs.Contains(r.Ref)).OrderBy(r => r.CapturedAt).FirstOrDefaultAsync();
-            Guid? s = null;
-            if (pr?.MarketplaceOrderId is { } mo)
-            {
-                var orders = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mo).ToListAsync();
-                if (orders.Count == 1) { s = orders[0].SellerId; orderId = orders[0].Id; currency = orders[0].Currency; }
-            }
-            else if (pr?.MarketplaceBookingId is { } mb)
-            {
-                var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == mb);
-                if (b is not null) { s = b.SellerId; bookingId = b.Id; }
-            }
-            if (s is null)
-            {
-                db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "dispute_unattributed", Detail = $"Stripe dispute {did} could not be matched to exactly one seller order/booking (charge/payment intent unknown or shared by several sellers).", CreatedAt = time.UtcNow() });
-                return "flagged_unattributed";
-            }
-            seller = s.Value;
+            db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "dispute_unattributed", Detail = $"Stripe dispute {did} could not be matched to a seller order/booking (charge/payment intent unknown).", CreatedAt = now });
+            return "flagged_unattributed";
         }
+        if (existing is not null) { seller = existing.SellerId; currency = existing.Currency; orderId = existing.OrderId; bookingId = existing.BookingId; }
         if (amount <= 0) return "invalid";
-        await ingest.ApplyDisputeAsync(existing, did, seller, currency, orderId, bookingId, amount, existing?.FeeCents ?? opt.Value.DefaultDisputeFeeCents, status, Str(o, "reason"), due, created, time.UtcNow());
+        await ingest.ApplyDisputeAsync(existing, did, seller, currency, orderId, bookingId, amount, existing?.FeeCents ?? opt.Value.DefaultDisputeFeeCents, status, Str(o, "reason"), due, created, now);
         return "applied";
     }
 }
