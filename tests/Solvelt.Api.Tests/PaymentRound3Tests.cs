@@ -228,4 +228,19 @@ public class PaymentRound3Tests
         });
         Assert.True((await Pay.Bal(f, s.Seller)).Negative);
     }
+
+    [Fact]
+    public async Task The_ledger_reference_filter_matches_order_and_booking_numbers_over_every_row_and_stays_inside_the_account()
+    {
+        using var f = new PayFactory();
+        var s = await Orders.NewShop(f); var other = await Orders.NewShop(f);
+        var a = await Pay.Paid(s); var b = await Pay.Paid(s); var c = await Pay.Paid(other);
+        var all = await Pay.Ok(await s.Owner.Get("/api/v1/seller/payments/ledger"));
+        Assert.Equal(2, all["items"]!.AsArray().Count);
+        var one = await Pay.Ok(await s.Owner.Get($"/api/v1/seller/payments/ledger?reference={a.Number.ToLower()}"));      // case-insensitive
+        Assert.Equal(a.Number, (string)Assert.Single(one["items"]!.AsArray())!["orderNumber"]!);
+        Assert.Equal(1, (int)one["total"]!);
+        Assert.Empty((await Pay.Ok(await s.Owner.Get($"/api/v1/seller/payments/ledger?reference={c.Number}")))["items"]!.AsArray());   // another account's number finds nothing
+        Assert.Empty((await Pay.Ok(await s.Owner.Get("/api/v1/seller/payments/ledger?reference=NOPE-0")))["items"]!.AsArray());
+    }
 }

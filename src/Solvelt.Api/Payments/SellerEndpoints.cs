@@ -42,8 +42,14 @@ public static class SellerPaymentEndpoints
         }).ToList();
     }
 
-    public static IQueryable<LedgerJournal> Filter(IQueryable<LedgerJournal> q, string? type, DateTime? from, DateTime? to, Guid? orderId, Guid? bookingId)
+    public static IQueryable<LedgerJournal> Filter(AppDbContext db, IQueryable<LedgerJournal> q, string? type, DateTime? from, DateTime? to, Guid? orderId, Guid? bookingId, string? reference = null)
     {
+        // reference: part of an order or booking NUMBER, matched over every row of the account (not just the page the client has loaded)
+        if (!string.IsNullOrWhiteSpace(reference))
+        {
+            var r = reference.Trim().ToLower();
+            q = q.Where(j => (j.OrderId != null && db.Orders.Any(o => o.Id == j.OrderId && o.Number.ToLower().Contains(r))) || (j.BookingId != null && db.Bookings.Any(b => b.Id == j.BookingId && b.Number.ToLower().Contains(r))));
+        }
         if (!string.IsNullOrWhiteSpace(type)) q = q.Where(j => j.Type == type);
         if (from is { } f) q = q.Where(j => j.CreatedAt >= f.Date);
         if (to is { } t) q = q.Where(j => j.CreatedAt < t.Date.AddDays(1));
@@ -85,11 +91,11 @@ public static class SellerPaymentEndpoints
         });
 
         // ---- ledger ----
-        grp.MapGet("/ledger", async (HttpContext ctx, AppDbContext db, string? type, DateTime? from, DateTime? to, Guid? orderId, Guid? bookingId, int? page, int? pageSize) =>
+        grp.MapGet("/ledger", async (HttpContext ctx, AppDbContext db, string? type, DateTime? from, DateTime? to, Guid? orderId, Guid? bookingId, string? reference, int? page, int? pageSize) =>
         {
             var a = ctx.GetAccess()!;
             var (p, size) = AdminHttp.Paging(page, pageSize);
-            var q = Filter(db.LedgerJournals.AsNoTracking().Where(j => j.SellerId == a.SellerId), type, from, to, orderId, bookingId);
+            var q = Filter(db, db.LedgerJournals.AsNoTracking().Where(j => j.SellerId == a.SellerId), type, from, to, orderId, bookingId, reference);
             var total = await q.CountAsync();
             var rows = await q.Include(j => j.Entries).OrderByDescending(j => j.CreatedAt).ThenByDescending(j => j.Id).Skip((p - 1) * size).Take(size).ToListAsync();
             return Results.Ok(new { total, page = p, pageSize = size, items = await Rows(db, rows) });

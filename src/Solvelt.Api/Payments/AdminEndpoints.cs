@@ -42,7 +42,7 @@ public static class PaymentAdminEndpoints
         {
             if (!await db.Sellers.AnyAsync(s => s.Id == id)) return Results.NotFound();
             var (pg, size) = AdminHttp.Paging(page, pageSize);
-            var q = SellerPaymentEndpoints.Filter(db.LedgerJournals.AsNoTracking().Where(j => j.SellerId == id), type, from, to, orderId, bookingId);
+            var q = SellerPaymentEndpoints.Filter(db, db.LedgerJournals.AsNoTracking().Where(j => j.SellerId == id), type, from, to, orderId, bookingId);
             var rows = await q.Include(j => j.Entries).OrderByDescending(j => j.CreatedAt).ThenByDescending(j => j.Id).Skip((pg - 1) * size).Take(size).ToListAsync();
             return Results.Ok(new
             {
