@@ -109,15 +109,18 @@ public class OutboxSink
 /// <summary>Writes outbound events. Call <see cref="Enqueue"/> BEFORE the SaveChanges that persists the state change: both commit in one transaction.</summary>
 public class Outbox(AppDbContext db, TimeProvider time)
 {
-    public void Enqueue(string type, Guid sellerId, string aggregateId, object data)
+    /// <param name="orderKey">Optional per-aggregate ordering key: the dispatcher never sends a message while an older one (smaller key) of the same aggregate is still pending.</param>
+    public OutboxMessage Enqueue(string type, Guid? sellerId, string aggregateId, object data, long? orderKey = null)
     {
         var id = Guid.NewGuid();
         var now = time.UtcNow();
-        db.Outbox.Add(new OutboxMessage
+        var m = new OutboxMessage
         {
-            Id = id, EventType = type, SellerId = sellerId, AggregateId = aggregateId, CreatedAt = now, NextAttemptAt = now,
+            Id = id, EventType = type, SellerId = sellerId, AggregateId = aggregateId, OrderKey = orderKey, CreatedAt = now, NextAttemptAt = now,
             PayloadJson = OrderJson.Ser(new { id, type, createdAt = now, data })
-        });
+        };
+        db.Outbox.Add(m);
+        return m;
     }
 }
 
@@ -134,6 +137,18 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
         var done = 0;
         foreach (var candidate in due)
         {
+            // per-aggregate ordering (listing events): never send version N while an older version of the same listing is still pending (retrying, leased or in backoff)
+            if (candidate.OrderKey is { } key)
+            {
+                if (await db.Outbox.AnyAsync(x => x.AggregateId == candidate.AggregateId && x.OrderKey < key && x.Status == OutboxStatus.Pending, ct)) continue;
+                // a newer version of the listing already went out (this one was re-queued after it died): it is obsolete, never send it
+                if (await db.Outbox.AnyAsync(x => x.AggregateId == candidate.AggregateId && x.OrderKey > key && x.Status == OutboxStatus.Delivered, ct))
+                {
+                    var cid = candidate.Id;
+                    await db.Outbox.Where(x => x.Id == cid && x.Status == OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, OutboxStatus.Dead).SetProperty(x => x.LastError, "superseded by a newer version"), ct);
+                    continue;
+                }
+            }
             // claim atomically: only the dispatcher whose UPDATE touches the row sends it (lease expires if that instance dies mid-send)
             var id = candidate.Id;
             var lease = time.UtcNow().AddMinutes(2);

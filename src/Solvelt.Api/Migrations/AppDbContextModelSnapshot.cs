@@ -220,6 +220,64 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("application_assignments", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Admin.ContentReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DecidedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Decision")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<Guid>("ModerationReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ReportId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("ReporterRef")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("TargetRef")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ModerationReportId");
+
+                    b.HasIndex("ReportId")
+                        .IsUnique();
+
+                    b.ToTable("content_reports", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Admin.JobRun", b =>
                 {
                     b.Property<string>("Name")
@@ -1292,6 +1350,26 @@ namespace Solvelt.Api.Migrations
                     b.HasIndex("MembershipId", "StartUtc");
 
                     b.ToTable("calendar_blocks", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.CatalogCounter", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Value")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("catalog_counter", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Value = 0L
+                        });
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.Category", b =>
@@ -2774,6 +2852,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime>("NextAttemptAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("OrderKey")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("PayloadJson")
                         .IsRequired()
                         .HasColumnType("text");
@@ -2787,6 +2868,8 @@ namespace Solvelt.Api.Migrations
                         .HasColumnType("character varying(12)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("AggregateId", "OrderKey");
 
                     b.HasIndex("Status", "NextAttemptAt");
 
@@ -3378,6 +3461,23 @@ namespace Solvelt.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("CatalogEverListed")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("CatalogListed")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("CatalogStockState")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("CatalogUnlistReason")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<long>("CatalogVersion")
+                        .HasColumnType("bigint");
+
                     b.Property<Guid?>("CategoryId")
                         .HasColumnType("uuid");
 
@@ -3543,6 +3643,10 @@ namespace Solvelt.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BrandId");
+
+                    b.HasIndex("CatalogVersion")
+                        .IsUnique()
+                        .HasFilter("\"CatalogVersion\" > 0");
 
                     b.HasIndex("CategoryId");
 
@@ -3720,6 +3824,10 @@ namespace Solvelt.Api.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<Guid>("ProductId")
                         .HasColumnType("uuid");
 
@@ -3737,6 +3845,9 @@ namespace Solvelt.Api.Migrations
                         .HasColumnType("character varying(1000)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExternalId")
+                        .IsUnique();
 
                     b.HasIndex("ProductId");
 

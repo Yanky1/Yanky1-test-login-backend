@@ -90,6 +90,17 @@ public class Product
     public bool IsReady { get; set; }
     /// <summary>Optimistic concurrency token (incremented by the application on every main-document save; portable across SQLite/PostgreSQL).</summary>
     public int Version { get; set; } = 1;
+    // ---- marketplace catalog feed (see Catalog/ and docs/CATALOG.md); maintained ONLY by CatalogTracking, never by endpoints ----
+    /// <summary>Monotonic, globally unique version of this listing's public catalog document (0 = never listed). Bumped in the same transaction as every relevant change.</summary>
+    public long CatalogVersion { get; set; }
+    /// <summary>Whether the listing was visible to the marketplace as of <see cref="CatalogVersion"/>.</summary>
+    public bool CatalogListed { get; set; }
+    /// <summary>True once the listing has been visible at least once: from then on an unlisting is reported by the feed (as a tombstone).</summary>
+    public bool CatalogEverListed { get; set; }
+    /// <summary>Why the listing is not visible (not_active, archived, seller_suspended, moderated, brand_removed); null while listed.</summary>
+    public string? CatalogUnlistReason { get; set; }
+    /// <summary>Availability signature (per variant) as of the last stock-driven version; null = unknown, the next stock refresh bumps once.</summary>
+    public string? CatalogStockState { get; set; }
     /// <summary>Concurrency token bumped by every image add/remove: parallel uploads can't both pass the 9-image check.</summary>
     public int ImageSeq { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -174,6 +185,8 @@ public class ProductQuestion
     public Guid ProductId { get; set; }
     public Guid SellerId { get; set; }
     public string AskerName { get; set; } = "";
+    /// <summary>The marketplace's questionId (idempotency key of POST /api/internal/v1/products/{id}/questions); null for dev/test questions.</summary>
+    public string? ExternalId { get; set; }
     public string Text { get; set; } = "";
     public string? Answer { get; set; }
     public QuestionState State { get; set; } = QuestionState.Pending;
@@ -193,4 +206,11 @@ public class SkuClaim
     public string Sku { get; set; } = "";
     public Guid ProductId { get; set; }
     public Guid? VariantId { get; set; }
+}
+
+/// <summary>Single-row counter that hands out catalog versions. Incrementing it takes the row lock until commit, so versions become visible in version order (feed cursors never skip).</summary>
+public class CatalogCounter
+{
+    public int Id { get; set; } = 1;
+    public long Value { get; set; }
 }

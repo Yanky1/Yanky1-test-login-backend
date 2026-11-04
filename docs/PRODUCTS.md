@@ -71,3 +71,8 @@ Columns: `sku,title,brand,category,condition,price,compare_at_price,quantity,bar
 * **Quick edit** requires `version` (400 otherwise).
 * **Images:** JPEG output ends at the first end-of-image marker (appended bytes are dropped; a JPEG without one is rejected); PNG keeps only an allow-list of chunks.
 * **CSV import** saves row by row; a SKU taken in the meantime is reported as a row error instead of a 500.
+
+## Marketplace catalog feed
+The buyer marketplace reads Active products and services of Approved sellers through the signed catalog feed (`GET /api/internal/v1/catalog/listings`, resumable by a per-listing `CatalogVersion`,
+plus `listing.upserted` / `listing.unlisted` events, images, categories and brands) and sends buyer questions with `POST /api/internal/v1/products/{id}/questions`. Details: `docs/CATALOG.md`.
+Product endpoints are unchanged; `Product.CatalogVersion/CatalogListed/CatalogEverListed/CatalogUnlistReason/CatalogStockState` are maintained only by the SaveChanges hook (`Catalog/CatalogTracking.cs`).
