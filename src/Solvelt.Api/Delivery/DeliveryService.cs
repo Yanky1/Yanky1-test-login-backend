@@ -17,11 +17,13 @@ public class DeliveryOptions
     public int LocationRetentionHours { get; set; } = 24;
     public int EtaEventSeconds { get; set; } = 60;
     public int MaxProofBytes { get; set; } = 8 * 1024 * 1024;
+    /// <summary>Key that signs proof-of-delivery URLs. Deliberately NOT the marketplace-shared Orders secret (whoever holds that could mint any expiry). Required outside Development/Testing.</summary>
+    public string ProofUrlKey { get; set; } = "";
 }
 
 /// <summary>Eligibility, booking, dispatch (assign / routes / optimize / convert), route start and the tracking + outbox events of local deliveries.</summary>
 public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox, TimeProvider time, CapacityService capacity, IRouteOptimizer optimizer,
-    OrderNotifier notifier, IAuditLog audit, IOptions<OrderOptions> orderOpt, IOptions<DeliveryOptions> opt)
+    OrderNotifier notifier, IAuditLog audit, IOptions<DeliveryOptions> opt)
 {
     public static readonly LocalStatus[] Open = [LocalStatus.Assigned, LocalStatus.InTransit, LocalStatus.OutForDelivery, LocalStatus.Failed];
     public static readonly LocalStatus[] Live = [LocalStatus.Unassigned, LocalStatus.Assigned, LocalStatus.InTransit, LocalStatus.OutForDelivery, LocalStatus.Failed];
@@ -304,7 +306,7 @@ public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox
     }
 
     public string ProofSig(Guid proofId, long exp) =>
-        Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(orderOpt.Value.OutboundSecret), Encoding.UTF8.GetBytes($"delivery-proof|{proofId:N}|{exp}"))).ToLowerInvariant();
+        Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(opt.Value.ProofUrlKey), Encoding.UTF8.GetBytes($"delivery-proof|{proofId:N}|{exp}"))).ToLowerInvariant();
 
     public bool ProofSigValid(Guid proofId, long exp, string? sig, DateTime now) =>
         exp >= new DateTimeOffset(now).ToUnixTimeSeconds() && sig is { Length: > 0 } &&
