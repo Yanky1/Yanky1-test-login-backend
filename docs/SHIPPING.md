@@ -5,7 +5,7 @@ behind `IShippingProvider`. This iteration is built and tested in **Shippo test 
 (dev, tests, E2E). CI never calls Shippo.
 
 Code: `src/Solvelt.Api/Shipping/**` (+ small additive edits in `Orders/`, `Payments/`, `Products/`), entities `Domain/Shipping.cs`, one EF migration `Shipping`.
-Tests: `tests/Solvelt.Api.Tests/Shipping*Tests.cs` (+ opt-in `tests/Solvelt.Api.ShippoTests`).
+Tests: `tests/Solvelt.Api.Tests/Shipping*Tests.cs` (+ opt-in `tests/Solvelt.Api.ShippoTests` and `tests/Solvelt.Api.PostgresTests`).
 
 ## 1. Flows
 
@@ -210,6 +210,7 @@ Other accounts' (and other brands') shipments, labels and quotes answer **404**.
 
 * `dotnet test` runs the fake provider and signed fake webhooks (no network). The suite covers settings, permissions/IDOR, address validation, rates and the recommended rate, idempotent and parallel purchase, expiry, spend limit, customs, void/refund and the ledger, tracking registration, webhook auth/replay/ordering, delivered/exception handling, the reconciler and its lease, return labels, staff tools and the outbox contract.
 * `tests/Solvelt.Api.ShippoTests` is opt-in (needs `SHIPPO_API_KEY` with a **test** key; compiled but never run in CI, not part of `Solvelt.slnx`): it exercises address validation, rates, a label purchase, a refund request and tracking registration against Shippo test mode.
+* `tests/Solvelt.Api.PostgresTests` is opt-in too (needs `SOLVELT_PG_ADMIN`, an Npgsql connection string of a PostgreSQL superuser; it creates and drops its own database): it runs the migration path SQLite cannot (up over live duplicate tracking numbers, down over a number shared by two carriers, up again). Compiled but never run in CI.
 * Dev helpers (Development/Testing only): `POST /api/dev/shipping/tracking {trackingNumber, status}` pushes a signed fake webhook through the real pipeline; `POST /api/dev/shipping/run-maintenance` runs the reconciler/refund job.
 
 ## 11. Going live checklist

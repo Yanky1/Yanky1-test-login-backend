@@ -99,6 +99,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
     public string RateCurrency { get; set; } = "USD";
     public string? FailPurchaseWith { get; set; }
     public int PurchaseDelayMs { get; set; }
+    /// <summary>A purchase waits for this task before it reaches the "carrier": lets a test hold one purchase in flight for exactly as long as it needs, instead of guessing a delay.</summary>
+    public Task? PurchaseGate { get; set; }
     /// <summary>Makes a tracking poll take this long (a slow carrier): lets a test keep one instance mid-poll while another tries to claim the same shipment.</summary>
     public int PollDelayMs { get; set; }
     /// <summary>pending_then_success (default: pending on request, success when polled), success, hold (stays pending), error.</summary>
@@ -146,6 +148,7 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
     public async Task<PurchasedLabel> PurchaseAsync(PurchaseRequest r, CancellationToken ct = default)
     {
         if (PurchaseDelayMs > 0) await Task.Delay(PurchaseDelayMs, ct);
+        if (PurchaseGate is { } gate) await gate;
         if (FailPurchaseWith is { } f) throw new ShippingProviderException(f, "The provider could not buy this label.", f == "provider_error");
         (string Carrier, string Service, long Cents, string Cur, int Days) rate;
         lock (_gate)

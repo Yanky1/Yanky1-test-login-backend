@@ -83,6 +83,7 @@ internal sealed class Parcel
     public Shipment? Ship; public ReturnShipment? Ret;
     public Guid Id => Ship?.Id ?? Ret!.Id;
     public Guid OrderId => Ship?.OrderId ?? Ret!.OrderId;
+    public DateTime CreatedAt => Ship?.CreatedAt ?? Ret!.CreatedAt;
     public string Carrier => Ship?.Carrier ?? Ret!.Carrier;
     public string TrackingNumber => Ship?.TrackingNumber ?? Ret!.TrackingNumber;
     public string? Status { get => Ship?.TrackingStatus ?? Ret?.TrackingStatus; set { if (Ship != null) Ship.TrackingStatus = value; else Ret!.TrackingStatus = value; } }
@@ -158,14 +159,19 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
     }
 
     /// <summary>
-    /// True when a carrier "delivered" stamped <paramref name="at"/> cannot belong to this parcel:
-    /// (1) it is not later than the last report of an EARLIER parcel that used the same number (delivered, or tracking stopped): a reused number must not be delivered by the previous parcel's own delivery;
-    /// (2) it is before the parcel existed: a purchased label's purchase time, or the ENTRY time of a manual shipment minus the grace period (the seller often types the number in after drop-off).
-    /// The entry time is CreatedAt, not the seller-editable ShippedAt: backdating the ship date must not widen the window.
+    /// True when a carrier "delivered" stamped <paramref name="at"/> cannot belong to this parcel (outbound shipment or return parcel):
+    /// (1) [outbound shipments] it is not later than the finish (DeliveredAt, else TrackingStoppedAt) of an EARLIER parcel with the same carrier and number that had finished before THIS parcel was created:
+    ///     a reused number must not be delivered by the previous parcel's own delivery. Finishes that came after this parcel existed do not count (a parcel stopped later, e.g. by a data
+    ///     migration, says nothing about when this one was delivered);
+    /// (2) it is before the parcel existed: a purchased label's purchase time; a return parcel's creation (its label was bought for it); a manual shipment's ENTRY time minus the grace period
+    ///     (the seller often types the number in after drop-off). The entry time is CreatedAt, not the seller-editable ShippedAt: backdating the ship date must not widen the window.
     /// </summary>
-    private async Task<bool> BeforeParcelAsync(Shipment s, DateTime at)
+    private async Task<bool> BeforeParcelAsync(Parcel p, DateTime at)
     {
-        var finished = await db.Shipments.Where(x => x.Id != s.Id && x.TrackingNumber == s.TrackingNumber && x.Carrier == s.Carrier && (x.DeliveredAt != null || x.TrackingStoppedAt != null))
+        // a return parcel has no grace: its label was bought for it, so nothing before its creation is its own (this also covers a reused return number: an earlier parcel finished before this one existed)
+        if (p.Ret is not null) return at < p.Ret.CreatedAt;
+        var s = p.Ship!;
+        var finished = await db.Shipments.Where(x => x.Id != s.Id && x.TrackingNumber == s.TrackingNumber && x.Carrier == s.Carrier && x.CreatedAt < s.CreatedAt && (x.DeliveredAt ?? x.TrackingStoppedAt) != null && (x.DeliveredAt ?? x.TrackingStoppedAt) <= s.CreatedAt)
             .Select(x => x.DeliveredAt ?? x.TrackingStoppedAt).ToListAsync();
         if (finished.Count > 0 && at <= finished.Max()!.Value) return true;
         if (s.LabelId is { } lid && await db.ShippingLabels.Where(l => l.Id == lid).Select(l => l.PurchasedAt).FirstOrDefaultAsync() is { } bought) return at < bought;
@@ -199,7 +205,7 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         if (newer && fresh.Count == 0 && snap.StatusAtEstimated) newer = false;
         // a delivery stamped before this parcel existed belongs to some other parcel that reused the number: never deliver (or pay out) on it.
         // Manual entries get a grace period (the seller often types the number in after drop-off); the clamp in ShipmentDeliveredAsync then bounds the time.
-        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && await BeforeParcelAsync(p.Ship, at)) newer = false;
+        if (newer && status == TrackingStatuses.Delivered && await BeforeParcelAsync(p, at)) newer = false;
         if (!newer)
         {
             await db.SaveChangesAsync();
