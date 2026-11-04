@@ -163,6 +163,8 @@ Respond `2xx` to acknowledge. Each message is **leased** (`LockedUntil`, atomic 
 `GET /api/v1/admin/outbox?status=dead`, re-queued with `POST /api/v1/admin/outbox/{id}/retry`). With no `WebhookUrl`, Development/Testing deliver to an
 in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signature); Production keeps events pending.
 
+**Signature scope:** the webhook signature is an HMAC over `<timestamp>.<raw body>` only. The `X-Solvelt-Event-Id` and `X-Solvelt-Event-Type` headers are **not** signed: take the event id and type from the signed body (`id`, `type`), never from the headers (use the headers for routing hints at most). A future signature version v2 is planned over `<ts>.<event id>.<event type>.<body>` (see `docs/ROADMAP.md`).
+
 `data.order` is always `{sellerOrderId, sellerOrderNumber, marketplaceOrderId}` on the order events; the catalog and moderation events `listing.*` and `content.report_decided` (`docs/CATALOG.md`) are not about an order and carry none.
 
 | Event | Extra `data` fields |

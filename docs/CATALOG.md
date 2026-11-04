@@ -109,6 +109,8 @@ Written in the **same transaction** as the change, through the existing outbox, 
 | `listing.upserted` | `{listingId, version}`: fetch `GET /catalog/listings/{listingId}` (or take it from the feed). |
 | `listing.unlisted` | `{listingId, version, reason}` with `reason` in `not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`. |
 
+**Trust the body, not the headers:** the webhook signature covers `<timestamp>.<raw body>` only, so take the event id and type from the signed body fields (`id`, `type`), not from `X-Solvelt-Event-Id` / `X-Solvelt-Event-Type` (those headers are not signed). The same applies to `content.report_decided`.
+
 Ordering: an older version is **never delivered after a newer one** of the same listing; the dispatcher holds a message back while an older message of the same listing is still
 pending (retrying or in backoff), and an old event re-queued after a newer one was delivered is dropped as superseded. Events can still be delivered more than once (use `X-Solvelt-Event-Id` / the version for idempotency). Treat events as hints and the feed as the
 source of truth: if you missed events, resume the feed from your cursor.
