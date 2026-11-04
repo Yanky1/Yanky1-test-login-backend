@@ -10,6 +10,9 @@ namespace Solvelt.Api.Catalog;
 
 public record IngestQuestion(string? QuestionId, string? Text, string? BuyerDisplayName);
 
+/// <summary>One entry of a feed page: a live product row (a listing or its unlisting) or the tombstone of a deleted listing.</summary>
+record FeedEntry(long Version, Product? Product, CatalogTombstone? Gone);
+
 /// <summary>
 /// The marketplace catalog contract (/api/internal/v1/catalog/**, POST /products/{id}/questions). Every endpoint is signed exactly like the rest of the internal API
 /// (InboundVerifier: headers, timestamp window, HMAC, single-use nonce). See docs/CATALOG.md.
@@ -61,11 +64,15 @@ public static class CatalogEndpoints
             // the version order IS the commit order (see CatalogTracking), so everything with a version above the cursor is either in this page or in a later one
             var rows = await db.Products.AsNoTracking().Where(p => p.CatalogVersion > cursor && (p.CatalogListed || p.CatalogEverListed))
                 .OrderBy(p => p.CatalogVersion).Take(take + 1).ToListAsync(ctx.RequestAborted);
-            var more = rows.Count > take;
-            if (more) rows.RemoveAt(take);
-            var docs = (await reader.ListingsAsync(rows.Where(r => r.CatalogListed).ToList(), ctx.RequestAborted)).ToDictionary(d => d.Id, d => d.Doc);
-            var items = rows.Select(r => r.CatalogListed ? docs[r.Id] : reader.Tombstone(r)).ToList();
-            return Results.Json(new { items, nextCursor = (rows.Count > 0 ? rows[^1].CatalogVersion : cursor).ToString(), hasMore = more }, OrderJson.Opts);
+            // deleted listings live on as tombstones with their own versions: merge them into the same version order
+            var gone = await db.CatalogTombstones.AsNoTracking().Where(t => t.Version > cursor).OrderBy(t => t.Version).Take(take + 1).ToListAsync(ctx.RequestAborted);
+            var page = rows.Select(r => new FeedEntry(r.CatalogVersion, r, null)).Concat(gone.Select(t => new FeedEntry(t.Version, null, t))).OrderBy(x => x.Version).Take(take + 1).ToList();
+            var more = page.Count > take;
+            if (more) page.RemoveAt(take);
+            var live = page.Where(x => x.Product is { CatalogListed: true }).Select(x => x.Product!).ToList();
+            var docs = (await reader.ListingsAsync(live, ctx.RequestAborted)).ToDictionary(d => d.Id, d => d.Doc);
+            var items = page.Select(x => x.Gone is { } t ? reader.Tombstone(t) : x.Product!.CatalogListed ? docs[x.Product.Id] : reader.Tombstone(x.Product)).ToList();
+            return Results.Json(new { items, nextCursor = (page.Count > 0 ? page[^1].Version : cursor).ToString(), hasMore = more }, OrderJson.Opts);
         });
 
         g.MapGet("/listings/{id:guid}", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, CatalogReader reader, Guid id) =>
