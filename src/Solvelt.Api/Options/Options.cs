@@ -72,6 +72,8 @@ public class EmailOptions
     public string Provider { get; set; } = "Sink"; // Sink | Smtp | Resend
     public string FromAddress { get; set; } = "no-reply@example.com";
     public string FromName { get; set; } = "Solvelt";
+    /// <summary>Address shown in every email footer ("Enquiries"). Empty = use Phone:HelpContact when it is a plain address, else support@example.com.</summary>
+    public string SupportAddress { get; set; } = "";
     public string SmtpHost { get; set; } = "localhost";
     public int SmtpPort { get; set; } = 1025;
     public bool SmtpUseSsl { get; set; }

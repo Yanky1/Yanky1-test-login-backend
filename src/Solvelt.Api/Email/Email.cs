@@ -73,12 +73,23 @@ public class ResendEmailSender(HttpClient http, IOptions<EmailOptions> opt, ILog
     }
 }
 
-public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<EmailOptions> opt, ILogger<Mailer> log)
+public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<EmailOptions> opt, IOptions<PhoneOptions> phone, ILogger<Mailer> log)
 {
+    private static int _warnedDefaultSupport;
+
+    /// <summary>Fills the footer's support address from configuration (see <see cref="EmailLayout.ResolveSupport"/>); warns once when neither setting holds a usable address.</summary>
+    private EmailMessage Finish(EmailMessage m)
+    {
+        var support = EmailLayout.ResolveSupport(opt.Value.SupportAddress, phone.Value.HelpContact, out var usedDefault);
+        if (usedDefault && Interlocked.Exchange(ref _warnedDefaultSupport, 1) == 0)
+            log.LogWarning("No usable support address: set Email:SupportAddress (a plain address); email footers show {Default}", EmailLayout.DefaultSupport);
+        return EmailLayout.Resolve(m, support);
+    }
+
     /// <summary>Never throws: failed email must not break the security flow; failures are logged without content.</summary>
     public async Task SendAsync(EmailMessage m)
     {
-        try { await sender.SendAsync(m); }
+        try { await sender.SendAsync(Finish(m)); }
         catch (Exception ex) { log.LogError(ex, "Failed to send {Kind} email", m.Kind); }
     }
 
@@ -91,7 +102,7 @@ public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<E
             try
             {
                 using var scope = scopes.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<IEmailSender>().SendAsync(m);
+                await scope.ServiceProvider.GetRequiredService<IEmailSender>().SendAsync(Finish(m));
             }
             catch (Exception ex) { log.LogError(ex, "Failed to send {Kind} email", m.Kind); }
         });

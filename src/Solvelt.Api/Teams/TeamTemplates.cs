@@ -7,13 +7,11 @@ namespace Solvelt.Api.Teams;
 /// <summary>Team emails (own file so it doesn't collide with the redesign of Email/Templates.cs). HTML + text, with a preheader.</summary>
 public static class TeamTemplates
 {
-    private static string E(string s) => WebUtility.HtmlEncode(s);
-
     private static EmailMessage Build(string to, string kind, string subject, string preheader, string heading, string[] paragraphs,
-        (string Label, string Url)? button = null)
+        (string Label, string Url)? button = null, string? highlight = null)
     {
-        var html = EmailLayout.Html(preheader, heading, paragraphs, button, null, "You received this email because of activity on a Solvelt seller account.");
-        var text = EmailLayout.Text(heading, paragraphs, button, null);
+        var html = EmailLayout.Html(preheader, heading, paragraphs, button, highlight, "You received this email because of activity on a Solvelt seller account.", "Team access");
+        var text = EmailLayout.Text(heading, paragraphs, button, highlight);
         return new EmailMessage(to, kind, subject, html, text);
     }
 
@@ -47,7 +45,7 @@ public static class TeamTemplates
 
     public static EmailMessage StepUp(string to, string code) =>
         Build(to, "team-stepup", "Confirm the ownership transfer", "Your confirmation code for the ownership transfer.",
-            "Confirm it's you", [$"Someone asked to transfer ownership of a seller account you own. Your confirmation code is {code}. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."]);
+            "Confirm it's you", ["Someone asked to transfer ownership of a seller account you own. Enter this confirmation code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."], highlight: code);
 
     public static EmailMessage AccountClosed(string to, string account) =>
         Build(to, "team-account-closed", $"{account} was closed", $"The seller account {account} was closed by an Owner.",
