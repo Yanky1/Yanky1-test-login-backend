@@ -25,6 +25,8 @@ public class PaymentOptions
     public bool RunBackgroundJobs { get; set; } = true;
     public int JobIntervalSeconds { get; set; } = 300;
     public int LeaseSeconds { get; set; } = 300;
+    /// <summary>Reconciliation only re-checks transfers created within this many days (older ones were checked many times already).</summary>
+    public int ReconcileDays { get; set; } = 35;
     /// <summary>Per-minute limit of the Stripe webhook endpoint (per IP).</summary>
     public int WebhooksPerMinute { get; set; } = 1200;
     public bool AllowTestKeysInProduction { get; set; }
@@ -45,4 +47,18 @@ public class StripeOptions
 public class PaymentTestHooks
 {
     public Func<Guid, Task>? AfterReleaseCandidate { get; set; }
+    /// <summary>Runs inside RetryAsync after the lease is taken and before its transaction opens.</summary>
+    public Func<Task>? BeforeRetryTransaction { get; set; }
+    /// <summary>Runs in the Stripe webhook just before its changes are saved (simulates a concurrent writer).</summary>
+    public Func<Task>? BeforeWebhookSave { get; set; }
+    /// <summary>Isolation levels of the explicit transactions the payment code opened (tests assert the money paths are Serializable).</summary>
+    public System.Collections.Concurrent.ConcurrentQueue<System.Data.IsolationLevel> Transactions { get; } = new();
+
+    /// <summary>The ONE place the money paths open their transaction: always Serializable (and recorded, so a test notices a path that stops using it).</summary>
+    public async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction> BeginSerializableAsync(Solvelt.Api.Data.AppDbContext db, CancellationToken ct = default)
+    {
+        const System.Data.IsolationLevel level = System.Data.IsolationLevel.Serializable;
+        Transactions.Enqueue(level);
+        return await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.BeginTransactionAsync(db.Database, level, ct);
+    }
 }

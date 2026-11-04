@@ -44,7 +44,7 @@ public record WebhookResult(int Status, string Code, string Outcome = "");
 /// Stripe event time of the last applied event and older events are ignored), unknown objects/types are acknowledged and ignored.
 /// </summary>
 public class StripeWebhookService(AppDbContext db, LedgerService ledger, PaymentIngestService ingest, PaymentNotifier notifier, TimeProvider time,
-    IOptions<StripeOptions> stripe, IOptions<PaymentOptions> opt)
+    IOptions<StripeOptions> stripe, IOptions<PaymentOptions> opt, PaymentTestHooks hooks)
 {
     public async Task<WebhookResult> HandleAsync(string body, string? signature)
     {
@@ -77,6 +77,7 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         { db.ChangeTracker.Clear(); return new(400, "invalid_event"); }
         db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "stripe", EventId = id, Type = type, ReceivedAt = time.UtcNow(), Outcome = outcome });
+        if (hooks.BeforeWebhookSave is { } bws) await bws();
         if (!await ledger.SaveAsync())
         {
             if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "stripe" && p.EventId == id)) return new(200, "duplicate");

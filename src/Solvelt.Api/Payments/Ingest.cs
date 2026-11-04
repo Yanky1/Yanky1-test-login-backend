@@ -20,7 +20,7 @@ public record IngestResult(int Status, string Code, string Message, object? Body
 /// Idempotent on the event id AND on the source ids of every journal; a retried event after a crash can never post twice.
 /// </summary>
 public class PaymentIngestService(AppDbContext db, LedgerService ledger, PlatformSettings settings, PaymentNotifier notifier, TimeProvider time,
-    Microsoft.Extensions.Options.IOptions<PaymentOptions> opt)
+    Microsoft.Extensions.Options.IOptions<PaymentOptions> opt, PaymentTestHooks hooks)
 {
     private static readonly JsonSerializerOptions J = OrderJson.Opts;
     private const long MaxCents = 1_000_000_000;
@@ -34,8 +34,8 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         IngestResult r;
         // refunds and disputes read balances (pending left, existing debits) and write against them: serializable, so a release committing at the same moment can not
         // leave an order's Pending negative; on PostgreSQL the loser gets a serialization failure -> 409 and the sender retries
-        await using var tx = ev.Type is "refund.processed" or "dispute.created" or "dispute.updated" or "dispute.closed"
-            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable) : null;
+        var serializable = ev.Type is "refund.processed" or "dispute.created" or "dispute.updated" or "dispute.closed";
+        await using var tx = serializable ? await hooks.BeginSerializableAsync(db) : null;
         try
         {
             r = ev.Type switch
@@ -50,11 +50,20 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (r.Status != 200) { db.ChangeTracker.Clear(); return r; }
         db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "marketplace", EventId = ev.EventId, Type = ev.Type!, ReceivedAt = time.UtcNow() });
         bool saved;
-        try { saved = await ledger.SaveAsync(); }
-        catch (DbUpdateException) { db.ChangeTracker.Clear(); return IngestResult.Err(409, "concurrent_update", "A concurrent change prevented this event from being stored. Retry it."); }
-        if (saved && tx is not null) await tx.CommitAsync();
+        try
+        {
+            saved = await ledger.SaveAsync();
+            if (saved && tx is not null) await tx.CommitAsync();   // a PostgreSQL serialization failure (40001) surfaces here as a PostgresException
+        }
+        catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex))
+        {
+            db.ChangeTracker.Clear(); if (tx is not null) await tx.RollbackAsync();
+            return IngestResult.Err(409, "concurrent_update", "A concurrent change prevented this event from being stored. Retry it.");
+        }
         if (!saved)
         {
+            // on PostgreSQL the failed statement aborted the transaction (25P02): roll back BEFORE any further query
+            if (tx is not null) await tx.RollbackAsync();
             // only a conflict on the processed-event key means "another delivery of this very event won"; any other unique conflict (e.g. a dispute created by a concurrent event)
             // is NOT acknowledged: the sender gets a retryable 409 and re-sends, so the event is never lost
             if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "marketplace" && p.EventId == ev.EventId)) return IngestResult.Ok(duplicate: true);
@@ -291,6 +300,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, row.Status);
         }
         if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
+        if (row.Status == "inquiry" && isNew) _inquiryMails.Add((seller, externalId, amount, currency, row.EvidenceDueBy));
     }
 
     private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string status)
@@ -303,8 +313,14 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
 
     private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _disputeMails = [];
 
+    private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _inquiryMails = [];
+
     public async Task FlushDisputeMailsAsync()
     {
+        foreach (var (seller, id, amount, cur, due) in _inquiryMails.ToList())
+            await notifier.NotifyAsync(seller, $"inquiry:{id}", "A buyer's bank asked about a payment", "A payment inquiry needs your response",
+                [$"The bank of a buyer is asking about a payment of {PaymentNotifier.Money(amount, cur)}. No money has been taken from your balance, but you should respond" + (due is { } dd ? $" by {dd:yyyy-MM-dd}" : "") + " to avoid a formal dispute. Respond through your Stripe Express dashboard."]);
+        _inquiryMails.Clear();
         foreach (var (seller, id, amount, cur, due) in _disputeMails.ToList())
             await notifier.NotifyAsync(seller, $"dispute:{id}", "A buyer opened a dispute", "A payment was disputed",
                 [$"A buyer disputed a payment of {PaymentNotifier.Money(amount, cur)}. The amount and the dispute fee were debited from your balance." + (due is { } dd ? $" Evidence is due by {dd:yyyy-MM-dd}." : "") + " Respond through your Stripe Express dashboard."]);

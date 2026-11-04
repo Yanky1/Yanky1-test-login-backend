@@ -18,6 +18,13 @@ public class JobLeaseService(AppDbContext db, TimeProvider time, IOptions<Paymen
         catch (DbUpdateException ex) when (DbErrors.IsUnique(ex)) { db.ChangeTracker.Clear(); return false; }
     }
 
+    /// <summary>Extends a lease that is still alive (a long run keeps its lease; an expired one is never revived, another instance may own it by now).</summary>
+    public async Task RenewAsync(string name, CancellationToken ct = default)
+    {
+        var now = time.UtcNow();
+        await db.PaymentJobLeases.Where(l => l.Name == name && l.LockedUntil > now).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, now.AddSeconds(opt.Value.LeaseSeconds)), ct);
+    }
+
     public async Task ReleaseAsync(string name, CancellationToken ct = default) =>
         await db.PaymentJobLeases.Where(l => l.Name == name).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, time.UtcNow().AddSeconds(-1)), CancellationToken.None);
 }
@@ -25,7 +32,7 @@ public class JobLeaseService(AppDbContext db, TimeProvider time, IOptions<Paymen
 public record ReleaseSummary(int Released, int ReserveReleased, long ReleasedCents);
 
 /// <summary>Moves funds Pending -> Available (and Reserved) once the release rules are met, and Reserved -> Available after the reserve period.</summary>
-public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<PaymentOptions> opt, IOptions<OrderOptions> orders, TimeProvider time, PaymentTestHooks hooks)
+public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<PaymentOptions> opt, IOptions<OrderOptions> orders, TimeProvider time, PaymentTestHooks hooks, JobLeaseService leases)
 {
     // Refunded included: a refund after a received return (or a goodwill refund) moves the order to Refunded even when only part of it was refunded; the kept items' money must still release
     private static readonly OrderStatus[] ReleasableOrder = [OrderStatus.Delivered, OrderStatus.Completed, OrderStatus.Refunded];
@@ -42,7 +49,8 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         foreach (var p in pendingOrders)
         {
             var ord = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == p.Id, ct);
-            if (ord is null || !Eligible(ord, now)) continue;
+            if (ord is null || !await EligibleAsync(ord, now, ct)) continue;
+            await leases.RenewAsync(TransferService.JobName, ct);
             if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
             if (await ReleaseAsync(ord.SellerId, ord.Currency, p.Id, null, ord.Number, ct) is { } got) { released++; cents += got; }
         }
@@ -60,9 +68,23 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         return new(released, await ReleaseReservesAsync(ct), cents);
     }
 
-    private bool Eligible(SellerOrder o, DateTime now)
+    /// <summary>
+    /// The moment the release delay starts. Normally the delivery; an order that never got a delivery mark (shipped, returned, refunded; or a rejected return that
+    /// completed after the window) anchors on its completion, else on the last return-received / refund time, so its kept items never stay pending forever.
+    /// </summary>
+    private async Task<DateTime?> AnchorAsync(SellerOrder o, CancellationToken ct)
     {
-        if (!ReleasableOrder.Contains(o.Status) || o.DeliveredAt is not { } d) return false;
+        if (o.DeliveredAt is { } d) return d;
+        if (o.CompletedAt is { } c) return c;
+        var received = await db.Returns.AsNoTracking().Where(r => r.OrderId == o.Id && r.ReceivedAt != null).MaxAsync(r => r.ReceivedAt, ct);
+        var refunded = await db.Refunds.AsNoTracking().Where(r => r.OrderId == o.Id).MaxAsync(r => (DateTime?)r.CreatedAt, ct);
+        var last = new[] { received, refunded }.Where(x => x != null).Select(x => x!.Value).DefaultIfEmpty().Max();
+        return last == default ? null : last;
+    }
+
+    private async Task<bool> EligibleAsync(SellerOrder o, DateTime now, CancellationToken ct)
+    {
+        if (!ReleasableOrder.Contains(o.Status) || await AnchorAsync(o, ct) is not { } d) return false;
         var days = opt.Value.ReleaseDays;
         if (opt.Value.RequireReturnWindowClosed) days = Math.Max(days, orders.Value.ReturnWindowDays);
         return d.AddDays(days) <= now;
@@ -80,7 +102,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         var isNew = sellerRow is not null && o.NewSellerReservePercent > 0 && sellerRow.CreatedAt.AddDays(o.NewSellerDays) > time.UtcNow();
         try
         {
-            await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+            await using var tx = await hooks.BeginSerializableAsync(db, ct);
             var rows = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && (orderId != null ? e.OrderId == orderId : e.BookingId == bookingId))
                 .Select(e => new { e.AmountCents, e.Id }).ToListAsync(ct);
             var amount = rows.Sum(r => r.AmountCents);
@@ -95,7 +117,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             await tx.CommitAsync(ct);
             return amount;
         }
-        catch (DbUpdateException) { db.ChangeTracker.Clear(); return null; }   // lost a race (unique key or serialization failure): the next run re-reads
+        catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex)) { db.ChangeTracker.Clear(); return null; }   // lost a race (unique key, or a PostgreSQL serialization failure at the write or at COMMIT): the next run re-reads
     }
 
     private async Task<int> ReleaseReservesAsync(CancellationToken ct)
@@ -121,7 +143,7 @@ public record TransferSummary(int Created, int Sent, int Failed, int Paused, int
 /// The funds are moved Available -> Settled in the SAME transaction that creates the transfer row, so they can never be sent twice or spent twice.
 /// </summary>
 public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProvider provider, IOptions<PaymentOptions> opt, TimeProvider time,
-    PaymentNotifier notifier, JobLeaseService leases, ILogger<TransferService> log)
+    PaymentNotifier notifier, JobLeaseService leases, PaymentTestHooks hooks, ILogger<TransferService> log)
 {
     public const string JobName = "payments-transfers";
 
@@ -142,6 +164,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
             .GroupBy(e => new { e.SellerId, e.Currency }).Select(g => new { g.Key.SellerId, g.Key.Currency, Sum = g.Sum(x => x.AmountCents) }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var s in sellers)
         {
+            await leases.RenewAsync(JobName, ct);
             if (s.Sum < o.MinTransferCents) { skipped++; continue; }
             var acct = await db.PayoutAccounts.AsNoTracking().FirstOrDefaultAsync(a => a.SellerId == s.SellerId, ct);
             var status = await db.Sellers.AsNoTracking().Where(x => x.Id == s.SellerId).Select(x => x.Status).FirstOrDefaultAsync(ct);
@@ -170,6 +193,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
             .OrderBy(t => t.CreatedAt).Take(100).Select(t => t.Id).ToListAsync(ct);
         foreach (var id in due)
         {
+            await leases.RenewAsync(JobName, ct);
             var lease = time.UtcNow().AddMinutes(2);
             var claimed = await db.PaymentTransfers.Where(t => t.Id == id && t.Status == TransferStatus.Pending && (t.LockedUntil == null || t.LockedUntil < now))
                 .ExecuteUpdateAsync(u => u.SetProperty(t => t.LockedUntil, lease), ct);
@@ -245,8 +269,10 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
             var t = await db.PaymentTransfers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == transferId);
             if (t is null) return (false, "not_found");
             if (t.Status != TransferStatus.Failed) return (false, "not_failed");
+            if (hooks.BeforeRetryTransaction is { } h) await h();
+            await using var tx = await hooks.BeginSerializableAsync(db);
+            // the balance is read INSIDE the transaction: a refund/dispute/adjustment committing meanwhile is part of the check
             if ((await ledger.BalanceAsync(t.SellerId, t.Currency)).Available < t.AmountCents) return (false, "insufficient_available");
-            await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
             var claimed = await db.PaymentTransfers.Where(x => x.Id == transferId && x.Status == TransferStatus.Failed && x.Retries == t.Retries)
                 .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, TransferStatus.Pending).SetProperty(x => x.Retries, t.Retries + 1).SetProperty(x => x.Attempts, 0)
                     .SetProperty(x => x.NextAttemptAt, time.UtcNow()).SetProperty(x => x.LastError, (string?)null).SetProperty(x => x.UpdatedAt, time.UtcNow()));
@@ -258,7 +284,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
             await tx.CommitAsync();
             return (true, "ok");
         }
-        catch (DbUpdateException) { db.ChangeTracker.Clear(); return (false, "conflict"); }
+        catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex)) { db.ChangeTracker.Clear(); return (false, "conflict"); }
         finally { await leases.ReleaseAsync(JobName); }
     }
 }
@@ -266,7 +292,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
 public record ReconcileSummary(int Checked, int Flagged);
 
 /// <summary>Compares the ledger's transfers with Stripe (the fake provider in tests) and flags mismatches for staff. Re-running never duplicates an open flag.</summary>
-public class ReconciliationService(AppDbContext db, IPaymentProvider provider, TimeProvider time)
+public class ReconciliationService(AppDbContext db, IPaymentProvider provider, TimeProvider time, JobLeaseService leases, IOptions<PaymentOptions> opt)
 {
     private async Task<long> CreditedAsync(Guid transferId) =>
         await db.LedgerJournals.Where(j => j.Type == "transfer_reversed" && j.SourceRef == transferId.ToString()).SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.Available).SumAsync(e => (long?)e.AmountCents) ?? 0;
@@ -274,9 +300,12 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
     public async Task<ReconcileSummary> RunAsync(CancellationToken ct = default)
     {
         var now = time.UtcNow(); int checkedN = 0, flagged = 0;
-        var transfers = await db.PaymentTransfers.AsNoTracking().Where(t => t.Status == TransferStatus.Created || t.Status == TransferStatus.Reversed).ToListAsync(ct);
+        await leases.RenewAsync(TransferService.JobName, ct);
+        var since = now.AddDays(-opt.Value.ReconcileDays);
+        var transfers = await db.PaymentTransfers.AsNoTracking().Where(t => (t.Status == TransferStatus.Created || t.Status == TransferStatus.Reversed) && t.CreatedAt >= since).ToListAsync(ct);
         foreach (var t in transfers)
         {
+            await leases.RenewAsync(TransferService.JobName, ct);
             checkedN++;
             string? problem = null;
             if (t.StripeTransferId is null) problem = "ledger transfer has no Stripe transfer id";

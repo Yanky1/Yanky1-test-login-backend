@@ -11,13 +11,22 @@ public record Posting(LedgerAccount Account, long AmountCents, string Kind);
 public record Balances(string Currency, long Pending, long Available, long Reserved, long Settled, long PaidOut)
 {
     public long Owed => Pending + Available + Reserved;
-    public bool Negative => Owed < 0 || Available < 0;
+    /// <summary>Negative = the seller owes the platform (pending + available + reserved below zero). A shipping label debits Available while the sale is still Pending: that is not a negative balance.</summary>
+    public bool Negative => Owed < 0;
     public static Balances Zero(string c) => new(c, 0, 0, 0, 0, 0);
 }
 
 public static class DbErrors
 {
     /// <summary>True for a unique-constraint violation on SQLite or PostgreSQL.</summary>
+    /// <summary>PostgreSQL serialization failure (40001) or deadlock (40P01): the transaction lost a race and nothing was applied; retry it.</summary>
+    public static bool IsSerialization(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException { SqlState: "40001" or "40P01" }) return true;
+        return false;
+    }
+
     public static bool IsUnique(DbUpdateException ex)
     {
         for (Exception? e = ex; e is not null; e = e.InnerException)

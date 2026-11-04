@@ -34,7 +34,7 @@ public static class PaymentAdminEndpoints
                 activeHold = holds.FirstOrDefault(h => h.ReleasedAt == null) is { } h0 ? new { h0.Id, h0.Reason, h0.PlacedAt, h0.PlacedBy } : null,
                 holds = holds.Select(h => new { h.Id, h.Reason, h.PlacedAt, h.PlacedBy, h.ReleasedAt, h.ReleasedBy, h.ReleaseReason }),
                 failedTransfers = await db.PaymentTransfers.CountAsync(t => t.SellerId == id && t.Status == TransferStatus.Failed),
-                openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == id && (d.Status == "needs_response" || d.Status == "under_review"))
+                openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == id && (d.Status == "needs_response" || d.Status == "under_review" || d.Status == "inquiry"))
             });
         }, StaffPermission.PaymentsView);
 

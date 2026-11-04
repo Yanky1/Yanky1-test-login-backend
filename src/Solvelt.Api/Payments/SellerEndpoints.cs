@@ -70,7 +70,7 @@ public static class SellerPaymentEndpoints
             var now = time.UtcNow();
             var min = opt.Value.MinTransferCents;
             var pausedWhy = why == "staff_hold" ? "under_review" : why;   // the staff reason is never shown to sellers
-            var openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == a.SellerId && (d.Status == "needs_response" || d.Status == "under_review"));
+            var openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == a.SellerId && (d.Status == "needs_response" || d.Status == "under_review" || d.Status == "inquiry"));
             return Results.Ok(new
             {
                 balances = balances.Select(b => new
@@ -136,7 +136,7 @@ public static class SellerPaymentEndpoints
                     id = d.Id, createdAt = d.CreatedAt, amountCents = d.AmountCents, feeCents = d.FeeCents, currency = d.Currency, status = d.Status, reason = d.Reason,
                     evidenceDueBy = d.EvidenceDueBy, closedAt = d.ClosedAt, orderId = d.OrderId, orderNumber = d.OrderId is { } o && orders.TryGetValue(o, out var on) ? on : null,
                     bookingId = d.BookingId, bookingNumber = d.BookingId is { } b && bookings.TryGetValue(b, out var bn) ? bn : null,
-                    canRespond = d.Status == "needs_response"   // answer in the Stripe Express dashboard (POST /seller/payments/dashboard-link, Owners)
+                    canRespond = d.Status is "needs_response" or "inquiry"   // answer in the Stripe Express dashboard (POST /seller/payments/dashboard-link, Owners)
                 })
             });
         });
