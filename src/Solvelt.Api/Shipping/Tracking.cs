@@ -105,18 +105,40 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
     /// <summary>Per parcel: the same fact delivered twice (webhook + poll, or a replay) is one history entry; two parcels of one order never collide.</summary>
     public static string Key(Guid parcelId, TrackingEntry e) => ShippingSupport.Hash($"{parcelId:N}|{e.At.ToUniversalTime():O}|{e.Status}|{e.Detail}")[..32];
 
-    public async Task<(Shipment? Ship, ReturnShipment? Ret)> FindAsync(string number)
+    /// <summary>
+    /// Finds the parcel a carrier fact belongs to. A tracking number is only unique per carrier, and nothing stops two accounts from holding the same string, so this never
+    /// "takes the newest": candidates are filtered by carrier, a purchased label's shipment (the carrier issued that number to it) outranks manual entries, and when more than
+    /// one parcel still fits the fact is applied to none of them (Ambiguous) instead of to somebody else's order.
+    /// </summary>
+    public async Task<(Shipment? Ship, ReturnShipment? Ret, bool Ambiguous)> FindAsync(string number, string? carrier = null)
     {
         var tn = Orders.Tracking.Normalize(number);
-        var s = await db.Shipments.Where(x => x.TrackingNumber == tn && x.Method == "carrier").OrderByDescending(x => x.CreatedAt).FirstOrDefaultAsync();
-        if (s is not null) return (s, null);
-        var r = await db.ReturnShipments.Where(x => x.TrackingNumber == tn).OrderByDescending(x => x.CreatedAt).FirstOrDefaultAsync();
-        return (null, r);
+        var c = string.IsNullOrWhiteSpace(carrier) ? null : ShippingSupport.OrderCarrier(carrier);
+        var ships = await db.Shipments.Where(x => x.TrackingNumber == tn && x.Method == "carrier").ToListAsync();
+        if (c is not null && c != "Other") ships = ships.Where(x => x.Carrier == c || x.Carrier == "Other").ToList();
+        if (ships.Count > 1 && ships.Count(x => x.LabelId != null) == 1) ships = ships.Where(x => x.LabelId != null).ToList();
+        if (ships.Count == 1) return (ships[0], null, false);
+        if (ships.Count > 1) return (null, null, true);
+        var rets = await db.ReturnShipments.Where(x => x.TrackingNumber == tn).ToListAsync();
+        if (c is not null && c != "Other") rets = rets.Where(x => x.Carrier == c || x.Carrier == "Other").ToList();
+        return rets.Count == 1 ? (null, rets[0], false) : (null, null, rets.Count > 1);
     }
 
-    public async Task<TrackingApplied> ApplyAsync(string number, TrackingSnapshot snap, string source)
+    /// <summary>Applies a snapshot. <paramref name="parcelId"/> is given by the poller, which already knows exactly which parcel it asked the carrier about.</summary>
+    public async Task<TrackingApplied> ApplyAsync(string number, TrackingSnapshot snap, string source, Guid? parcelId = null)
     {
-        var (s, r) = await FindAsync(number);
+        async Task<(Shipment?, ReturnShipment?, bool)> Locate()
+        {
+            if (parcelId is { } id)
+            {
+                var sh = await db.Shipments.FirstOrDefaultAsync(x => x.Id == id);
+                if (sh is not null) return (sh, null, false);
+                return (null, await db.ReturnShipments.FirstOrDefaultAsync(x => x.Id == id), false);
+            }
+            return await FindAsync(number, snap.Carrier);
+        }
+        var (s, r, amb) = await Locate();
+        if (amb) return new("ambiguous_tracking_number");
         if (s is null && r is null) return new("unknown_shipment");
         for (var attempt = 0; ; attempt++)
         {
@@ -125,7 +147,8 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
             {
                 // a concurrent webhook/poll stored the same history entry first: reload and run once more (the duplicates are skipped now)
                 db.ChangeTracker.Clear();
-                (s, r) = await FindAsync(number);
+                (s, r, amb) = await Locate();
+                if (amb) return new("ambiguous_tracking_number");
                 if (s is null && r is null) return new("unknown_shipment");
             }
         }
@@ -151,13 +174,17 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         p.LastAt = now;
         var status = TrackingStatuses.Normalize(snap.Status);
         var at = snap.StatusAt.ToUniversalTime();
-        var newer = p.DeliveredAt is null && (p.StatusAt is null || at > p.StatusAt || (at == p.StatusAt && TrackingStatuses.Rank(status) > TrackingStatuses.Rank(p.Status)));
+        // "delivered" is final: it replaces any earlier stage even when a skewed carrier clock stamped that stage later (nothing ever replaces delivered)
+        var newer = p.DeliveredAt is null && (p.StatusAt is null || status == TrackingStatuses.Delivered && p.Status != TrackingStatuses.Delivered || at > p.StatusAt
+            || (at == p.StatusAt && TrackingStatuses.Rank(status) > TrackingStatuses.Rank(p.Status)));
+        // a delivery stamped before this parcel even shipped belongs to some other parcel that reused the number: never deliver (or pay out) on it
+        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && at < p.Ship.ShippedAt) newer = false;
         if (!newer)
         {
             await db.SaveChangesAsync();
             return new(fresh.Count == 0 ? "duplicate" : "stale", p.Status);
         }
-        p.Status = status; p.Detail = Clip(snap.Detail, 300); p.Eta = snap.Eta?.ToUniversalTime(); p.StatusAt = at;
+        p.Status = status; p.Detail = Clip(snap.Detail, 300); p.Eta = snap.Eta?.ToUniversalTime(); p.StatusAt = p.StatusAt is { } prev && prev > at ? prev : at;
         var wasFlagged = order.NeedsAttention;
         var exception = TrackingStatuses.IsException(status);
         if (exception && !wasFlagged)
