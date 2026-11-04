@@ -176,9 +176,28 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
         return node.ToJsonString();
     }
 
+    /// <summary>
+    /// Delivers what is due. The events of one seller order / booking go out one at a time (each is held back until its predecessor is delivered), so one pass sends only the head of
+    /// every sequence: the call repeats passes while any message was settled (delivered or Dead; bounded), otherwise an order with five events would need five worker ticks.
+    /// </summary>
     public async Task<int> DispatchDueAsync(CancellationToken ct = default, int batch = 50)
     {
+        var delivered = 0;
+        for (var pass = 0; pass < MaxPasses; pass++)
+        {
+            var (done, settled) = await DispatchPassAsync(ct, batch);
+            delivered += done;
+            if (settled == 0) break;       // nothing changed state: what is left is in backoff, held back or not due
+        }
+        return delivered;
+    }
+
+    private const int MaxPasses = 25;
+
+    private async Task<(int Delivered, int Settled)> DispatchPassAsync(CancellationToken ct, int batch)
+    {
         var o = opt.Value;
+        var attempted = 0;
         var now = time.UtcNow();
         var due = await db.Outbox.AsNoTracking().Where(m => m.Status == OutboxStatus.Pending && m.NextAttemptAt <= now && (m.LockedUntil == null || m.LockedUntil < now))
             .Where(m => m.SequenceScope == null || !db.Outbox.Any(x => x.SequenceScope == m.SequenceScope && x.OrderKey < m.OrderKey && x.Status == OutboxStatus.Pending))   // held back: an older event of its seller order / booking is not delivered yet
@@ -242,10 +261,11 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
             if (ok) { status = OutboxStatus.Delivered; deliveredAt = time.UtcNow(); lastErr = null; done++; }
             else if (attempts >= o.OutboxMaxAttempts) { status = OutboxStatus.Dead; log.LogWarning("Outbox message {Id} ({Type}) is dead after {N} attempts", m.Id, m.EventType, attempts); }
             else next = time.UtcNow().AddSeconds(Math.Min(3600, o.OutboxBackoffSeconds * Math.Pow(2, attempts - 1)));
+            if (status != OutboxStatus.Pending) attempted++;      // settled (delivered or dead): successors of its sequence may be eligible now. A failed attempt goes into backoff and unblocks nothing.
             await db.Outbox.Where(x => x.Id == id).ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, status).SetProperty(x => x.Attempts, attempts)
                 .SetProperty(x => x.DeliveredAt, deliveredAt).SetProperty(x => x.NextAttemptAt, next).SetProperty(x => x.LastError, lastErr).SetProperty(x => x.LockedUntil, (DateTime?)null), CancellationToken.None);
         }
-        return done;
+        return (done, attempted);
     }
 }
 
