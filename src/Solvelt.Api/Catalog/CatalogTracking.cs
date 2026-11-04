@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Orders;
+using Solvelt.Api.Services;
 
 namespace Solvelt.Api.Catalog;
 
@@ -73,7 +74,7 @@ public static class CatalogTracking
     private static readonly HashSet<string> IgnoredProductColumns =
     [
         nameof(Product.CostCents), nameof(Product.QualityScore), nameof(Product.IsReady), nameof(Product.ImageSeq), nameof(Product.Version), nameof(Product.UpdatedAt),
-        nameof(Product.CatalogVersion), nameof(Product.CatalogListed), nameof(Product.CatalogEverListed), nameof(Product.CatalogUnlistReason), nameof(Product.CatalogStockState),
+        nameof(Product.CatalogVersion), nameof(Product.CatalogListed), nameof(Product.CatalogEverListed), nameof(Product.CatalogUnlistReason), nameof(Product.CatalogStockState), nameof(Product.CatalogDeliveryState),
         nameof(Product.ModerationPrevStatus), nameof(Product.ModeratedBy), nameof(Product.CreatedBy), nameof(Product.CreatedAt), nameof(Product.PublishedAt),
         nameof(Product.MetaTitle), nameof(Product.MetaDescription), nameof(Product.DefaultPackageId), nameof(Product.ShippingJson),
         nameof(Product.WeightGrams), nameof(Product.LengthMm), nameof(Product.WidthMm), nameof(Product.HeightMm), nameof(Product.MaxPerOrder)
@@ -82,25 +83,28 @@ public static class CatalogTracking
     internal sealed class Touch
     {
         public readonly HashSet<Guid> Products = [], Sellers = [], Brands = [], Categories = [];
-        public bool IsEmpty => Products.Count == 0 && Sellers.Count == 0 && Brands.Count == 0 && Categories.Count == 0;
+        /// <summary>Delivery settings changed for (seller, brand or null = whole account): the refresh job re-derives the delivery options of those listings.</summary>
+        public readonly HashSet<(Guid Seller, Guid? Brand)> Refresh = [];
+        public bool IsEmpty => Products.Count == 0 && Sellers.Count == 0 && Brands.Count == 0 && Categories.Count == 0 && Refresh.Count == 0;
     }
 
     /// <summary>Remembers what <see cref="ApplyAsync"/> changed in the tracker so a failed save can be undone (a retry must not enqueue the events twice).</summary>
     internal sealed class Undo
     {
-        public readonly List<EntityEntry> Outbox = [];
-        public readonly List<(EntityEntry Entry, long Version, bool Listed, bool Ever, string? Reason, string? Stock)> Products = [];
+        public readonly List<EntityEntry> Outbox = [], Requests = [];
+        public readonly List<(EntityEntry Entry, long Version, bool Listed, bool Ever, string? Reason, string? Stock, string? Delivery)> Products = [];
 
         public void Revert()
         {
             foreach (var e in Outbox) e.State = EntityState.Detached;
-            foreach (var (e, v, l, ever, r, s) in Products)
+            foreach (var e in Requests) e.State = EntityState.Detached;
+            foreach (var (e, v, l, ever, r, s, d) in Products)
             {
                 if (e.State == EntityState.Detached) continue;
                 var p = (Product)e.Entity;
-                p.CatalogVersion = v; p.CatalogListed = l; p.CatalogEverListed = ever; p.CatalogUnlistReason = r; p.CatalogStockState = s;
+                p.CatalogVersion = v; p.CatalogListed = l; p.CatalogEverListed = ever; p.CatalogUnlistReason = r; p.CatalogStockState = s; p.CatalogDeliveryState = d;
             }
-            Outbox.Clear(); Products.Clear();
+            Outbox.Clear(); Requests.Clear(); Products.Clear();
         }
     }
 
@@ -138,6 +142,9 @@ public static class CatalogTracking
                     if (e.State == EntityState.Modified && e.Properties.Any(x => x.IsModified && x.Metadata.Name is nameof(SellerAccount.Status) or nameof(SellerAccount.VendorName) or nameof(SellerAccount.Country)))
                         t.Sellers.Add(s.Id);
                     break;
+                case ShippingProfile sp: t.Refresh.Add((sp.SellerId, sp.BrandId)); break;
+                case DeliverySetting ds: t.Refresh.Add((ds.SellerId, ds.BrandId)); break;
+                case DeliveryZone dz: t.Refresh.Add((dz.SellerId, null)); break;           // a zone does not know its brand without a lookup: the whole account is checked (only real changes bump)
                 case Category c: if (e.State != EntityState.Added) t.Categories.Add(c.Id); break;
                 case CategoryAttribute ca: t.Categories.Add(ca.CategoryId); break;
             }
@@ -190,6 +197,9 @@ public static class CatalogTracking
 
     internal static async Task ApplyAsync(AppDbContext db, TimeProvider clock, Touch t, Undo undo, CancellationToken ct)
     {
+        // delivery settings changed: leave a request for the refresh job (cheap, same transaction; the heavy part runs in the background in chunks)
+        foreach (var (seller, brand) in t.Refresh)
+            undo.Requests.Add(db.Entry(db.CatalogRefreshRequests.Add(new CatalogRefreshRequest { SellerId = seller, BrandId = brand, CreatedAt = clock.UtcNow() }).Entity));
         if (!await MayBeVisibleAsync(db, await AffectedAsync(db, t, ct), ct)) return;
         await LockCounterAsync(db, ct);
         var ids = await AffectedAsync(db, t, ct);                  // again under the lock: what is committed now decides
@@ -214,7 +224,9 @@ public static class CatalogTracking
         }
         if (work.Count == 0) return;
 
-        var stock = await StockSignaturesAsync(db, work.Where(w => w.Reason is null).Select(w => w.Entry.Entity).ToList(), ct);
+        var visible = work.Where(w => w.Reason is null).Select(w => w.Entry.Entity).ToList();
+        var stock = await StockSignaturesAsync(db, visible, ct);
+        var delivery = await DeliveryContext.ForProductsAsync(db, visible, ct);
         var first = await AllocateAsync(db, work.Count, ct);
         var outbox = new Outbox(db, clock);
         for (var i = 0; i < work.Count; i++)
@@ -223,9 +235,10 @@ public static class CatalogTracking
             var p = e.Entity; var version = first + i;
             if (e.State != EntityState.Deleted)
             {
-                undo.Products.Add((e, p.CatalogVersion, p.CatalogListed, p.CatalogEverListed, p.CatalogUnlistReason, p.CatalogStockState));
+                undo.Products.Add((e, p.CatalogVersion, p.CatalogListed, p.CatalogEverListed, p.CatalogUnlistReason, p.CatalogStockState, p.CatalogDeliveryState));
                 p.CatalogVersion = version; p.CatalogListed = reason is null; p.CatalogEverListed |= reason is null; p.CatalogUnlistReason = reason;
                 p.CatalogStockState = reason is null ? stock.GetValueOrDefault(p.Id) : null;
+                p.CatalogDeliveryState = reason is null ? delivery.GetValueOrDefault(p.Id)?.Signature : null;
             }
             var msg = reason is null ? outbox.Enqueue("listing.upserted", p.SellerId, p.Id.ToString(), new { listingId = p.Id, version }, version)
                                      : outbox.Enqueue("listing.unlisted", p.SellerId, p.Id.ToString(), new { listingId = p.Id, version, reason }, version);
@@ -285,6 +298,21 @@ public static class CatalogTracking
             finally { db.ChangeTracker.Clear(); }
         }
         return candidates.Count;
+    }
+
+    /// <summary>
+    /// Visible listings that predate the <c>delivery</c> field have no delivery state: queue one refresh per account so the job gives them a version (and a <c>listing.upserted</c>)
+    /// and consumers that already fetched them pick the new field up. Idempotent: an account with an unprocessed request is skipped.
+    /// </summary>
+    public static async Task<int> BackfillDeliveryAsync(AppDbContext db, TimeProvider clock, CancellationToken ct = default)
+    {
+        var sellers = await db.Products.AsNoTracking().Where(p => p.CatalogListed && p.CatalogDeliveryState == null).Select(p => p.SellerId).Distinct().ToListAsync(ct);
+        var pending = (await db.CatalogRefreshRequests.AsNoTracking().Where(r => r.ProcessedAt == null && r.BrandId == null).Select(r => r.SellerId).ToListAsync(ct)).ToHashSet();
+        var n = 0;
+        foreach (var seller in sellers.Where(x => !pending.Contains(x)))
+        { db.CatalogRefreshRequests.Add(new CatalogRefreshRequest { SellerId = seller, CreatedAt = clock.UtcNow() }); n++; }
+        if (n > 0) await db.SaveChangesAsync(ct);
+        return n;
     }
 
     // ---- 3. stock changes made with ExecuteUpdate (inventory) --------------------------------------------------------------------

@@ -21,6 +21,8 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
         (terms ?? "").Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(t => t.Length > 0).DistinctBy(t => t.ToLowerInvariant()).ToList();
 
+    private static object DeliveryOf(DeliveryInfo d) => new { ships = d.Ships, localDelivery = d.LocalDelivery, serviceLocations = d.ServiceLocations };
+
     public object Tombstone(Product p) => new { listingId = p.Id, version = p.CatalogVersion, listed = false, reason = p.CatalogUnlistReason };
 
     /// <summary>Documents for visible listings (in the order of <paramref name="products"/>). Callers pass only products with <c>CatalogListed</c>.</summary>
@@ -37,6 +39,7 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
         var faqs = (await db.ProductFaqs.AsNoTracking().Where(f => ids.Contains(f.ProductId)).OrderBy(f => f.SortOrder).ToListAsync(ct)).ToLookup(f => f.ProductId);
         var qa = (await db.Questions.AsNoTracking().Where(q => ids.Contains(q.ProductId) && q.State == QuestionState.Published && q.Answer != null).OrderBy(q => q.AskedAt).ThenBy(q => q.Id).ToListAsync(ct)).ToLookup(q => q.ProductId);
         var services = (await db.ServiceDetails.AsNoTracking().Where(s => ids.Contains(s.ProductId)).ToListAsync(ct)).ToDictionary(s => s.ProductId);
+        var delivery = await DeliveryContext.LoadAsync(db, products.Select(p => p.SellerId).Distinct().ToList(), ct);
 
         var brandIds = products.Select(p => p.BrandId).Distinct().ToList();
         var brands = (await db.Brands.AsNoTracking().Where(b => brandIds.Contains(b.Id)).ToListAsync(ct)).ToDictionary(b => b.Id);
@@ -121,6 +124,7 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                 // published Q&A only; the asker's name is deliberately not included (no buyer data in the catalog)
                 questions = qa[p.Id].Select(q => new { questionId = q.ExternalId ?? q.Id.ToString(), question = q.Text, answer = q.Answer, askedAt = q.AskedAt, answeredAt = q.AnsweredAt }).ToList(),
                 images = imgs.Select(i => new { imageId = i.Id, variantId = i.VariantId, width = i.Width, height = i.Height, contentType = i.ContentType, sizeBytes = i.Size, alt = i.Alt, isMain = i.IsMain, sortOrder = i.SortOrder, path = $"/api/internal/v1/catalog/images/{i.Id}" }).ToList(),
+                delivery = DeliveryOf(delivery.For(p, sd)),
                 policies = new { returnsDays = p.ReturnsDays, returnsCondition = p.ReturnsCondition, warrantyMonths = p.WarrantyMonths, warrantyNote = p.WarrantyNote, handlingDays = p.HandlingDays },
                 service = !isService || sd is null ? null : new
                 {
