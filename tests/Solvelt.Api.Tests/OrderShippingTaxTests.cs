@@ -169,7 +169,7 @@ public class OrderShippingTaxTests(OrdersFactory f) : IClassFixture<OrdersFactor
         Assert.Equal(100, events.Sum(e => (long)e["taxCents"]!));
         Assert.Equal(100, events.Sum(e => (long)e["lines"]![0]!["taxCents"]!));
         // what the marketplace sends back as refund.processed (items excluding tax) always adds up to the items
-        Assert.Equal([1000L, 1000L, 1000L], events.Select(e => (long)e["amountCents"]! - (long)e["taxCents"]! - (long)e["shippingCents"]! - (long)e["shippingTaxCents"]!));
+        Assert.Equal([1000L, 1000L, 1000L], events.Select(e => (long)e["amountCents"]! - (long)e["taxCents"]! - (long)e["shippingCents"]!));
         Assert.Equal(3100, events.Sum(e => (long)e["amountCents"]!));
     }
 
