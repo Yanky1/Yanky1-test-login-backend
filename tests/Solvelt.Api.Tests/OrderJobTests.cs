@@ -124,7 +124,7 @@ public class ProductionFactory : WebApplicationFactory<Program>
             ["App:CorsOrigins:0"] = "http://localhost:5173", ["App:FrontendBaseUrl"] = "http://localhost:5173",
             ["Jwt:PrivateKeyPem"] = RSA.Create(2048).ExportPkcs8PrivateKeyPem(), ["Email:Provider"] = "Sink", ["Email:SupportAddress"] = "support@solvelt.test", ["Storage:LocalRoot"] = Path.Combine(_dir, "up"),
             ["Orders:InboundSecret"] = "prod-inbound-secret-0123456789abcdef", ["Orders:OutboundSecret"] = "prod-outbound-secret-fedcba987654321",
-            ["LocalDelivery:ProofUrlKey"] = "prod-proof-url-key-0123456789abcdef", ["Orders:RunBackgroundJobs"] = "false", ["Passkeys:RelyingPartyId"] = "localhost", ["Passkeys:AllowedOrigins:0"] = "http://localhost:5173",
+            ["LocalDelivery:ProofUrlKey"] = "prod-proof-url-key-0123456789abcdef", ["Shipping:LinkKey"] = "prod-shipping-link-key-0123456789abcdef", ["Orders:RunBackgroundJobs"] = "false", ["Passkeys:RelyingPartyId"] = "localhost", ["Passkeys:AllowedOrigins:0"] = "http://localhost:5173",
             ["AdminSeed:Email"] = "admin@example.com", ["AdminSeed:Password"] = "Qu1et-Marble-Fox-Test!",
         };
         foreach (var (k, v) in cfg) b.UseSetting(k, v);
