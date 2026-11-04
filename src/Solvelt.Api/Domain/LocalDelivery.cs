@@ -227,4 +227,10 @@ public class TrackingEvent
     public DateTime RecordedAt { get; set; }
     /// <summary>Provider/event id for idempotency (unique per order when set).</summary>
     public string? SourceEventId { get; set; }
+    // ---- carrier tracking (workstream K), additive ----
+    /// <summary>Set for a return parcel's history (ShipmentId is then null).</summary>
+    public Guid? ReturnShipmentId { get; set; }
+    public string? Location { get; set; }
+    /// <summary>webhook | poll (carrier tracking), null for local deliveries.</summary>
+    public string? Source { get; set; }
 }
