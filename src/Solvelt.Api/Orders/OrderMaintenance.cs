@@ -112,6 +112,8 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         await db.SaveChangesAsync(ct);
 
         var nonces = await db.InboundNonces.Where(n => n.ExpiresAt < now).ExecuteDeleteAsync(ct);
+        var auditCut = now.AddDays(-Math.Max(1, o.InboundRejectedRetentionDays));
+        await db.AuditEvents.Where(e => e.Type == "inbound.rejected" && e.At < auditCut).ExecuteDeleteAsync(ct);   // rejected-request audit rows are kept a limited time
         return new(accepted, completed, redacted, convRedacted, overdue, nonces, await ReconcileReservationsAsync(now, ct), await RedactContentReportsAsync(now, ct));
     }
 
