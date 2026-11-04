@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
@@ -384,14 +385,18 @@ public static class ModerationEndpoints
             var (ok, err) = await svc.ReportAsync(kind, id, reason);
             return ok ? Results.Json(new { reported = true }) : AdminHttp.Err(404, "not_found", err!);
         }
-        g.MapPost("/content/reports", async (HttpContext ctx, InboundVerifier verifier, ModerationService svc, MessageService messages) =>
+        g.MapPost("/content/reports", async (HttpContext ctx, InboundVerifier verifier, ModerationService svc, MessageService messages, Catalog.MarketplaceWriteLimits limits) =>
         {
-            var (req, err) = await Orders.InternalEndpoints.Signed<ContentReportIn>(ctx, verifier);
-            if (err is not null) return err;
-            var r = await svc.IntakeAsync(req!, async (id, reason) => (await messages.ReportAsync(id, reason)).Status < 400);
+            var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
+            if (!v.Ok) return limits.Rejected(ctx, v.Status, v.Code, v.Message);      // failed verification: only the per-IP bucket is touched
+            ContentReportIn? req;
+            try { req = JsonSerializer.Deserialize<ContentReportIn>(v.Body!, Orders.OrderJson.Opts); } catch (JsonException) { req = null; }
+            if (req is null) return AdminHttp.Err(400, "invalid_json", "The request body is not valid JSON of the expected shape.");
+            if (!limits.TryReport(req.TargetId)) return limits.Limited(ctx, "Too many reports for this target or from this caller.");
+            var r = await svc.IntakeAsync(req, async (id, reason) => (await messages.ReportAsync(id, reason)).Status < 400);
             if (r.Status >= 400) return AdminHttp.Err(r.Status, r.Code, r.Message);
             return Results.Json(new { reportId = r.Report!.ReportId, status = r.Report.Decision is null ? "open" : "decided", decision = r.Report.Decision, duplicate = r.Duplicate }, statusCode: r.Duplicate ? 200 : 201);
-        }).RequireRateLimiting("internal-reports");
+        }).DisableRateLimiting();      // the group's per-IP "internal" policy would be a global cap for the one marketplace caller; this endpoint has its own keyed limits
         g.MapPost("/listings/{id:guid}/reports", (HttpContext ctx, InboundVerifier v, ModerationService svc, Guid id) => Handle(ctx, v, svc, "listing", id));
         g.MapPost("/booking-messages/{id:guid}/reports", (HttpContext ctx, InboundVerifier v, ModerationService svc, Guid id) => Handle(ctx, v, svc, "booking_message", id));
     }

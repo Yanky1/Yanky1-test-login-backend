@@ -11,8 +11,8 @@ Everything here lives under the signed internal API `/api/internal/v1` and is si
 | `GET /catalog/listings/{id}` | one visible listing | same |
 | `GET /catalog/categories`, `GET /catalog/brands` | taxonomy and brands | same |
 | `GET /catalog/images/{imageId}` | original image bytes of a visible listing | same |
-| `POST /products/{id}/questions` | a buyer question for the seller's Q&A inbox | `RateLimit:InternalQuestionsPerMinute` (120) |
-| `POST /content/reports` | a content report for staff moderation | `RateLimit:InternalReportsPerMinute` (120) |
+| `POST /products/{id}/questions` | a buyer question for the seller's Q&A inbox | per (caller, listing) + per-caller ceiling, section 8 |
+| `POST /content/reports` | a content report for staff moderation | per (caller, target) + per-caller ceiling, section 8 |
 
 ## 1. Which listings are visible
 
@@ -162,6 +162,20 @@ Reviews, messages: the marketplace acts on its own content when it receives the 
   marketplace that starts from `since=0` receives the complete catalog; nobody has to edit listings first. Listings that are not visible then (suspended seller, hidden, draft) get their first
   version when they become visible.
 * Configuration: the signed API needs `Orders:InboundSecret` / `Orders:OutboundSecret` and a `Orders:WebhookUrl` for the events, as for orders. Rate limits: `RateLimit:InternalCatalogPerMinute`,
-  `RateLimit:InternalQuestionsPerMinute`, `RateLimit:InternalReportsPerMinute`.
+  and the write limits of section 8.
 * Operations: a stuck `listing.*` event (Dead after `Orders:OutboxMaxAttempts`) does not block newer versions of the same listing; re-queueing it after a newer version went out marks it `superseded by a newer version` instead of sending it (resume the feed instead).
+
+## 8. Rate limits of the marketplace write endpoints
+The marketplace is ONE caller for all shoppers, so a per-IP key would be a global cap (it was 120/min for everybody). Questions and reports therefore follow the availability pattern of `docs/SERVICES.md`:
+
+| Who | Bucket (per minute) | Config (default) |
+|---|---|---|
+| **Signature-verified** question | (caller, **listingId**) | `RateLimit:InternalQuestionsPerListingPerMinute` (60) |
+| **Signature-verified** report | (caller, **targetId**) | `RateLimit:InternalReportsPerTargetPerMinute` (60) |
+| Every verified question / report | the caller's ceiling | `RateLimit:InternalQuestionsPerCallerPerMinute` / `RateLimit:InternalReportsPerCallerPerMinute` (2000 each) |
+| **Unsigned, forged, stale or replayed** requests | per client IP, spent only by failures | `RateLimit:InternalUnsignedPerMinute` (60) |
+
+* The caller is `marketplace`: the holder of `Orders:InboundSecret` is the only verified identity this API has.
+* A request that fails verification is answered with its own status (`401 ...`) while the per-IP bucket has room and with `429 rate_limited` after that. Verified requests never touch that bucket, so a forged flood from any address (even the marketplace's own) cannot make signed requests fail.
+* `429` bodies are `{code: "rate_limited", ...}` with `Retry-After: 60`. The old keys `RateLimit:InternalQuestionsPerMinute` and `RateLimit:InternalReportsPerMinute` are gone.
 
