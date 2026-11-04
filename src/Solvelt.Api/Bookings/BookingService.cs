@@ -340,7 +340,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         await using var tx = await db.Database.BeginTransactionAsync();
         if (!await ClaimCalendarAsync(b.ProviderId)) { await tx.RollbackAsync(); return BRes.Fail(409, "slot_unavailable", "That time is no longer available."); }
         // everything below is decided INSIDE the provider lock: re-read the booking (a parallel confirm may have won) and take the time now
-        if (hooks.AfterConfirmLock is { } hook) await hook();   // test seam: lets a test move the clock between the request and the decision below (null in production)
+        if (hooks.AfterConfirmLock is { } hook) await hook(db);   // test seam: lets a test move the clock between the request and the decision below (null in production)
         await db.Entry(b).ReloadAsync();
         if (b.Status is BookingStatus.Confirmed or BookingStatus.Requested or BookingStatus.Rescheduled) { await tx.RollbackAsync(); return Existing(b); }
         if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) { await tx.RollbackAsync(); return BRes.Conflict($"A {b.Status} booking can't be confirmed.", "hold_not_confirmable"); }

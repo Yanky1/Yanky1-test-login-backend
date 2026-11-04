@@ -137,6 +137,6 @@ public class CalendarService(AppDbContext db, IOptions<BookingOptions> opt)
 /// <summary>Seams for tests only; every member is null in production.</summary>
 public sealed class BookingTestHooks
 {
-    /// <summary>Runs right after a confirm took the provider lock, before the decision about the hold is made.</summary>
-    public Func<Task>? AfterConfirmLock { get; set; }
+    /// <summary>Runs right after a confirm took the provider lock, before the decision about the hold is made; gets the request's own context (so a test can change the row on the same connection and transaction).</summary>
+    public Func<Solvelt.Api.Data.AppDbContext, Task>? AfterConfirmLock { get; set; }
 }

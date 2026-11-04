@@ -37,7 +37,7 @@ public class BookingLapsedHoldTests(SvcFactory f) : IClassFixture<SvcFactory>
         var wed = Svc.Next(f, DayOfWeek.Wednesday); var mid = Svc.BookingId(); var start = Svc.Local(b.Tz, wed, 10);
         Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, "/bookings/holds", Svc.Body(b, mid, start, "online"))).StatusCode);
         f.Time.Advance(TimeSpan.FromMinutes(5));                                 // still live when the request comes in
-        Hooks.AfterConfirmLock = () => { f.Time.Advance(TimeSpan.FromMinutes(10)); return Task.CompletedTask; };   // ... but not any more by the time the lock is held
+        Hooks.AfterConfirmLock = _ => { f.Time.Advance(TimeSpan.FromMinutes(10)); return Task.CompletedTask; };   // ... but not any more by the time the lock is held
         try
         {
             var r = await Svc.Post(b, $"/bookings/{mid}/confirm", Svc.Body(b, mid, start, "online"));
@@ -89,5 +89,20 @@ public class BookingLapsedHoldTests(SvcFactory f) : IClassFixture<SvcFactory>
         Assert.Single(a.Select(m => m.SequenceScope).Distinct()); Assert.StartsWith("bk:", a[0].SequenceScope);
         Assert.Equal(Enumerable.Range(1, a.Count).Select(i => (long)i), a.Select(m => m.OrderKey!.Value));
         Assert.NotEqual(a[0].SequenceScope, c[0].SequenceScope); Assert.Equal(1, c[0].OrderKey);      // another booking: its own sequence
+    }
+
+    [Fact]
+    public async Task A_hold_that_becomes_final_between_the_request_and_the_provider_lock_answers_hold_not_confirmable()
+    {
+        var b = await Svc.NewBiz(f);
+        var wed = Svc.Next(f, DayOfWeek.Wednesday); var mid = Svc.BookingId(); var start = Svc.Local(b.Tz, wed, 10);
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, "/bookings/holds", Svc.Body(b, mid, start, "online"))).StatusCode);
+        Hooks.AfterConfirmLock = async db => await db.Bookings.Where(x => x.MarketplaceBookingId == mid).ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, BookingStatus.CancelledByBuyer));   // on the request's own connection and transaction
+        try
+        {
+            var r = await Svc.Post(b, $"/bookings/{mid}/confirm", Svc.Body(b, mid, start, "online"));
+            Assert.Equal(HttpStatusCode.Conflict, r.StatusCode); Assert.Equal("hold_not_confirmable", await r.ErrCode());   // decided under the lock, after re-reading the row
+        }
+        finally { Hooks.AfterConfirmLock = null; }
     }
 }
