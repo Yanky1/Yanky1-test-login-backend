@@ -212,15 +212,19 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
     }
 
     [Fact]
-    public async Task Versions_are_handed_out_by_the_counter_row_which_always_equals_the_highest_version()
+    public async Task Versions_are_handed_out_by_the_counter_row_which_never_falls_behind_any_version()
     {
         // The counter row is what serializes catalog-changing transactions on PostgreSQL (a row lock held until commit); a version taken any other way
         // (MAX()+1, a sequence) would not be visible in commit order. SQLite cannot show that race, so this pins the mechanism itself.
+        // (The counter may exceed the highest stored version: listings that were deleted keep their consumed version.)
         var s = await Orders.NewShop(f);
+        long Counter() => f.WithDb(db => db.CatalogCounters.AsNoTracking().Select(c => c.Value).Single());
+        var before = Counter();
         await SetPrice(s.Owner, s.Product, 12); await SetPrice(s.Owner, s.Product, 13);
-        var (counter, max) = f.WithDb(db => (db.CatalogCounters.AsNoTracking().Select(c => c.Value).Single(), db.Products.AsNoTracking().Max(p => p.CatalogVersion)));
-        Assert.True(counter > 0);
-        Assert.Equal(max, counter);
+        var after = Counter();
+        Assert.True(after - before >= 2, $"two visible changes must advance the counter by at least 2 (was {before}, now {after})");
+        Assert.True(after >= Version(f, s.Product));
+        Assert.True(after >= f.WithDb(db => db.Products.AsNoTracking().Max(p => p.CatalogVersion)));
     }
 
     [Fact]
