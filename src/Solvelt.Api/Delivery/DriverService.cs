@@ -123,6 +123,7 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
         if (d is null) return Res.Fail(404, "not_found", "Stop not found.");
         var route = await db.DeliveryRoutes.FirstAsync(r => r.Id == d.RouteId);
         var now = time.UtcNow();
+        var clientSupplied = ev.ClientAt is not null;      // only a time the phone sent is a client time: a server-stamped one must never make a slow phone clock look stale
         var clientAt = ev.ClientAt is { } c ? OrderSupport.Utc(c) : now;
         if (clientAt > now.AddMinutes(5)) clientAt = now;      // a wrong phone clock must not freeze the stop for later events
         // ...and must not travel back in time either: nothing on a route can have happened before the route started / the shipment left. A delivered event dated
@@ -144,15 +145,16 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
             return Res.Success(new { applied = false, reason = why });
         }
 
-        if (d.LastEventClientAt is { } last && clientAt < last) return await Ignore("ignored_stale");
+        if (clientSupplied && d.LastEventClientAt is { } last && clientAt < last) return await Ignore("ignored_stale");
         // "out for delivery" changes the whole route (it demotes the other stop), so it is ordered against the newest event of ANY stop of the route
-        if (type == "out_for_delivery" && await db.LocalDeliveries.Where(x => x.RouteId == route.Id && x.LastEventClientAt != null).MaxAsync(x => x.LastEventClientAt) is { } routeLast && clientAt < routeLast)
+        if (clientSupplied && type == "out_for_delivery" && await db.LocalDeliveries.Where(x => x.RouteId == route.Id && x.LastEventClientAt != null).MaxAsync(x => x.LastEventClientAt) is { } routeLast && clientAt < routeLast)
             return await Ignore("ignored_stale");
         if (d.Status is LocalStatus.Delivered or LocalStatus.Returned or LocalStatus.Cancelled) return await Ignore("ignored_state");
         if (route.Status != RouteStatus.Active) return await Undo(Res.Conflict("Start the route first.", "route_not_active"));
 
         var order = await orders.Full(db.Orders.Where(x => x.Id == d.OrderId)).FirstAsync();
-        d.LastEventClientAt = clientAt; d.Version++; d.UpdatedAt = now;
+        if (clientSupplied) d.LastEventClientAt = clientAt;      // events without a clientAt are ordered by arrival and leave the client-time watermark alone
+        d.Version++; d.UpdatedAt = now;
         Res result;
         switch (type)
         {

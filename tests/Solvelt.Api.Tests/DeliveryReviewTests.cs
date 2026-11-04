@@ -121,6 +121,18 @@ public class DeliveryReviewTests : IDisposable
         Assert.Equal("ignored_stale", f.WithDb(db => db.DeliveryClientEvents.Single(e => e.DeliveryId == t.Sa && e.Type == "out_for_delivery" && e.Result != "applied").Result));
     }
 
+    [Fact]
+    public async Task A_server_stamped_event_does_not_make_a_slow_phone_clock_look_stale()
+    {
+        var t = await TwoStops();
+        f.Time.Advance(TimeSpan.FromMinutes(10));
+        var now = f.Time.GetUtcNow().UtcDateTime;
+        Assert.Equal(HttpStatusCode.OK, (await Event(t.Dr, t.Sb, "out_for_delivery")).StatusCode);                 // an older client: no clientAt, stamped by the server (now)
+        var slow = await Node(await Event(t.Dr, t.Sa, "out_for_delivery", at: now.AddMinutes(-3)));                  // a phone whose clock runs 3 minutes slow
+        Assert.True((bool)slow["applied"]!, "a slow clock must not silently drop the driver's out_for_delivery");
+        Assert.Equal(LocalStatus.OutForDelivery, Del(f, t.A).Status);
+    }
+
     // 5 -------------------------------------------------------------------------------------------------------------------------------
     [Fact]
     public async Task Overlapping_maintenance_runs_release_a_cancelled_orders_window_exactly_once()
