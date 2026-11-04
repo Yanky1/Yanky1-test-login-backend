@@ -90,6 +90,7 @@ Moderators and Super admins (roles that can act on reports) read the reported me
 | Users | `users?q=` (e-mail, phone, id), `users/{id}` (memberships, sessions, 2FA/passkey status, lockout, recent security events), `sign-out-everywhere`, `clear-lockout`, `send-password-reset`, `remove-phone`, `disable-2fa` |
 | Moderation | `moderation` (queue), `moderation/{id}`, `dismiss`, `warn-seller`, `escalate-suspend`; `listings/{id}` (read-only), `listings/{id}/hide|unhide` |
 | Support lookups | `lookups/{kind}?q=`, `lookups/{kind}/{id}`, `lookups/{kind}/{id}/reveal` |
+| Local delivery (read-only; `DeliveryView`, proof access needs `LookupsReveal` + reason) | `sellers/{id}/local-delivery`, `local-delivery/deliveries/{id}/proof-access` (see `docs/LOCAL-DELIVERY.md`) |
 | Integration health | `integrations/outbox` (+ `/{id}`, `/retry`, `/discard`), `integrations/inbound`, `integrations/phone`, `integrations/jobs` |
 | Audit | `audit`, `audit/export` |
 | Settings | `settings`, `settings/fee`, `settings/legal`, `settings/seller-fields` (+ `/preview`) |
