@@ -155,10 +155,11 @@ public class PaymentReviewTests
         Assert.Equal(TransferStatus.Failed, t.Status);
 
         // the batch job holds the lease: a retry must not run next to it
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName)));
+        var token = await Pay.Lease(f);
+        Assert.NotNull(token);
         Assert.Equal((false, "busy"), await Pay.Run(f, sp => sp.GetRequiredService<TransferService>().RetryAsync(t.Id)));
         Assert.Equal(TransferStatus.Failed, Transfers(f, s.Seller)[0].Status);
-        await Pay.Run(f, async sp => { await sp.GetRequiredService<JobLeaseService>().ReleaseAsync(TransferService.JobName); return 0; });
+        await Pay.Unlease(f, token!);
 
         // the debit journal can not be written (its key is taken): the status change must roll back with it, never a Pending transfer without its debit
         f.WithDb(db => { db.LedgerJournals.Add(new LedgerJournal { SellerId = s.Seller, Currency = "USD", Type = "adjustment", IdempotencyKey = $"transfer-retry:{t.Id}:1", Memo = "squatter", CreatedAt = f.Time.GetUtcNow().UtcDateTime,
