@@ -54,7 +54,7 @@ Development/Testing only: `seller/dev/*` order and booking simulator, `/api/dev/
 
 ## Deploy notes
 * PostgreSQL: set `Database:Provider=Postgres`; apply migrations with `dotnet ef database update` (or `Database:AutoMigrate=true` for a single instance).
-* Shipping: set `SHIPPO_API_KEY` (live token in Production; Production refuses a test token) and `Shipping:WebhookSecret`, register `https://<host>/api/v1/shipping/webhooks/shippo?token=<secret>` for `track_updated`, set `Shipping:PublicBaseUrl`. Go-live checklist: `docs/SHIPPING.md`.
+* Shipping: set `SHIPPO_API_KEY` (live token in Production; Production refuses a test token) `Shipping:WebhookSecret` and `Shipping:LinkKey` (a separate random value, not an Orders secret), register `https://<host>/api/v1/shipping/webhooks/shippo?token=<secret>` for `track_updated`, set `Shipping:PublicBaseUrl`. Go-live checklist: `docs/SHIPPING.md`.
 * Payments: set `STRIPE_SECRET_KEY` (live key in Production; Production refuses a test key) and `STRIPE_WEBHOOK_SECRET`, register `https://<host>/api/webhooks/stripe` (platform + Connect endpoints). Go-live checklist: `docs/PAYMENTS.md`.
 * Required in Production: `Orders:InboundSecret` + `Orders:OutboundSecret` (different) and `Orders:WebhookUrl`, `App:HmacSecret`, `Jwt:PrivateKeyPem`, Turnstile keys, an email provider, `DataProtection:KeysPath` (reset links must survive restarts), shared file storage if >1 instance.
 * Run behind TLS; set `App:TrustedProxies` to your reverse proxy so per-IP rate limits use the real client IP.

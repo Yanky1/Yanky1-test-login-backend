@@ -213,3 +213,37 @@ public class ShippingReviewTests
         Assert.Equal(first, f.WithDb(db => db.TrackingEvents.Count(e => e.OrderId == id)));
     }
 }
+
+/// <summary>Label links are signed with their own key, never with a secret the marketplace also holds.</summary>
+public class ShippingLinkKeyTests
+{
+    private static LabelLinks Links(string linkKey, string ordersSecret) =>
+        new(Microsoft.Extensions.Options.Options.Create(new ShippingOptions { LinkKey = linkKey, PublicBaseUrl = "https://api.test" }), TimeProvider.System);
+
+    [Fact]
+    public void The_signature_depends_on_the_link_key_and_not_on_the_orders_secrets()
+    {
+        var id = Guid.NewGuid();
+        var (u1, _) = Links("key-one-0123456789abcdef", "orders-A").Create(id);
+        Assert.Contains("sig=", u1);
+        var sig = u1[(u1.IndexOf("sig=", StringComparison.Ordinal) + 4)..]; var exp = long.Parse(u1.Split("exp=")[1].Split('&')[0]);
+        Assert.True(Links("key-one-0123456789abcdef", "orders-B").Valid(id, exp, sig));      // the Orders secret is irrelevant
+        Assert.False(Links("key-two-0123456789abcdef", "orders-A").Valid(id, exp, sig));      // another link key does not verify it
+    }
+
+    [Fact]
+    public void Production_refuses_to_start_without_a_link_key_or_with_an_orders_secret_as_the_key()
+    {
+        foreach (var (key, expected) in new[] { ("", "Shipping:LinkKey must be configured"), ("prod-outbound-secret-fedcba987654321", "must differ from the Orders secrets") })
+        {
+            using var f = new NoLinkKeyFactory(key);
+            var ex = Record.Exception(() => f.CreateClient());
+            Assert.NotNull(ex); Assert.Contains(expected, ex!.ToString());
+        }
+    }
+
+    private sealed class NoLinkKeyFactory(string key) : ProductionFactory
+    {
+        protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder b) { base.ConfigureWebHost(b); b.UseSetting("Shipping:LinkKey", key); }
+    }
+}
