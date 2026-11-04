@@ -123,6 +123,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
     public DbSet<PaymentTransfer> PaymentTransfers => Set<PaymentTransfer>();
     public DbSet<PaymentPayout> PaymentPayouts => Set<PaymentPayout>();
     public DbSet<PaymentDispute> PaymentDisputes => Set<PaymentDispute>();
+    public DbSet<UnallocatedDispute> UnallocatedDisputes => Set<UnallocatedDispute>();
     public DbSet<PaymentReference> PaymentReferences => Set<PaymentReference>();
     public DbSet<ProcessedPaymentEvent> ProcessedPaymentEvents => Set<ProcessedPaymentEvent>();
     public DbSet<ReconciliationFlag> ReconciliationFlags => Set<ReconciliationFlag>();

@@ -3003,10 +3003,17 @@ namespace Solvelt.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ExternalId")
-                        .IsUnique();
+                    b.HasIndex("ExternalId");
 
                     b.HasIndex("SellerId");
+
+                    b.HasIndex("ExternalId", "BookingId")
+                        .IsUnique()
+                        .HasFilter("\"BookingId\" IS NOT NULL");
+
+                    b.HasIndex("ExternalId", "OrderId")
+                        .IsUnique()
+                        .HasFilter("\"OrderId\" IS NOT NULL");
 
                     b.ToTable("payment_disputes", (string)null);
                 });
@@ -5494,6 +5501,76 @@ namespace Solvelt.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("tracking_events", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Domain.UnallocatedDispute", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("AllocatedCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("AmountCents")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ChargeRef")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<DateTime>("EventAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("EvidenceDueBy")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("FlagId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MarketplaceOrderId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExternalId")
+                        .IsUnique();
+
+                    b.HasIndex("ResolvedAt");
+
+                    b.ToTable("payment_unallocated_disputes", (string)null);
                 });
 
             modelBuilder.Entity("Solvelt.Api.Domain.UserSession", b =>
