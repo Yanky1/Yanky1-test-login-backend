@@ -109,8 +109,11 @@ public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox
     internal static object OrderRef(SellerOrder o) => new { sellerOrderId = o.Id, sellerOrderNumber = o.Number, marketplaceOrderId = o.MarketplaceOrderId };
 
     // ---- dispatch -------------------------------------------------------------------------------------------------------------
-    public async Task<AccountMembership?> DriverAsync(Guid sellerId, Guid membershipId) =>
-        await db.Memberships.FirstOrDefaultAsync(m => m.Id == membershipId && m.SellerId == sellerId && m.Status == MembershipStatus.Active && Permissions.Has(m.Role, Permission.DeliveryDrive));
+    public async Task<AccountMembership?> DriverAsync(Guid sellerId, Guid membershipId)
+    {
+        var m = await db.Memberships.FirstOrDefaultAsync(x => x.Id == membershipId && x.SellerId == sellerId && x.Status == MembershipStatus.Active);
+        return m is not null && Permissions.Has(m.Role, Permission.DeliveryDrive) ? m : null;     // role check in memory: Permissions is not translatable to SQL
+    }
 
     public async Task<Res> AssignAsync(LocalDelivery d, Guid driverMembershipId, Guid actor)
     {
@@ -282,7 +285,8 @@ public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox
         if (d.ShipmentId is { } sid)
         {
             var ship = o.Shipments.FirstOrDefault(s => s.Id == sid) ?? await db.Shipments.FirstOrDefaultAsync(s => s.Id == sid);
-            if (ship is not null && at >= (ship.TrackingStatusAt ?? DateTime.MinValue)) { ship.TrackingStatus = status; ship.TrackingStatusAt = at; ship.Eta = d.EtaUtc; }
+            // the delivery's own state machine (and the stale-event rule in DriverService) orders local events, so a skewed phone clock can't leave the shipment on an old status
+            if (ship is not null) { ship.TrackingStatus = status; ship.TrackingStatusAt = at; ship.Eta = d.EtaUtc; }
         }
         outbox.Enqueue("order.tracking_updated", d.SellerId, o.MarketplaceOrderId, new
         {

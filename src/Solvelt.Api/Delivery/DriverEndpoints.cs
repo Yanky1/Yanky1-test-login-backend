@@ -57,9 +57,9 @@ public static class DeliveryDriverEndpoints
         });
 
         // short-lived signed link to a proof-of-delivery file (sent to the marketplace in shipment.delivered)
-        app.MapGet("/api/public/delivery-proof/{id:guid}", async (Guid id, long exp, string? sig, HttpContext ctx, AppDbContext db, DeliveryService svc, IFileStorage storage, TimeProvider time) =>
+        app.MapGet("/api/public/delivery-proof/{id:guid}", async (Guid id, long? exp, string? sig, HttpContext ctx, AppDbContext db, DeliveryService svc, IFileStorage storage, TimeProvider time) =>
         {
-            if (!svc.ProofSigValid(id, exp, sig, time.UtcNow())) return Results.NotFound();
+            if (exp is not { } e || !svc.ProofSigValid(id, e, sig, time.UtcNow())) return Results.NotFound();
             var p = await db.DeliveryProofs.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null);
             return p is null ? Results.NotFound() : await DeliverySellerEndpoints.ProofFile(p, storage, ctx);
         }).AllowAnonymous().RequireRateLimiting("internal");
