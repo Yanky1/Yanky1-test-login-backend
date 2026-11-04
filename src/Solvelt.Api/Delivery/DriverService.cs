@@ -125,6 +125,11 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
         var now = time.UtcNow();
         var clientAt = ev.ClientAt is { } c ? OrderSupport.Utc(c) : now;
         if (clientAt > now.AddMinutes(5)) clientAt = now;      // a wrong phone clock must not freeze the stop for later events
+        // ...and must not travel back in time either: nothing on a route can have happened before the route started / the shipment left. A delivered event dated
+        // weeks ago would otherwise give the order a DeliveredAt before it shipped (and let the return window and the payout release fire at once).
+        var floor = route.StartedAt ?? now;
+        if (d.ShipmentId is { } shipId && await db.Shipments.AsNoTracking().Where(x => x.Id == shipId).Select(x => (DateTime?)x.ShippedAt).FirstOrDefaultAsync() is { } shippedAt && shippedAt > floor) floor = shippedAt;
+        if (clientAt < floor) clientAt = floor;
 
         // claim the event id first: of two parallel replays exactly one applies
         db.DeliveryClientEvents.Add(new DeliveryClientEvent { Id = eid, DeliveryId = d.Id, UserId = a.UserId, Type = type, ClientAt = clientAt, AppliedAt = now, Result = "applied" });
@@ -140,6 +145,9 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
         }
 
         if (d.LastEventClientAt is { } last && clientAt < last) return await Ignore("ignored_stale");
+        // "out for delivery" changes the whole route (it demotes the other stop), so it is ordered against the newest event of ANY stop of the route
+        if (type == "out_for_delivery" && await db.LocalDeliveries.Where(x => x.RouteId == route.Id && x.LastEventClientAt != null).MaxAsync(x => x.LastEventClientAt) is { } routeLast && clientAt < routeLast)
+            return await Ignore("ignored_stale");
         if (d.Status is LocalStatus.Delivered or LocalStatus.Returned or LocalStatus.Cancelled) return await Ignore("ignored_state");
         if (route.Status != RouteStatus.Active) return await Undo(Res.Conflict("Start the route first.", "route_not_active"));
 
@@ -150,7 +158,11 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
         {
             case "out_for_delivery":
                 if (d.Status != LocalStatus.InTransit) return await Undo(Res.Conflict("This stop can't go out for delivery now.", "invalid_state"));
-                foreach (var other in await db.LocalDeliveries.Where(x => x.RouteId == route.Id && x.Id != d.Id && x.Status == LocalStatus.OutForDelivery).ToListAsync()) { other.Status = LocalStatus.InTransit; other.Version++; }
+                foreach (var other in await db.LocalDeliveries.Where(x => x.RouteId == route.Id && x.Id != d.Id && x.Status == LocalStatus.OutForDelivery).ToListAsync()) {
+                    other.Status = LocalStatus.InTransit; other.Version++;
+                    var otherOrder = await orders.Full(db.Orders.Where(x => x.Id == other.OrderId)).FirstAsync();
+                    await svc.RecordAsync(other, otherOrder, TrackingStatus.InTransit, "Another stop is next", clientAt);       // its shipment status and the buyer's event follow
+                }
                 d.Status = LocalStatus.OutForDelivery;
                 await svc.RecordAsync(d, order, TrackingStatus.OutForDelivery, "Out for delivery", clientAt);
                 result = await svc.SaveAsync();
