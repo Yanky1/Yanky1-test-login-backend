@@ -144,7 +144,7 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
         for (var i = 0; i < 5; i++) more.Add(await Orders.ActiveProduct(s.Owner, "Later mug " + i, s.Brand, "SKU-" + Guid.NewGuid().ToString("N")[..8]));
         // page through with limit 2
         var seen = new List<JsonNode>(); var cursor = start; var pages = 0;
-        while (true)
+        while (pages < 50)
         {
             var page = await GetOk(f, $"{Base}/listings?since={cursor}&limit=2");
             Assert.True(page["items"]!.AsArray().Count <= 2);
