@@ -84,6 +84,8 @@ public static class OrderViews
             .ToDictionaryAsync(l => l.ShipmentId!.Value, l => (Cost: l.CostCents, Currency: l.Currency));
         var accountTimeZone = await db.BookingSettings.AsNoTracking().Where(s => s.SellerId == o.SellerId).Select(s => s.TimeZone).FirstOrDefaultAsync() ?? "UTC";
         var returnShipments = await db.ReturnShipments.AsNoTracking().Where(r => r.OrderId == id).OrderBy(r => r.CreatedAt).ToListAsync();
+        // a label the seller voided (refund asked or confirmed) is dead; a parcel whose tracking merely STOPPED (60 days, undelivered) still has a working label
+        var deadLabels = (await db.ShippingLabels.AsNoTracking().Where(l => l.OrderId == id && l.Kind == LabelKind.Return && (l.Status == LabelStatus.Voided || l.Status == LabelStatus.Voiding)).Select(l => l.Id).ToListAsync()).ToHashSet();
         var authors = notes.Select(n => n.AuthorId).Distinct().ToList();
         var names = await db.Users.AsNoTracking().Where(u => authors.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Email ?? "");
         return new
@@ -129,7 +131,7 @@ public static class OrderViews
             conversationId = conv,
             needsAttention = o.NeedsAttention, attentionReason = o.AttentionReason?.Replace("tracking:", ""), attentionAt = o.AttentionAt,
             accountTimeZone,   // the zone shipping dates are shown in (the account zone of the calendar; UTC until one is set)
-            returnShipments = returnShipments.Select(r => new { id = r.Id, returnId = r.ReturnId, carrier = r.Carrier, service = r.Service, trackingNumber = r.TrackingNumber, trackingUrl = Tracking.Url(r.Carrier, r.TrackingNumber), trackingStatus = r.TrackingStatus ?? "unknown", eta = r.Eta, deliveredAt = r.DeliveredAt, labelId = r.LabelId, voided = r.DeliveredAt == null && r.TrackingStoppedAt != null }),
+            returnShipments = returnShipments.Select(r => new { id = r.Id, returnId = r.ReturnId, carrier = r.Carrier, service = r.Service, trackingNumber = r.TrackingNumber, trackingUrl = Tracking.Url(r.Carrier, r.TrackingNumber), trackingStatus = r.TrackingStatus ?? "unknown", eta = r.Eta, deliveredAt = r.DeliveredAt, labelId = r.LabelId, voided = r.LabelId != null && deadLabels.Contains(r.LabelId.Value) }),
             stockMismatch = events.Any(e => e.Type == "stock.mismatch"),
             actions = Actions(o, a, managerRefundLimit),
             reasons = new { cancel = OrderSupport.CancelReasons, refund = OrderSupport.RefundReasons, rejectReturn = OrderSupport.RejectReasons, carriers = Tracking.Carriers }

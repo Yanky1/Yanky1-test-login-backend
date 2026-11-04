@@ -132,6 +132,18 @@ public class ShippingReturnTests
     }
 
     [Fact]
+    public async Task A_return_parcel_whose_tracking_merely_stopped_is_not_reported_as_voided()
+    {
+        using var f = new ShipFactory();
+        var (s, id, _, pkg, rid, _) = await ApprovedReturn(f);
+        await s.Owner.Post($"{Base}/orders/{id}/returns/{rid}/label", new { package = Ship.Pkg(pkg) });
+        // what the 60-day maintenance does to an undelivered parcel: tracking stops, the label is still good (the buyer may hold it)
+        f.WithDb(db => { db.ReturnShipments.First().TrackingStoppedAt = f.Time.GetUtcNow().UtcDateTime; db.SaveChanges(); return 0; });
+        var rs = (await Orders.Detail(s.Owner, id))["returnShipments"]!.AsArray().Single()!;
+        Assert.False((bool)rs["voided"]!);
+    }
+
+    [Fact]
     public async Task An_international_return_needs_customs_and_a_return_address_is_required()
     {
         using var f = new ShipFactory();
