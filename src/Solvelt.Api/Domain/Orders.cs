@@ -262,6 +262,8 @@ public class OutboxMessage
     public string EventType { get; set; } = "";
     public Guid? SellerId { get; set; }
     public string AggregateId { get; set; } = "";
+    /// <summary>Per-aggregate ordering key (listing events carry the catalog version): a message is never sent while an older one of the same aggregate is still pending.</summary>
+    public long? OrderKey { get; set; }
     public string PayloadJson { get; set; } = "{}";
     public OutboxStatus Status { get; set; } = OutboxStatus.Pending;
     public int Attempts { get; set; }

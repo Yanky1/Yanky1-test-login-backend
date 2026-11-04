@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Text.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
@@ -15,7 +16,7 @@ using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Data;
 
-public class AppDbContext(DbContextOptions<AppDbContext> options)
+public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? clock = null)
     : IdentityDbContext<AppUser, IdentityRole<Guid>, Guid>(options)
 {
     public DbSet<SellerAccount> Sellers => Set<SellerAccount>();
@@ -48,6 +49,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<ProductFaq> ProductFaqs => Set<ProductFaq>();
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
     public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
+    public DbSet<CatalogCounter> CatalogCounters => Set<CatalogCounter>();
+    public DbSet<ContentReport> ContentReports => Set<ContentReport>();
     // orders + messaging (see Orders/)
     public DbSet<SellerOrder> Orders => Set<SellerOrder>();
     public DbSet<OrderLine> OrderLines => Set<OrderLine>();
@@ -135,17 +138,42 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<ShippingWebhookEvent> ShippingWebhookEvents => Set<ShippingWebhookEvent>();
     public DbSet<ShippingQuote> ShippingQuotes => Set<ShippingQuote>();
 
-    /// <summary>The ledger is append-only: an update or delete of a journal or entry through the change tracker is a programming error.</summary>
+    private TimeProvider Clock => clock ?? TimeProvider.System;
+
+    /// <summary>A second context on the SAME connection and transaction: lets set-based code (ExecuteUpdate callers) write rows through EF without flushing the caller's pending changes.</summary>
+    internal AppDbContext Sibling(TimeProvider time)
+    {
+        var s = new AppDbContext(options, time);
+        s.Database.SetDbConnection(Database.GetDbConnection());
+        if (Database.CurrentTransaction is { } t) s.Database.UseTransaction(t.GetDbTransaction());
+        return s;
+    }
+
+    /// <summary>The ledger is append-only: an update or delete of a journal or entry through the change tracker is a programming error. Catalog versions + events are added here (see CatalogTracking).</summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         GuardLedger();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        if (Catalog.CatalogTracking.Scan(this).IsEmpty) return base.SaveChanges(acceptAllChangesOnSuccess);
+        return SaveChangesAsync(acceptAllChangesOnSuccess).GetAwaiter().GetResult();
     }
 
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         GuardLedger();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var touch = Catalog.CatalogTracking.Scan(this);
+        if (touch.IsEmpty) return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        // the counter lock, the new versions, the events and the change itself must commit together
+        var own = Database.CurrentTransaction is null ? await Database.BeginTransactionAsync(cancellationToken) : null;
+        var undo = new Catalog.CatalogTracking.Undo();
+        try
+        {
+            await Catalog.CatalogTracking.ApplyAsync(this, Clock, touch, undo, cancellationToken);
+            var n = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            if (own is not null) await own.CommitAsync(cancellationToken);
+            return n;
+        }
+        catch { undo.Revert(); throw; }
+        finally { if (own is not null) await own.DisposeAsync(); }
     }
 
     private void GuardLedger()

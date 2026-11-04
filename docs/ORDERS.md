@@ -163,7 +163,7 @@ Respond `2xx` to acknowledge. Each message is **leased** (`LockedUntil`, atomic 
 `GET /api/v1/admin/outbox?status=dead`, re-queued with `POST /api/v1/admin/outbox/{id}/retry`). With no `WebhookUrl`, Development/Testing deliver to an
 in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signature); Production keeps events pending.
 
-`data.order` is always `{sellerOrderId, sellerOrderNumber, marketplaceOrderId}`.
+`data.order` is always `{sellerOrderId, sellerOrderNumber, marketplaceOrderId}` on the order events; the catalog and moderation events `listing.*` and `content.report_decided` (`docs/CATALOG.md`) are not about an order and carry none.
 
 | Event | Extra `data` fields |
 |---|---|
@@ -177,6 +177,9 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 | `return.decided` | `returnId`, `decision` (`approved`/`rejected`), `reason`, `note` |
 | `return.received` | `returnId`, `restocked` |
 | `refund.issued` | `refundId`, `amountCents`, `shippingCents`, `currency`, `reason`, `note`, `full`, `totalRefundedCents`, `returnId`, `lines:[{marketplaceLineId, sku, quantity, amountCents}]`. **The marketplace moves the money.** |
+| `listing.upserted` | `listingId`, `version` (catalog feed; see `docs/CATALOG.md`; delivered in version order per listing) |
+| `listing.unlisted` | `listingId`, `version`, `reason` (`not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`) |
+| `content.report_decided` | `reportId`, `kind` (`review`/`listing`/`message`), `targetId`, `decision` (`dismissed`/`hidden`/`removed`), `reasonShownToUser` (nullable) (`docs/CATALOG.md`, `docs/ADMIN.md`) |
 | `message.sent` | `messageId`, `conversationId`, `marketplaceConversationId`, `kind`, `marketplaceOrderId`, `sellerOrderNumber`, `productId`, `text`, `sentAt`, `attachments:[{id, fileName, contentType, size, path}]` |
 
 ### 3.5 Simulator (Development / Testing only)

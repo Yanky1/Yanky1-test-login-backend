@@ -12,8 +12,111 @@ namespace Solvelt.Api.Admin;
 
 public record ListingReportRequest(string? Reason);
 
-public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mailer mailer, AdminAudit audit, SellerAdminService sellers, TimeProvider time)
+public record ContentReportIn(string? ReportId, string? Kind, string? TargetId, string? Reason, string? Note, string? ReporterRef);
+public record IntakeResult(int Status, string Code, string Message, ContentReport? Report = null, bool Duplicate = false);
+
+public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mailer mailer, AdminAudit audit, SellerAdminService sellers, Outbox outbox, TimeProvider time)
 {
+    public const string DecisionDismissed = "dismissed", DecisionHidden = "hidden", DecisionRemoved = "removed";
+    public static readonly string[] ContentKinds = ["review", "listing", "message"];
+
+    /// <summary>Stable id for a marketplace-owned target (a review) so it can share the queue's (kind, targetId) uniqueness with our own Guid-keyed targets.</summary>
+    public static Guid RefGuid(string kind, string targetRef) => new(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(kind + ":" + targetRef))[..16]);
+
+    /// <summary>Optional text for the reporter: trimmed, at most 500 characters, null when blank.</summary>
+    public static string? Shown(string? s) { s = s?.Trim(); return string.IsNullOrEmpty(s) ? null : s.Length > 500 ? s[..500] : s; }
+
+    /// <summary>
+    /// Records the decision on every still-undecided marketplace report of this queue row and queues one <c>content.report_decided</c> event per report. The caller saves
+    /// (its SaveChanges commits the decision, the audit entry and the events together).
+    /// </summary>
+    private async Task DecideAsync(ModerationReport row, string decision, string? shownToUser)
+    {
+        var open = await db.ContentReports.Where(c => c.ModerationReportId == row.Id && c.Decision == null).ToListAsync();
+        var now = time.UtcNow();
+        foreach (var c in open)
+        {
+            c.Decision = decision; c.DecidedAt = now;
+            outbox.Enqueue("content.report_decided", row.SellerId == Guid.Empty ? null : row.SellerId, c.Id.ToString(),
+                new { reportId = c.ReportId, kind = c.Kind, targetId = c.TargetRef, decision, reasonShownToUser = shownToUser });
+        }
+    }
+
+    /// <summary>
+    /// Marketplace content report (POST /api/internal/v1/content/reports): idempotent on reportId. The report joins the existing queue row of its target
+    /// (reopening a resolved one), exactly like the older "report listing" path.
+    /// </summary>
+    public async Task<IntakeResult> IntakeAsync(ContentReportIn r, Func<string, string?, Task<bool>> flagMessage)
+    {
+        var reportId = r.ReportId?.Trim() ?? ""; var kind = r.Kind?.Trim().ToLowerInvariant() ?? ""; var target = r.TargetId?.Trim() ?? "";
+        var reason = r.Reason?.Trim() ?? ""; var note = r.Note?.Trim(); var reporter = r.ReporterRef?.Trim() ?? "";
+        if (reportId.Length is 0 or > 100) return new(422, "invalid_report", "reportId is required (at most 100 characters).");
+        if (!ContentKinds.Contains(kind)) return new(422, "invalid_report", "kind must be review, listing or message.");
+        if (target.Length is 0 or > 200) return new(422, "invalid_report", "targetId is required (at most 200 characters).");
+        if (reason.Length is 0 or > 300) return new(422, "invalid_report", "reason is required (at most 300 characters).");
+        if (note is { Length: > 1000 }) return new(422, "invalid_report", "note can be at most 1000 characters.");
+        if (reporter.Length is 0 or > 200) return new(422, "invalid_report", "reporterRef is required (at most 200 characters).");
+        if (string.IsNullOrEmpty(note)) note = null;
+
+        async Task<IntakeResult?> Existing()
+        {
+            var e = await db.ContentReports.AsNoTracking().FirstOrDefaultAsync(x => x.ReportId == reportId);
+            if (e is null) return null;
+            return e.Kind == kind && e.TargetRef == target && e.ReporterRef == reporter ? new(200, "ok", "", e, true)
+                : new(409, "report_id_conflict", "This reportId was already used for a different report.");
+        }
+        if (await Existing() is { } dup) return dup;
+
+        // resolve the target: who owns it, and what the staff queue shows
+        Guid queueTarget; Guid sellerId; string summary; string queueKind = kind;
+        switch (kind)
+        {
+            case "listing":
+                {
+                    if (!Guid.TryParse(target, out var pid)) return new(422, "invalid_report", "targetId of a listing report must be a listing id.");
+                    var p = await db.Products.AsNoTracking().Where(x => x.Id == pid).Select(x => new { x.SellerId, x.Title }).FirstOrDefaultAsync();
+                    if (p is null) return new(404, "not_found", "Unknown listing.");
+                    queueTarget = pid; sellerId = p.SellerId; summary = Cut(p.Title, 160);
+                    break;
+                }
+            case "message":
+                {
+                    var m = await db.Messages.AsNoTracking().Where(x => x.MarketplaceMessageId == target).Select(x => new { x.Id, x.SellerId, x.Text }).FirstOrDefaultAsync();
+                    if (m is not null) { queueTarget = m.Id; sellerId = m.SellerId; summary = Cut(Mask.Text(m.Text), 160); }
+                    else if (Guid.TryParse(target, out var bid) && await db.BookingMessages.AsNoTracking().Where(x => x.Id == bid).Select(x => new { x.SellerId, x.Text }).FirstOrDefaultAsync() is { } bm)
+                    { queueTarget = bid; sellerId = bm.SellerId; summary = Cut(Mask.Text(bm.Text), 160); queueKind = "booking_message"; }
+                    else return new(404, "not_found", "Unknown message.");
+                    break;
+                }
+            default:    // review: it lives on the marketplace; the portal keeps only the report and the decision
+                queueTarget = RefGuid("review", target); sellerId = Guid.Empty; summary = "Review reported by the marketplace";
+                break;
+        }
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var now = time.UtcNow();
+            var row = await db.ModerationReports.FirstOrDefaultAsync(x => x.Kind == queueKind && x.TargetId == queueTarget);
+            if (row is null) { row = new ModerationReport { Kind = queueKind, TargetId = queueTarget, SellerId = sellerId, Reason = Cut(reason, 300), Summary = summary, ReporterKind = "marketplace", CreatedAt = now }; db.ModerationReports.Add(row); }
+            else if (row.Status != ReportStatus.Open)
+            { row.Status = ReportStatus.Open; row.Reason = Cut(reason, 300); row.CreatedAt = now; row.ResolvedAt = null; row.ResolvedBy = null; row.Resolution = null; row.ResolutionNote = null; }
+            var report = new ContentReport { ReportId = reportId, Kind = kind, TargetRef = target, Reason = Cut(reason, 300), Note = note, ReporterRef = reporter, ModerationReportId = row.Id, CreatedAt = now };
+            db.ContentReports.Add(report);
+            try
+            {
+                await db.SaveChangesAsync();
+                if (kind == "message" && queueKind == "message") await flagMessage(target, reason);   // existing "report message" path: the seller's conversation shows the flag
+                return new(201, "ok", "", report);
+            }
+            catch (DbUpdateException)
+            {
+                db.ChangeTracker.Clear();
+                if (await Existing() is { } raced) return raced;     // a parallel delivery of the same reportId won, or another report created the queue row first: retry
+            }
+        }
+        return new(503, "retry", "The report could not be stored; retry.");
+    }
+
     private static string Cut(string? s, int n) => string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n] + "…";
 
     /// <summary>Turns buyer-reported and contact-flagged order messages into queue rows (idempotent; one row per message and kind).</summary>
@@ -81,57 +184,79 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
     private void Resolve(ModerationReport r, StaffContext s, ReportStatus st, string resolution, string reason)
     { r.Status = st; r.ResolvedAt = time.UtcNow(); r.ResolvedBy = s.UserId; r.Resolution = resolution; r.ResolutionNote = reason; }
 
-    public async Task<IResult> DismissAsync(StaffContext s, Guid id, string reason)
+    public async Task<IResult> DismissAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
         var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
         if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
         Resolve(r, s, ReportStatus.Dismissed, "dismissed", reason);
+        await DecideAsync(r, DecisionDismissed, shown);
         await audit.WriteAsync(s, "moderation.dismissed", "report", id, reason, new { status = "Open" }, new { status = "Dismissed" });
         return Results.Ok(new { id, status = "Dismissed" });
     }
 
-    public async Task<IResult> WarnAsync(StaffContext s, Guid id, string reason)
+    public async Task<IResult> WarnAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
         var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
         if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.SellerId == Guid.Empty) return AdminHttp.Err(409, "no_seller", "This report has no seller on this portal (it concerns marketplace content).");
         Resolve(r, s, ReportStatus.Actioned, "warned", reason);
+        await DecideAsync(r, DecisionDismissed, shown);   // the content stays: to the reporter the report is closed without a content action
         await audit.WriteAsync(s, "moderation.seller_warned", "report", id, reason, extra: "seller=" + r.SellerId);
         await NotifyAsync(r.SellerId, "moderation-warning", "A notice about your Solvelt account", "A notice from Solvelt", reason,
             "We received a report about content on your account and ask you to review our seller rules.");
         return Results.Ok(new { id, status = "Actioned", resolution = "warned" });
     }
 
-    public async Task<IResult> EscalateAsync(StaffContext s, Guid id, string reason)
+    public async Task<IResult> EscalateAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
         var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
         if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.SellerId == Guid.Empty) return AdminHttp.Err(409, "no_seller", "This report has no seller on this portal (it concerns marketplace content).");
         var res = await sellers.ChangeStatusAsync(s, r.SellerId, SellerStatus.Suspended, "moderation.escalated_suspend", reason);
         var status = (res as IStatusCodeHttpResult)?.StatusCode ?? 200;
         if (status >= 400) return res;
         db.ChangeTracker.Clear();
         r = await db.ModerationReports.FirstAsync(x => x.Id == id);
         Resolve(r, s, ReportStatus.Actioned, "suspended", reason);
+        await DecideAsync(r, DecisionRemoved, shown);     // suspending the seller takes all their listings off the marketplace
         await audit.WriteAsync(s, "moderation.escalated", "report", id, reason, extra: "seller=" + r.SellerId);
         return Results.Ok(new { id, status = "Actioned", resolution = "suspended" });
     }
 
-    public async Task<IResult> HideListingAsync(StaffContext s, Guid productId, string reason, Guid? reportId = null)
+    public async Task<IResult> HideListingAsync(StaffContext s, Guid productId, string reason, Guid? reportId = null, string? shown = null, bool remove = false)
     {
         var p = await db.Products.FirstOrDefaultAsync(x => x.Id == productId);
         if (p is null) return Results.NotFound();
-        if (p.ModeratedAt is not null) return AdminHttp.Err(409, "already_hidden", "This listing is already hidden.");
-        p.ModerationPrevStatus = p.Status; p.ModeratedAt = time.UtcNow(); p.ModerationReason = reason; p.ModeratedBy = s.UserId;
-        if (p.Status == ProductStatus.Active) p.Status = ProductStatus.Inactive;
+        if (p.ModeratedAt is not null && !remove) return AdminHttp.Err(409, "already_hidden", "This listing is already hidden.");
+        if (p.ModeratedAt is null) { p.ModerationPrevStatus = p.Status; p.ModeratedAt = time.UtcNow(); p.ModerationReason = reason; p.ModeratedBy = s.UserId; }
+        if (remove) p.Status = ProductStatus.Archived;
+        else if (p.Status == ProductStatus.Active) p.Status = ProductStatus.Inactive;
         p.Version++; p.UpdatedAt = time.UtcNow();
         foreach (var r in await db.ModerationReports.Where(x => x.Kind == "listing" && x.TargetId == productId && x.Status == ReportStatus.Open).ToListAsync())
-            Resolve(r, s, ReportStatus.Actioned, "hidden", reason);
-        audit.Add(s, "listing.hidden", "listing", productId, reason, new { status = p.ModerationPrevStatus.ToString() }, new { status = p.Status.ToString(), hidden = true }, "seller=" + p.SellerId);
+        {
+            Resolve(r, s, ReportStatus.Actioned, remove ? "removed" : "hidden", reason);
+            await DecideAsync(r, remove ? DecisionRemoved : DecisionHidden, shown);
+        }
+        audit.Add(s, remove ? "listing.removed" : "listing.hidden", "listing", productId, reason, new { status = p.ModerationPrevStatus.ToString() }, new { status = p.Status.ToString(), hidden = true }, "seller=" + p.SellerId);
         await db.SaveChangesAsync();
         await NotifyAsync(p.SellerId, "listing-hidden", "A listing was hidden", "One of your listings was hidden", reason, $"Solvelt hid your listing \"{p.Title}\".");
         return Results.Ok(new { productId, hidden = true });
+    }
+
+    public async Task<IResult> DecideContentAsync(StaffContext s, Guid id, string reason, string decision, string? shown)
+    {
+        var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+        if (r is null) return Results.NotFound();
+        if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.Kind == "listing") return await HideListingAsync(s, r.TargetId, reason, id, shown, remove: decision == DecisionRemoved);
+        var row = await db.ModerationReports.FirstAsync(x => x.Id == id);
+        Resolve(row, s, ReportStatus.Actioned, decision, reason);
+        await DecideAsync(row, decision, shown);
+        await audit.WriteAsync(s, "moderation." + decision, "report", id, reason, extra: "kind=" + row.Kind);
+        return Results.Ok(new { id, status = "Actioned", resolution = decision });
     }
 
     public async Task<IResult> UnhideListingAsync(StaffContext s, Guid productId, string reason)
@@ -203,16 +328,26 @@ public static class ModerationEndpoints
                 if (msg is not null) target = new { bookingId = msg.BookingId, messages = new[] { new { msg.Id, direction = msg.Direction, text = T(msg.Text), msg.CreatedAt } } };
             }
             else if (r.Kind == "listing") target = new { productId = r.TargetId };
+            var content = await db.ContentReports.AsNoTracking().Where(c => c.ModerationReportId == id).OrderBy(c => c.CreatedAt)
+                .Select(c => new { c.ReportId, c.Kind, targetId = c.TargetRef, c.Reason, c.Note, c.ReporterRef, c.Decision, c.DecidedAt, c.CreatedAt }).ToListAsync();
+            if (r.Kind == "review") target = new { reviewId = content.FirstOrDefault()?.targetId };
             await audit.WriteAsync(ctx.Staff(), "moderation.viewed", "report", id, null);
-            return Results.Ok(new { r.Id, r.Kind, r.TargetId, r.SellerId, r.Reason, r.Summary, r.ReporterKind, status = r.Status.ToString(), r.CreatedAt, r.ResolvedAt, r.Resolution, r.ResolutionNote, target });
+            return Results.Ok(new { r.Id, r.Kind, r.TargetId, r.SellerId, r.Reason, r.Summary, r.ReporterKind, status = r.Status.ToString(), r.CreatedAt, r.ResolvedAt, r.Resolution, r.ResolutionNote, target, contentReports = content });
         }, StaffPermission.ModerationView);
 
         m.APost("/{id:guid}/dismiss", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
-            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.DismissAsync(ctx.Staff(), id, reason), StaffPermission.ModerationAct);
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.DismissAsync(ctx.Staff(), id, reason, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
         m.APost("/{id:guid}/warn-seller", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
-            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.WarnAsync(ctx.Staff(), id, reason), StaffPermission.ModerationAct);
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.WarnAsync(ctx.Staff(), id, reason, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
         m.APost("/{id:guid}/escalate-suspend", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
-            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.EscalateAsync(ctx.Staff(), id, reason), StaffPermission.ModerationAct);
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.EscalateAsync(ctx.Staff(), id, reason, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
+
+        // decide a report by acting on the content: hide it (reversible) or remove it. Listings are hidden / archived here; messages and reviews are decided (the
+        // portal cannot edit a review: it lives on the marketplace, which acts on the content.report_decided event).
+        m.APost("/{id:guid}/hide-content", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.DecideContentAsync(ctx.Staff(), id, reason, ModerationService.DecisionHidden, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
+        m.APost("/{id:guid}/remove-content", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.DecideContentAsync(ctx.Staff(), id, reason, ModerationService.DecisionRemoved, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
 
         var l = g.MapGroup("/listings");
         l.AGet("/{id:guid}", async (Guid id, AppDbContext db) =>
@@ -230,7 +365,7 @@ public static class ModerationEndpoints
             });
         }, StaffPermission.ModerationView);
         l.APost("/{id:guid}/hide", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
-            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.HideListingAsync(ctx.Staff(), id, reason), StaffPermission.ModerationAct);
+            AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.HideListingAsync(ctx.Staff(), id, reason, null, ModerationService.Shown(r.ReasonShownToUser)), StaffPermission.ModerationAct);
         l.APost("/{id:guid}/unhide", async (Guid id, ReasonRequest r, HttpContext ctx, ModerationService svc) =>
             AdminHttp.NeedReason(r.Reason, out var reason) ?? await svc.UnhideListingAsync(ctx.Staff(), id, reason), StaffPermission.ModerationAct);
     }
@@ -249,6 +384,14 @@ public static class ModerationEndpoints
             var (ok, err) = await svc.ReportAsync(kind, id, reason);
             return ok ? Results.Json(new { reported = true }) : AdminHttp.Err(404, "not_found", err!);
         }
+        g.MapPost("/content/reports", async (HttpContext ctx, InboundVerifier verifier, ModerationService svc, MessageService messages) =>
+        {
+            var (req, err) = await Orders.InternalEndpoints.Signed<ContentReportIn>(ctx, verifier);
+            if (err is not null) return err;
+            var r = await svc.IntakeAsync(req!, async (id, reason) => (await messages.ReportAsync(id, reason)).Status < 400);
+            if (r.Status >= 400) return AdminHttp.Err(r.Status, r.Code, r.Message);
+            return Results.Json(new { reportId = r.Report!.ReportId, status = r.Report.Decision is null ? "open" : "decided", decision = r.Report.Decision, duplicate = r.Duplicate }, statusCode: r.Duplicate ? 200 : 201);
+        }).RequireRateLimiting("internal-reports");
         g.MapPost("/listings/{id:guid}/reports", (HttpContext ctx, InboundVerifier v, ModerationService svc, Guid id) => Handle(ctx, v, svc, "listing", id));
         g.MapPost("/booking-messages/{id:guid}/reports", (HttpContext ctx, InboundVerifier v, ModerationService svc, Guid id) => Handle(ctx, v, svc, "booking_message", id));
     }

@@ -175,64 +175,82 @@ public interface IInventoryService
     Task<(Guid ProductId, Guid? VariantId)?> FindBySkuAsync(Guid sellerId, string sku, CancellationToken ct = default);
 }
 
-public class InventoryService(AppDbContext db) : IInventoryService
+public class InventoryService(AppDbContext db, TimeProvider? clock = null) : IInventoryService
 {
     public const int MaxStock = 1_000_000;
 
-    public async Task<InventoryResult> ReserveAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default)
+    /// <summary>
+    /// Runs one set-based stock change and, when it succeeded, lets the catalog feed know if the PUBLIC availability of the listing changed. Both happen in one transaction
+    /// (the caller's, or one opened here), because ExecuteUpdate bypasses the SaveChanges hook that versions every other catalog change.
+    /// </summary>
+    private async Task<InventoryResult> WithCatalogAsync(Guid productId, CancellationToken ct, Func<Task<InventoryResult>> change)
     {
-        if (q <= 0) return new(false, "invalid_quantity");
-        var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Enabled
-                    && (v.Stock - v.Reserved >= q || db.Products.Any(p => p.Id == productId && p.AllowBackorder)))
-                .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved + q), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && !p.HasVariants && (p.Stock - p.Reserved >= q || p.AllowBackorder))
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved + q), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "insufficient_stock");
+        await using var tx = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+        var r = await change();
+        if (r.Ok) await Catalog.CatalogTracking.RefreshStockAsync(db, clock ?? TimeProvider.System, [productId], ct);
+        if (tx is not null) await tx.CommitAsync(ct);
+        return r;
     }
 
-    public async Task<InventoryResult> ReleaseAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default)
-    {
-        if (q <= 0) return new(false, "invalid_quantity");
-        var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Reserved >= q)
-                .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved - q), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Reserved >= q)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved - q), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "not_reserved");
-    }
+    public Task<InventoryResult> ReserveAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default) =>
+        WithCatalogAsync(productId, ct, async () =>
+        {
+            if (q <= 0) return new(false, "invalid_quantity");
+            var n = variantId is { } vid
+                ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Enabled
+                        && (v.Stock - v.Reserved >= q || db.Products.Any(p => p.Id == productId && p.AllowBackorder)))
+                    .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved + q), ct)
+                : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && !p.HasVariants && (p.Stock - p.Reserved >= q || p.AllowBackorder))
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved + q), ct);
+            return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "insufficient_stock");
+        });
 
-    public async Task<InventoryResult> CommitAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default)
-    {
-        if (q <= 0) return new(false, "invalid_quantity");
-        // on-hand never goes below zero (backordered units that were never in stock clamp at 0); reserved never below zero
-        var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Reserved >= q)
-                .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved - q).SetProperty(v => v.Stock, v => v.Stock >= q ? v.Stock - q : 0), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Reserved >= q)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved - q).SetProperty(p => p.Stock, p => p.Stock >= q ? p.Stock - q : 0), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "not_reserved");
-    }
+    public Task<InventoryResult> ReleaseAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default) =>
+        WithCatalogAsync(productId, ct, async () =>
+        {
+            if (q <= 0) return new(false, "invalid_quantity");
+            var n = variantId is { } vid
+                ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Reserved >= q)
+                    .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved - q), ct)
+                : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Reserved >= q)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved - q), ct);
+            return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "not_reserved");
+        });
 
-    public async Task<InventoryResult> AdjustAsync(Guid sellerId, Guid productId, Guid? variantId, int delta, CancellationToken ct = default)
-    {
-        // on-hand may never drop below what open orders have reserved (nor below 0, nor above the cap)
-        var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Stock + delta >= v.Reserved && v.Stock + delta >= 0 && v.Stock + delta <= MaxStock)
-                .ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, v => v.Stock + delta), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Stock + delta >= p.Reserved && p.Stock + delta >= 0 && p.Stock + delta <= MaxStock)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock + delta), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, null, ct);
-    }
+    public Task<InventoryResult> CommitAsync(Guid sellerId, Guid productId, Guid? variantId, int q, CancellationToken ct = default) =>
+        WithCatalogAsync(productId, ct, async () =>
+        {
+            if (q <= 0) return new(false, "invalid_quantity");
+            // on-hand never goes below zero (backordered units that were never in stock clamp at 0); reserved never below zero
+            var n = variantId is { } vid
+                ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Reserved >= q)
+                    .ExecuteUpdateAsync(s => s.SetProperty(v => v.Reserved, v => v.Reserved - q).SetProperty(v => v.Stock, v => v.Stock >= q ? v.Stock - q : 0), ct)
+                : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Reserved >= q)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved - q).SetProperty(p => p.Stock, p => p.Stock >= q ? p.Stock - q : 0), ct);
+            return n == 1 ? await SnapshotAsync(productId, variantId, ct) : new(false, "not_reserved");
+        });
 
-    public async Task<InventoryResult> SetOnHandAsync(Guid sellerId, Guid productId, Guid? variantId, int onHand, CancellationToken ct = default)
-    {
-        if (onHand is < 0 or > MaxStock) return new(false, "out_of_range");
-        var n = variantId is { } vid
-            ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && onHand >= v.Reserved).ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, onHand), ct)
-            : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && onHand >= p.Reserved).ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, onHand), ct);
-        return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, onHand, ct);
-    }
+    public Task<InventoryResult> AdjustAsync(Guid sellerId, Guid productId, Guid? variantId, int delta, CancellationToken ct = default) =>
+        WithCatalogAsync(productId, ct, async () =>
+        {
+            // on-hand may never drop below what open orders have reserved (nor below 0, nor above the cap)
+            var n = variantId is { } vid
+                ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && v.Stock + delta >= v.Reserved && v.Stock + delta >= 0 && v.Stock + delta <= MaxStock)
+                    .ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, v => v.Stock + delta), ct)
+                : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && p.Stock + delta >= p.Reserved && p.Stock + delta >= 0 && p.Stock + delta <= MaxStock)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock + delta), ct);
+            return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, null, ct);
+        });
+
+    public Task<InventoryResult> SetOnHandAsync(Guid sellerId, Guid productId, Guid? variantId, int onHand, CancellationToken ct = default) =>
+        WithCatalogAsync(productId, ct, async () =>
+        {
+            if (onHand is < 0 or > MaxStock) return new(false, "out_of_range");
+            var n = variantId is { } vid
+                ? await db.Variants.Where(v => v.Id == vid && v.ProductId == productId && v.SellerId == sellerId && onHand >= v.Reserved).ExecuteUpdateAsync(s => s.SetProperty(v => v.Stock, onHand), ct)
+                : await db.Products.Where(p => p.Id == productId && p.SellerId == sellerId && onHand >= p.Reserved).ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, onHand), ct);
+            return n == 1 ? await SnapshotAsync(productId, variantId, ct) : await WhyNotAsync(productId, variantId, onHand, ct);
+        });
 
     /// <summary>Explains a refused stock change: not found, below what open orders reserved ("below_reserved", with the counts), or out of range.</summary>
     private async Task<InventoryResult> WhyNotAsync(Guid productId, Guid? variantId, int? target, CancellationToken ct)

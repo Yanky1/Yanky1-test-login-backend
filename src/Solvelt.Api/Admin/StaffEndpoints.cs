@@ -18,7 +18,8 @@ public record StepUpRequest(string? Code, string? RecoveryCode);
 public record AcceptStaffInviteRequest(string? Email, string? Token, string? Password);
 public record InviteStaffRequest(string? Email, string? Role, string? Reason);
 public record ChangeStaffRoleRequest(string? Role, string? Reason);
-public record ReasonRequest(string? Reason);
+/// <summary>Staff reason (internal, audited). <c>ReasonShownToUser</c> is optional text the marketplace may show to the person who reported (moderation decisions only); it is never derived from <c>Reason</c>.</summary>
+public record ReasonRequest(string? Reason, string? ReasonShownToUser = null);
 
 public class StaffService(AppDbContext db, UserManager<AppUser> users, SessionService sessions, AdminAudit audit, IAuditLog plainAudit,
     Mailer mailer, TimeProvider time, IOptions<AdminOptions> opt, IOptions<AppOptions> app)
