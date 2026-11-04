@@ -190,4 +190,6 @@ public class PaymentJobLease
 {
     public string Name { get; set; } = "";
     public DateTime LockedUntil { get; set; }
+    /// <summary>Token of the runner that holds the lease: only that runner may renew or release it.</summary>
+    public string? Owner { get; set; }
 }

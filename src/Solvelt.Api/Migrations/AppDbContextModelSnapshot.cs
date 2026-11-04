@@ -2995,6 +2995,10 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime>("LockedUntil")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Owner")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
                     b.HasKey("Name");
 
                     b.ToTable("payment_job_leases", (string)null);
