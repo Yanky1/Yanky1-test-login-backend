@@ -59,6 +59,6 @@ public static class PaymentsModelConfig
         });
         b.Entity<ReconciliationFlag>(e => { e.ToTable("reconciliation_flags"); e.HasIndex(x => x.ResolvedAt); });
         b.Entity<PaymentNotice>(e => { e.ToTable("payment_notices"); e.HasKey(x => new { x.SellerId, x.Key }); e.Property(x => x.Key).HasMaxLength(160); });
-        b.Entity<PaymentJobLease>(e => { e.ToTable("payment_job_leases"); e.HasKey(x => x.Name); e.Property(x => x.Name).HasMaxLength(64); });
+        b.Entity<PaymentJobLease>(e => { e.ToTable("payment_job_leases"); e.HasKey(x => x.Name); e.Property(x => x.Name).HasMaxLength(64); e.Property(x => x.Owner).HasMaxLength(40); });
     }
 }
