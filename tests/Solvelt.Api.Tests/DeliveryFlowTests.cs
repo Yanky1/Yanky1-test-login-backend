@@ -173,6 +173,21 @@ public class DeliveryFlowTests : IDisposable
         Assert.DoesNotContain("1 Main St", (await Node(await p.Dr.Api.Get("/api/v1/driver/me"))).ToJsonString());
     }
 
+    [Fact]
+    public async Task A_finished_stop_hides_its_details_even_while_the_route_is_still_active()
+    {
+        var d = await NewDShop(f, stock: 10); var dr = await AddDriver(d);
+        var (_, a, _) = await PlaceLocal(d, accept: true); var (_, b, _) = await PlaceLocal(d, accept: true);
+        await Assign(d, a, dr); await Assign(d, b, dr);
+        await Start(dr, RouteOf(f, a));
+        var (sa, sb) = (DeliveryId(f, a), DeliveryId(f, b));
+        Assert.Equal(HttpStatusCode.OK, (await Deliver(dr, sa)).StatusCode);
+        Assert.Equal(RouteStatus.Active, f.WithDb(db => db.DeliveryRoutes.First(r => r.Id == RouteOf(f, a)).Status));
+        var done = await Node(await dr.Api.Get($"/api/v1/driver/stops/{sa}"));
+        Assert.False((bool)done["detailsVisible"]!); Assert.Null(done["to"]); Assert.Null(done["contact"]);
+        Assert.True((bool)(await Node(await dr.Api.Get($"/api/v1/driver/stops/{sb}")))["detailsVisible"]!);       // the next stop is still shown
+    }
+
     // ---- route start + tracking ----------------------------------------------------------------------------------------------------
     [Fact]
     public async Task Starting_the_route_ships_the_order_as_a_local_shipment_and_the_first_stop_is_out_for_delivery()
