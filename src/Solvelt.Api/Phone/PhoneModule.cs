@@ -20,6 +20,7 @@ public static class PhoneModule
     {
         var cfg = b.Configuration; var s = b.Services;
         s.Configure<PhoneOptions>(cfg.GetSection(PhoneOptions.Section));
+        Solvelt.Api.Email.EmailLayout.SupportEmail = cfg.GetSection(PhoneOptions.Section)[nameof(PhoneOptions.HelpContact)] is { Length: > 0 } hc ? hc : new PhoneOptions().HelpContact;
         s.Configure<AiOptions>(cfg.GetSection(AiOptions.Section));
         var po = cfg.GetSection(PhoneOptions.Section).Get<PhoneOptions>() ?? new PhoneOptions();
         var ao = cfg.GetSection(AiOptions.Section).Get<AiOptions>() ?? new AiOptions();

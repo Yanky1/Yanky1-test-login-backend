@@ -210,3 +210,11 @@
 | I18 | Retry and release atomicity | Staff retry takes the batch lease and one serializable transaction; refund/dispute ingest and the release job use serializable transactions and the release re-reads Pending inside it. PostgreSQL path not covered by an automated test. | Race safety (review) |
 | I19 | No lost events | Only a conflict on the processed-event key is acknowledged as `duplicate`; any other unique/serialization conflict is `409 concurrent_update` (marketplace and Stripe both retry). | Review |
 
+
+## Email restyle (workstream J)
+| # | Decision | Why |
+|---|---|---|
+| J1 | One shared shell (`EmailLayout`) replaces the three private HTML builders. | A single place to keep email-client-safe markup and encoding; the old builders had drifted (the phone emails had no card at all). |
+| J2 | Footer support address comes from `Phone:HelpContact` via a static `EmailLayout.SupportEmail` set at start-up. | Templates are static and have no DI; it is the only configured support address, and the brief forbids hard-coding one. |
+| J3 | No social icons, no image logo. | No real social URLs or hosted logo exist; a text wordmark needs no remote image. Designer to supply a logo URL. |
+| J4 | Playfair Display is requested first and falls back to Georgia; Plus Jakarta Sans falls back to Arial. | Most clients block web fonts; the stacks degrade without layout breakage. |

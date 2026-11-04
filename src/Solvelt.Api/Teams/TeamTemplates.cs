@@ -4,7 +4,7 @@ using Solvelt.Api.Email;
 
 namespace Solvelt.Api.Teams;
 
-/// <summary>Team emails (own file so it doesn't collide with the redesign of Email/Templates.cs). HTML + text, with a preheader. Restyle to the design system later.</summary>
+/// <summary>Team emails (own file so it doesn't collide with the redesign of Email/Templates.cs). HTML + text, with a preheader.</summary>
 public static class TeamTemplates
 {
     private static string E(string s) => WebUtility.HtmlEncode(s);
@@ -12,23 +12,9 @@ public static class TeamTemplates
     private static EmailMessage Build(string to, string kind, string subject, string preheader, string heading, string[] paragraphs,
         (string Label, string Url)? button = null)
     {
-        var html = new StringBuilder();
-        html.Append("<!doctype html><html lang=\"en\"><body style=\"margin:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1f2933\">");
-        html.Append($"<div style=\"display:none;max-height:0;overflow:hidden;opacity:0\">{E(preheader)}</div>");
-        html.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:24px\">");
-        html.Append("<table role=\"presentation\" width=\"560\" style=\"max-width:560px;background:#fff;border-radius:8px;padding:32px\"><tr><td>");
-        html.Append("<p style=\"margin:0 0 16px;font-weight:bold;color:#0b5fff\">Solvelt</p>");
-        html.Append($"<h1 style=\"font-size:20px;margin:0 0 16px\">{E(heading)}</h1>");
-        foreach (var p in paragraphs) html.Append($"<p style=\"line-height:1.5\">{E(p)}</p>");
-        if (button is { } b)
-            html.Append($"<p style=\"margin:24px 0\"><a href=\"{E(b.Url)}\" style=\"background:#0b5fff;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none\">{E(b.Label)}</a></p>");
-        html.Append("<p style=\"color:#6b7280;font-size:12px;margin-top:32px\">You received this email because of activity on a Solvelt seller account.</p>");
-        html.Append("</td></tr></table></td></tr></table></body></html>");
-        var text = new StringBuilder();
-        text.AppendLine("Solvelt").AppendLine().AppendLine(heading).AppendLine();
-        foreach (var p in paragraphs) text.AppendLine(p).AppendLine();
-        if (button is { } bt) text.AppendLine($"{bt.Label}: {bt.Url}").AppendLine();
-        return new EmailMessage(to, kind, subject, html.ToString(), text.ToString());
+        var html = EmailLayout.Html(preheader, heading, paragraphs, button, null, "You received this email because of activity on a Solvelt seller account.");
+        var text = EmailLayout.Text(heading, paragraphs, button, null);
+        return new EmailMessage(to, kind, subject, html, text);
     }
 
     public static EmailMessage Invitation(string to, string account, string inviter, string role, string[]? brands, string link, DateTime expires) =>
