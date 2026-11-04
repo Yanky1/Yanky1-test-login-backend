@@ -203,8 +203,8 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         var amount = Long(o, "amount") ?? 0; var cur = (Str(o, "currency") ?? "usd").ToUpperInvariant();
         var raw = (Str(o, "status") ?? "needs_response").ToLowerInvariant();
         // Stripe inquiries (warning_*) are early warnings that move no money: kept as "inquiry" without a debit or fee
-        var status = raw switch { "warning_needs_response" or "warning_under_review" => "inquiry", "charge_refunded" => "warning_closed", _ => raw };
-        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry")) status = "needs_response";
+        var status = raw switch { "warning_needs_response" => "inquiry", "warning_under_review" => "inquiry_review", "charge_refunded" => "warning_closed", _ => raw };
+        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry" or "inquiry_review")) status = "needs_response";
         var due = o.TryGetProperty("evidence_details", out var ev) ? Unix(ev, "due_by") : null;
         Guid seller; Guid? orderId = existing?.OrderId, bookingId = existing?.BookingId; string currency = existing?.Currency ?? cur;
         if (existing is not null) seller = existing.SellerId;

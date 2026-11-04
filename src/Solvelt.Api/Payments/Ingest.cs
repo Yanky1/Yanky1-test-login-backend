@@ -36,8 +36,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         // leave an order's Pending negative; on PostgreSQL the loser gets a serialization failure -> 409 and the sender retries
         var serializable = ev.Type is "refund.processed" or "dispute.created" or "dispute.updated" or "dispute.closed";
         await using var tx = serializable ? await hooks.BeginSerializableAsync(db) : null;
+        bool saved;
         try
         {
+            if (hooks.InHandler is { } ih) await ih(ev.Type ?? "");
             r = ev.Type switch
             {
                 "payment.captured" => await CapturedAsync(ev),
@@ -45,25 +47,23 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
                 "dispute.created" or "dispute.updated" or "dispute.closed" => await DisputeAsync(ev),
                 _ => IngestResult.Err(422, "unknown_type", "Unknown event type.")
             };
+            if (r.Status != 200) { db.ChangeTracker.Clear(); return r; }
+            db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "marketplace", EventId = ev.EventId, Type = ev.Type!, ReceivedAt = time.UtcNow() });
+            saved = await ledger.SaveAsync();
+            if (saved && tx is not null) await hooks.CommitAsync(tx);   // a PostgreSQL serialization failure (40001) can surface here, at COMMIT
         }
         catch (JsonException) { db.ChangeTracker.Clear(); return IngestResult.Err(422, "invalid_event", "data does not have the expected shape."); }
-        if (r.Status != 200) { db.ChangeTracker.Clear(); return r; }
-        db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "marketplace", EventId = ev.EventId, Type = ev.Type!, ReceivedAt = time.UtcNow() });
-        bool saved;
-        try
-        {
-            saved = await ledger.SaveAsync();
-            if (saved && tx is not null) await tx.CommitAsync();   // a PostgreSQL serialization failure (40001) surfaces here as a PostgresException
-        }
         catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex))
         {
-            db.ChangeTracker.Clear(); if (tx is not null) await tx.RollbackAsync();
+            // a serialization failure from a read, an ExecuteUpdate, the save or the commit: nothing was applied, the sender retries.
+            // NO rollback here: after a failed COMMIT the transaction is already completed (Npgsql: "This NpgsqlTransaction has completed"); disposing it cleans up.
+            db.ChangeTracker.Clear();
             return IngestResult.Err(409, "concurrent_update", "A concurrent change prevented this event from being stored. Retry it.");
         }
         if (!saved)
         {
-            // on PostgreSQL the failed statement aborted the transaction (25P02): roll back BEFORE any further query
-            if (tx is not null) await tx.RollbackAsync();
+            // on PostgreSQL the failed statement aborted the transaction (25P02): roll back BEFORE any further query (still active here, so this is safe)
+            if (tx is not null) { try { await tx.RollbackAsync(); } catch (InvalidOperationException) { /* already completed */ } }
             // only a conflict on the processed-event key means "another delivery of this very event won"; any other unique conflict (e.g. a dispute created by a concurrent event)
             // is NOT acknowledged: the sender gets a retryable 409 and re-sends, so the event is never lost
             if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "marketplace" && p.EventId == ev.EventId)) return IngestResult.Ok(duplicate: true);
@@ -265,7 +265,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (fee < 0 || fee > MaxCents) return IngestResult.Err(422, "invalid_amount", "feeCents must be a non-negative integer.");
         var status = (d.Status ?? (ev.Type == "dispute.created" ? "needs_response" : existing?.Status ?? "needs_response")).ToLowerInvariant();
         if (ev.Type == "dispute.closed" && status is not ("won" or "lost" or "warning_closed")) return IngestResult.Err(422, "invalid_status", "A closed dispute is won, lost or warning_closed.");
-        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry")) return IngestResult.Err(422, "invalid_status", "Unknown dispute status.");
+        if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry" or "inquiry_review")) return IngestResult.Err(422, "invalid_status", "Unknown dispute status.");
         var now = time.UtcNow();
         var evAt = d.CreatedAt ?? now;
         await ApplyDisputeAsync(existing, d.DisputeId, seller, currency, orderId, bookingId, amount, fee, status, d.Reason, d.EvidenceDueBy, evAt, now);
@@ -284,7 +284,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             db.PaymentDisputes.Add(row);
         }
         var closedAlready = row.Status is "won" or "lost" or "warning_closed";
-        if (eventAt >= row.EventAt && !(closedAlready && status is "needs_response" or "under_review" or "inquiry"))
+        if (eventAt >= row.EventAt && !(closedAlready && status is "needs_response" or "under_review" or "inquiry" or "inquiry_review"))
         {
             row.Status = status; row.EventAt = eventAt; row.UpdatedAt = now;
             if (reason is not null) row.Reason = reason;
@@ -293,7 +293,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         }
         // An inquiry (Stripe warning_*) moves no money at Stripe, so nothing is debited for it or for its warning_closed; the debit + fee are posted once,
         // the first time the dispute reaches a state in which money moves (escalation to needs_response, or a marketplace event that is already past that).
-        var moves = row.Status is not ("inquiry" or "warning_closed");
+        var moves = row.Status is not ("inquiry" or "inquiry_review" or "warning_closed");
         if (moves)
         {
             if (isNew || !await ledger.ExistsAsync($"dispute:{externalId}")) await TrackNegativeAsync(seller, currency);

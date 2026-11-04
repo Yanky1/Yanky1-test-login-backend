@@ -37,6 +37,13 @@ public static class Pay
         return await work(scope.ServiceProvider);
     }
 
+    /// <summary>Takes the job lease in its own scope; returns the owner token (null: someone else holds it). Release with <see cref="Unlease"/>.</summary>
+    public static Task<string?> Lease(ApiFactory f, string name = TransferService.JobName) =>
+        Run(f, async sp => { var l = sp.GetRequiredService<JobLeaseService>(); return await l.TryAcquireAsync(name) ? l.Token : null; });
+
+    public static Task<int> Unlease(ApiFactory f, string token, string name = TransferService.JobName) =>
+        Run(f, async sp => { await sp.GetRequiredService<JobLeaseService>().ReleaseAsync(name, token); return 0; });
+
     public static Task<ReleaseSummary> Release(ApiFactory f) => Run(f, sp => sp.GetRequiredService<ReleaseService>().RunAsync());
     public static Task<TransferSummary> Transfers(ApiFactory f) => Run(f, sp => sp.GetRequiredService<TransferService>().RunAsync());
     public static Task<ReconcileSummary> Reconcile(ApiFactory f) => Run(f, sp => sp.GetRequiredService<ReconciliationService>().RunAsync());
