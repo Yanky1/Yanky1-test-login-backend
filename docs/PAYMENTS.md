@@ -38,8 +38,8 @@ Accounts: seller-owned **Pending, Available, Reserved, Settled** (sent to Stripe
 | `sale` (booking) | Platform −total; Pending +total, −fee; Fees +fee | `sale:{bookingId}` |
 | `policy_fee` / `extra_charge` | same shape on the amount (cancellation / no-show fee, accepted extra charge), fee at the current platform rate | `{kind}:{eventId}` |
 | `refund` | Platform +refund; Fees −fee returned; Pending −(up to what is still pending for that order), Available −rest | `refund:{refundId}` |
-| `dispute`, `dispute_fee` | Platform +amount / +fee; Available −amount / −fee | `dispute:{id}`, `dispute-fee:{id}` |
-| `dispute_won` | Platform −amount; Available +amount | `dispute-won:{id}` |
+| `dispute`, `dispute_fee` | Platform +amount / +fee; Available −amount / −fee | `dispute:{id}:{sellerOrderId}`, `dispute-fee:{id}:{sellerOrderId}` (bookings: the booking id; rows booked before C10 keep `dispute:{id}`) |
+| `dispute_won` | Platform −amount; Available +amount | `dispute-won:{id}:{sellerOrderId}` |
 | `release` | Pending −x; Available +(x − reserve); Reserved +reserve | `release:{orderOrBookingId}:{lastPendingEntryId}` |
 | `reserve_release` | Reserved −r; Available +r | `reserve-release:{entryId}` |
 | `adjustment` (staff) | Available ±x; Platform ∓x | `adjustment:{requestId or random}` |
@@ -92,7 +92,7 @@ Responses: `200 {status:"ok"|"duplicate", result}` (`duplicate` only when this v
 |---|---|---|
 | `payment.captured` | `{kind: "order"\|"booking"\|"booking_cancellation_fee"\|"booking_no_show_fee"\|"booking_extra_charge", marketplaceOrderId, sellerOrderNumber?, marketplaceBookingId, paymentRef, currency, amountCents? (fees/extras), capturedAt?}` | Posts the sale (every seller order of the marketplace order unless `sellerOrderNumber`), stores `paymentRef` (Stripe charge or payment intent id). Fees/extras must not exceed the booking's `CancellationFeeCents` / `AdditionalChargeCents`. |
 | `refund.processed` | `{refundId, marketplaceOrderId + sellerOrderNumber? \| marketplaceBookingId, amountCents (items), shippingCents?, currency?, reason?}` | Refund journal; the order must be unambiguous (`sellerOrderNumber` when the marketplace order has several seller orders); refunds above what was sold: `422 exceeds_sale`. |
-| `dispute.created` / `dispute.updated` / `dispute.closed` | `{disputeId (the Stripe dp_ id), marketplaceOrderId (+sellerOrderNumber) \| marketplaceBookingId, amountCents, feeCents?, currency?, reason?, status: needs_response\|under_review\|won\|lost\|warning_closed, evidenceDueBy?}` | Debit of amount + dispute fee on first sight (whichever event comes first), credit on `won`, status/evidence date updates; closed disputes are never reopened by older events. |
+| `dispute.created` / `dispute.updated` / `dispute.closed` | `{disputeId (the Stripe dp_ id), marketplaceOrderId (+sellerOrderNumber, **required** when the order has several seller orders) \| marketplaceBookingId, amountCents (this seller order's share), feeCents?, currency?, reason?, status: needs_response\|under_review\|won\|lost\|warning_closed, evidenceDueBy?}` | Debit of amount + dispute fee on first sight **per (disputeId, seller order)** (whichever event comes first), credit on `won`, status/evidence date updates; closed disputes are never reopened by older events. See *Disputes on multi-seller orders* below. |
 
 ```json
 { "eventId": "evt-9f2", "type": "payment.captured",
@@ -110,7 +110,24 @@ Processing is **idempotent on the event id** (the `processed_payment_events` row
 | `account.updated` | Syncs `details_submitted`, `charges_enabled`, `payouts_enabled`, `requirements.currently_due/past_due/disabled_reason/current_deadline`, bank last-4, payout schedule; emails the Owners once per distinct requirement set |
 | `transfer.created/updated/paid/reversed` | Mirrors the transfer (matched by Stripe id or `metadata.transferId`); `reversed` returns the funds |
 | `payout.created/updated/paid/failed/canceled` (connected account, `event.account`) | Upserts the payout; `paid` posts the informational `payout` journal; `failed/canceled` after paid reverses it and emails the Owners |
-| `charge.dispute.created/updated/closed` | Inquiries (`warning_needs_response`, `warning_under_review`) are stored as status `inquiry`, **move no money**, but DO need a response: the seller sees them with `canRespond` and the evidence due date, the Owners get one email, and they count as open disputes (nor does `warning_closed`); the amount + dispute fee are debited exactly once, when the dispute first reaches a state where money moves (`needs_response`, `under_review`, `won`, `lost`). Matched through the stored `paymentRef`; exactly one seller order/booking -> same effect as the marketplace events (same `dp_` id = same dispute); otherwise a staff **reconciliation flag** `dispute_unattributed` |
+| `charge.dispute.created/updated/closed` | Inquiries (`warning_needs_response`, `warning_under_review`) are stored as status `inquiry`, **move no money**, but DO need a response: the seller sees them with `canRespond` and the evidence due date, the Owners get one email, and they count as open disputes (nor does `warning_closed`); the amount + dispute fee are debited exactly once, when the dispute first reaches a state where money moves (`needs_response`, `under_review`, `won`, `lost`). Matched through the stored `paymentRef` (`charge` or `payment_intent` -> the marketplace order -> its seller orders); exactly one seller order/booking -> same effect as the marketplace events (same `dp_` id and seller order = same dispute row, same idempotency keys, so the two sources never debit twice); a charge that maps to **several** seller orders never debits (below); a charge that maps to nothing and a dispute id that is not known -> a staff **reconciliation flag** `dispute_unattributed` |
+
+### Disputes on multi-seller orders (C10)
+
+One Stripe charge covers the whole marketplace order, so one dispute (`dp_...`) can span several seller orders.
+
+* **Key.** A dispute row is one **(disputeId, seller order)** (bookings: (disputeId, booking)); unique indexes on both. The ledger keys are `dispute:{dp}:{sellerOrderId}`, `dispute-fee:...` and `dispute-won:...`. Status, won/lost/closed and the never-reopen rule apply per row. Rows booked before this change keep their old keys (`dispute:{dp}`) so a replay does not post twice.
+* **Marketplace events.** One `dispute.*` event per seller order, each with `sellerOrderNumber` and that seller order's share in `amountCents` (+ optional `feeCents`). `sellerOrderNumber` is **required** when the marketplace order has more than one seller order (`422 seller_order_required`; an event with only a `disputeId` for a dispute that already has several rows is the same error). The share must not exceed that seller order's sale (items - discount + shipping): `422 exceeds_sale`. Single-seller orders work without `sellerOrderNumber`.
+* **Stripe `charge.dispute.*`.** Matching: `charge` / `payment_intent` -> stored payment reference -> marketplace order -> its seller orders. One seller order: as before. **Several seller orders (or several allocated rows): no seller is ever debited by this webhook.** It records status and evidence date on every row the marketplace already allocated, and keeps an **unallocated dispute** item (`payment_unallocated_disputes`, plus a `dispute_unallocated` reconciliation flag in the list staff already use) open while the allocated shares are below the Stripe amount. No ledger entries. The item keeps the latest Stripe status, so a row the marketplace allocates later starts from the newer Stripe state. Debits and the won credit come only from the marketplace events; when the shares add up to the Stripe amount the item and its flag are cleared automatically. If the shares can never add up (for example Stripe's amount includes tax), staff resolve the flag with a reason: that closes the item for good and later Stripe updates do not reopen it.
+* **No double debit.** Both sources use the same row and the same idempotency keys per (dispute, seller order), whichever arrives first.
+
+Example, marketplace order `MP-1` split between seller orders `A-1001` (sale 2400) and `B-2002` (sale 3500), one Stripe dispute `dp_9` of 5900:
+
+```json
+{ "eventId": "e1", "type": "dispute.created", "data": { "disputeId": "dp_9", "marketplaceOrderId": "MP-1", "sellerOrderNumber": "A-1001", "amountCents": 2400, "feeCents": 1500 } }
+{ "eventId": "e2", "type": "dispute.created", "data": { "disputeId": "dp_9", "marketplaceOrderId": "MP-1", "sellerOrderNumber": "B-2002", "amountCents": 3500, "feeCents": 1500 } }
+{ "eventId": "e3", "type": "dispute.closed",  "data": { "disputeId": "dp_9", "marketplaceOrderId": "MP-1", "sellerOrderNumber": "A-1001", "status": "won" } }
+```
 
 ## 8. Permissions
 
@@ -132,7 +149,7 @@ Payment emails (payout failed, transfer failed, dispute opened, negative balance
 | `PaymentsRetry`: retry a failed transfer, run/resolve reconciliation | ✔ | ✔ | | | |
 | `PaymentsAdjust`: manual credit/debit (reason, audit, seller notified) | ✔ | | | | ✔ |
 
-Staff API under `/api/v1/admin/payments`: `sellers/{id}` (balances, Stripe account + onboarding status, holds, failed transfers, open disputes), `sellers/{id}/ledger`, `sellers/{id}/hold` + `hold/release`, `sellers/{id}/adjustments` (`{direction: credit|debit, amountCents, currency, reason, requestId?}`), `transfers?status=`, `transfers/{id}/retry`, `payouts?status=`, `accounts/requirements-past-due`, `reconciliation` + `reconciliation/run` + `reconciliation/{id}/resolve`.
+Staff API under `/api/v1/admin/payments`: `sellers/{id}` (balances, Stripe account + onboarding status, holds, failed transfers, open disputes), `sellers/{id}/ledger`, `sellers/{id}/hold` + `hold/release`, `sellers/{id}/adjustments` (`{direction: credit|debit, amountCents, currency, reason, requestId?}`), `transfers?status=`, `transfers/{id}/retry`, `payouts?status=`, `accounts/requirements-past-due`, `reconciliation` + `reconciliation/run` + `reconciliation/{id}/resolve`, `unallocated-disputes?open=` (Stripe disputes on multi-seller charges that the marketplace has not fully allocated).
 
 ## 9. Reconciliation
 
