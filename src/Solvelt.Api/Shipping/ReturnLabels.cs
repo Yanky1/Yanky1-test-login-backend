@@ -153,7 +153,7 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
         }
 
         // 5. labels that were bought but never attached to a shipment (crash or failure after the purchase): void them
-        var orphanIds = await db.ShippingLabels.Where(l => l.Status == LabelStatus.Active && l.Kind == LabelKind.Outbound && l.ShipmentId == null && l.PurchasedAt < now.AddMinutes(-5)).Select(l => l.Id).Take(o.PollBatch).ToListAsync(ct);
+        var orphanIds = await db.ShippingLabels.Where(l => l.Status == LabelStatus.Active && ((l.Kind == LabelKind.Outbound && l.ShipmentId == null) || (l.Kind == LabelKind.Return && l.ReturnShipmentId == null)) && l.PurchasedAt < now.AddMinutes(-5)).Select(l => l.Id).Take(o.PollBatch).ToListAsync(ct);
         foreach (var id in orphanIds)
         {
             db.ChangeTracker.Clear();
@@ -172,7 +172,7 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
             if (l.Status != LabelStatus.Purchasing) continue;
             try
             {
-                var pl = await provider.FindPurchaseAsync(l.IdempotencyKey, l.LabelFormat, ct);
+                var pl = await provider.FindPurchaseAsync(l.IdempotencyKey, l.LabelFormat, l.CreatedAt, ct);
                 if (pl is null) { l.Status = LabelStatus.Failed; l.RefundError = "abandoned"; await db.SaveChangesAsync(ct); }
                 else
                 {

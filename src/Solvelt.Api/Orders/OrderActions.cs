@@ -71,6 +71,11 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             if (_tx is not null) await _tx.CommitAsync();
         }
         catch (DbUpdateConcurrencyException) { await EndTxAsync(rollback: true); db.ChangeTracker.Clear(); return Stale(); }
+        catch (DbUpdateException ex) when (ex.ToString().Contains("UX_order_shipments_live_tracking") || ex.ToString().Contains("order_shipments.TrackingNumber"))
+        {   // two parallel entries of the same number: the database picks one
+            await EndTxAsync(rollback: true); db.ChangeTracker.Clear();
+            return Res.Conflict("This tracking number can't be used. Check the number and try again.", "tracking_in_use");
+        }
         catch { await EndTxAsync(rollback: true); throw; }
         await EndTxAsync(rollback: false);
         notifier.Live(live, o.SellerId, o.BrandId, new { orderId = o.Id });
@@ -208,8 +213,9 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     /// <summary>A carrier tracking number typed in by hand may not already sit on another live shipment (any account): the carrier's updates for it would land on the wrong order.</summary>
     private async Task<Res?> DuplicateTrackingAsync(string carrier, string tn, Guid? exceptShipment)
     {
-        var taken = await db.Shipments.AnyAsync(s => s.TrackingNumber == tn && s.Method == "carrier" && s.Id != exceptShipment && s.DeliveredAt == null && (s.Carrier == carrier || s.Carrier == "Other" || carrier == "Other"));
-        return taken ? Res.Conflict("This tracking number is already used on another shipment. Check the number.", "tracking_in_use") : null;
+        var taken = await db.Shipments.AnyAsync(s => s.TrackingNumber == tn && s.Method == "carrier" && s.Id != exceptShipment && s.DeliveredAt == null && s.TrackingStoppedAt == null && (s.Carrier == carrier || s.Carrier == "Other" || carrier == "Other"));
+        // generic on purpose: the answer must not tell a seller that ANOTHER account is using the number
+        return taken ? Res.Conflict("This tracking number can't be used. Check the number and try again.", "tracking_in_use") : null;
     }
 
     public async Task<Res> EditTrackingAsync(SellerOrder o, Guid shipmentId, Guid actor, int? version, string? carrierIn, string? trackingIn, string? service)
