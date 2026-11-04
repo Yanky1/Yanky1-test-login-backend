@@ -136,6 +136,7 @@ public static partial class ProductService
         Int("warrantyMonths", r.WarrantyMonths, 0, 600, "Warranty");
         if ((r.WarrantyNote?.Length ?? 0) > 300) Err("warrantyNote", "Maximum 300 characters.");
         if ((r.SearchTerms?.Length ?? 0) > 250) Err("searchTerms", "Maximum 250 characters.");
+        else if (SearchTerms.Validate(r.SearchTerms) is { } termsError) Err("searchTerms", termsError);
         if ((r.MetaTitle?.Length ?? 0) > 70) Err("metaTitle", "Maximum 70 characters.");
         if ((r.MetaDescription?.Length ?? 0) > 160) Err("metaDescription", "Maximum 160 characters.");
         return e;
