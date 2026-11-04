@@ -14,6 +14,18 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
 {
     public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved, int ReservationsRepaired = 0);
 
+    /// <summary>Shipping data that carries buyer details goes with the order's PII: label files (they print the buyer's name and address), tracking location/detail text, customs and override notes, quotes.</summary>
+    private async Task RedactShippingAsync(Guid orderId, CancellationToken ct)
+    {
+        foreach (var key in await db.ShippingLabels.Where(l => l.OrderId == orderId && l.LabelKey != null).Select(l => l.LabelKey!).ToListAsync(ct)) await storage.DeleteAsync(key, ct);
+        await db.ShippingLabels.Where(l => l.OrderId == orderId).ExecuteUpdateAsync(u => u.SetProperty(l => l.LabelKey, (string?)null).SetProperty(l => l.CustomsJson, (string?)null)
+            .SetProperty(l => l.AddressOverrideReason, (string?)null).SetProperty(l => l.RefundError, (string?)null), ct);
+        await db.TrackingEvents.Where(e => e.OrderId == orderId).ExecuteUpdateAsync(u => u.SetProperty(e => e.Location, (string?)null).SetProperty(e => e.Detail, (string?)null), ct);
+        await db.Shipments.Where(s => s.OrderId == orderId).ExecuteUpdateAsync(u => u.SetProperty(s => s.TrackingStatusDetail, (string?)null), ct);
+        await db.ReturnShipments.Where(s => s.OrderId == orderId).ExecuteUpdateAsync(u => u.SetProperty(s => s.TrackingStatusDetail, (string?)null), ct);
+        await db.ShippingQuotes.Where(q => q.OrderId == orderId).ExecuteDeleteAsync(ct);
+    }
+
     public async Task<Summary> RunAsync(CancellationToken ct = default)
     {
         var o = opt.Value;
@@ -64,6 +76,7 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             var quotedMid = "\"marketplaceOrderId\":" + System.Text.Json.JsonSerializer.Serialize(mid, OrderJson.Opts);   // delimited, so MP-1 never matches MP-10
             if (!await db.Orders.AnyAsync(y => y.MarketplaceOrderId == mid && y.PiiRedactedAt == null && y.Id != x.Id, ct))
                 await db.Outbox.Where(ob => (ob.AggregateId == mid || ob.PayloadJson.Contains(quotedMid)) && ob.Status != OutboxStatus.Pending).ExecuteUpdateAsync(u => u.SetProperty(ob => ob.PayloadJson, "{\"redacted\":true}"), ct);
+            await RedactShippingAsync(x.Id, ct);
             db.AddEvent(x.Id, "order.pii_redacted", Party.System, null, "Buyer details removed after the retention period", now);
             redacted++;
         }

@@ -28,6 +28,8 @@ public class ShippingOptions
     public int TrackingStopDays { get; set; } = 60;
     public int RefundCheckMinutes { get; set; } = 30;
     public int PollBatch { get; set; } = 50;
+    /// <summary>A label still "Purchasing" after this long was lost to a crash: the sweep asks the provider whether it was bought.</summary>
+    public int PurchaseStuckMinutes { get; set; } = 10;
     public int PollLeaseMinutes { get; set; } = 5;
     public int JobIntervalSeconds { get; set; } = 300;
     public int WebhookToleranceSeconds { get; set; } = 300;

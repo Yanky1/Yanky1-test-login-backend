@@ -95,7 +95,7 @@ public class ReturnLabelService(AppDbContext db, IShippingProvider provider, IFi
 }
 
 /// <summary>Housekeeping the webhooks can't do: register tracking that failed earlier, poll silent shipments (24 h), stop tracking (delivered / 60 days), confirm label refunds, void orphaned labels.</summary>
-public record MaintenanceSummary(int Registered, int Polled, int Stopped, int RefundsChecked, int RefundsConfirmed, int OrphansVoided);
+public record MaintenanceSummary(int Registered, int Polled, int Stopped, int RefundsChecked, int RefundsConfirmed, int OrphansVoided, int PurchasesRecovered = 0);
 
 /// <summary>Test seam: lets a test hold two job instances between "selected the shipment" and "claimed it" so the lease is exercised deterministically.</summary>
 public class ShippingTestHooks { public Func<Guid, Task>? AfterPollCandidate { get; set; } }
@@ -105,7 +105,7 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
     public async Task<MaintenanceSummary> RunAsync(CancellationToken ct = default)
     {
         var o = opt.Value; var now = time.UtcNow();
-        int registered = 0, polled = 0, stopped = 0, checks = 0, confirmed = 0, orphans = 0;
+        int registered = 0, polled = 0, stopped = 0, checks = 0, confirmed = 0, orphans = 0, recovered = 0;
 
         // 1. stop tracking after the cut-off
         var cutoff = now.AddDays(-o.TrackingStopDays);
@@ -159,7 +159,29 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
             if (l.Status != LabelStatus.Active) continue;
             await labels.RequestRefundAsync(l, "Label was never attached to a shipment"); orphans++;
         }
-        return new(registered, polled, stopped, checks, confirmed, orphans);
+
+        // 6. purchases stuck in "Purchasing" (crash between the provider call and the save): ask the provider by idempotency key. Found: record it (the orphan sweep voids it if it never ships).
+        //    Not found: the provider never charged, so fail the row (it stops counting against the spend limit).
+        var stuckIds = await db.ShippingLabels.Where(l => l.Status == LabelStatus.Purchasing && l.CreatedAt < now.AddMinutes(-o.PurchaseStuckMinutes)).Select(l => l.Id).Take(o.PollBatch).ToListAsync(ct);
+        foreach (var id in stuckIds)
+        {
+            db.ChangeTracker.Clear();
+            var l = await db.ShippingLabels.FirstAsync(x => x.Id == id, ct);
+            if (l.Status != LabelStatus.Purchasing) continue;
+            try
+            {
+                var pl = await provider.FindPurchaseAsync(l.IdempotencyKey, l.LabelFormat, ct);
+                if (pl is null) { l.Status = LabelStatus.Failed; l.RefundError = "abandoned"; await db.SaveChangesAsync(ct); }
+                else
+                {
+                    var number = await db.Orders.Where(x => x.Id == l.OrderId).Select(x => x.Number).FirstOrDefaultAsync(ct) ?? "";
+                    await labels.RecordPurchaseAsync(l, pl, number); recovered++;
+                }
+            }
+            catch (ShippingProviderException ex) { log.LogInformation("Stuck purchase check deferred ({Code})", ex.Code); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Could not recover stuck label purchase {LabelId}", id); }
+        }
+        return new(registered, polled, stopped, checks, confirmed, orphans, recovered);
     }
 
     /// <summary>Claims the parcel with ONE atomic UPDATE that re-checks both "not leased" and "still due": an instance that selected it before another one polled it (and released its lease) must not poll it again.</summary>
@@ -177,10 +199,11 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
         try
         {
             var snap = await provider.GetTrackingAsync(carrier, number, ct);
-            if (snap is not null) await tracking.ApplyAsync(number, snap, "poll");
+            if (snap is not null) await tracking.ApplyAsync(number, snap, "poll", id);
             else await Touch(id, isReturn, now, ct);   // nothing to learn (unsupported carrier / unknown parcel): ask again after the next interval
         }
         catch (ShippingProviderException ex) { log.LogInformation("Tracking poll deferred ({Code})", ex.Code); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Tracking poll failed for parcel {ParcelId}; continuing with the next one", id); }   // one bad parcel never stops the run
         finally
         {
             db.ChangeTracker.Clear();
