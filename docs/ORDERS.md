@@ -180,7 +180,7 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 | `return.received` | `returnId`, `restocked` |
 | `refund.issued` | `refundId`, `amountCents`, `shippingCents`, `currency`, `reason`, `note`, `full`, `totalRefundedCents`, `returnId`, `lines:[{marketplaceLineId, sku, quantity, amountCents}]`. **The marketplace moves the money.** |
 | `listing.upserted` | `listingId`, `version` (catalog feed; see `docs/CATALOG.md`; delivered in version order per listing) |
-| `listing.unlisted` | `listingId`, `version`, `reason` (`not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`) |
+| `listing.unlisted` | `listingId`, `version`, `reason` (`not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`, `deleted`) |
 | `content.report_decided` | `reportId`, `kind` (`review`/`listing`/`message`), `targetId`, `decision` (`dismissed`/`hidden`/`removed`), `reasonShownToUser` (nullable) (`docs/CATALOG.md`, `docs/ADMIN.md`) |
 | `message.sent` | `messageId`, `conversationId`, `marketplaceConversationId`, `kind`, `marketplaceOrderId`, `sellerOrderNumber`, `productId`, `text`, `sentAt`, `attachments:[{id, fileName, contentType, size, path}]` |
 
@@ -236,6 +236,7 @@ Audit log: accept, ship, cancel, cancellation rejection, return approve/reject/r
 
 ## 7. Privacy and retention
 * Stored for fulfilment only: buyer display name, shipping address, optional phone for the carrier; the buyer email is a **marketplace relay address**, never the real one. Emails and audit entries never contain buyer names or addresses; request logging does not log bodies.
+* `Orders:ContentReportRedactAfterDays` (default **90**): decided marketplace content reports lose the reporter's reference, reason and note (`[redacted]`) this many days after the decision (`docs/CATALOG.md`). `Orders:ImageKey` / `Orders:ImageAcceptInboundKey`: the separate key for catalog image downloads (`docs/CATALOG.md`).
 * `Orders:RedactAfterDays` (default **90**) after an order is Completed, Cancelled or fully Refunded the job replaces name/address/phone/relay email/gift message with `Redacted`/null, adds a timeline event and sets `PiiRedactedAt`. Money, line snapshots and the SKU history stay (accounting). A redacted order's conversation is archived the same way: buyer name redacted, message texts replaced with a notice, **attachments deleted from storage**, internal notes deleted. Product questions (no order) are redacted `RedactAfterDays` after their last message.
 * Redaction also clears event texts, buyer comments, cancellation/return notes, internal notes and the payloads of delivered outbox events of that order/conversation. Abandoned draft attachments are deleted after a day. Replay nonces are removed once their window has passed.
 
