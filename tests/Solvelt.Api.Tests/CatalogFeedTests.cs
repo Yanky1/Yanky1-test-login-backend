@@ -3,8 +3,10 @@ using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Orders;
+using Solvelt.Api.Products;
 using Solvelt.Api.Services;
 using static Solvelt.Api.Tests.Cat;
 

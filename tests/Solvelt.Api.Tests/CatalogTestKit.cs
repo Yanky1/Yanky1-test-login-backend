@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Services;
 
