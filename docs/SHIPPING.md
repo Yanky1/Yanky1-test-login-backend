@@ -203,7 +203,7 @@ Other accounts' (and other brands') shipments, labels and quotes answer **404**.
 
 ## 9. Configuration (`Shipping`)
 
-`ShippoApiKey` (or env `SHIPPO_API_KEY`), `WebhookSecret`, `AllowTestKeyInProduction`, `AllowLiveKeyOutsideProduction`, `LabelFormat` (`PDF_4x6`, `PNG`, `ZPLII`), `QuoteMinutes` (15), `SpendLimitCentsPerMonth`, `LabelLinkMinutes` (1440), `PublicBaseUrl`,
+`ShippoApiKey` (or env `SHIPPO_API_KEY`), `WebhookSecret`, `LinkKey` (signs label links; required in Production, must differ from the Orders secrets), `AllowTestKeyInProduction`, `AllowLiveKeyOutsideProduction`, `LabelFormat` (`PDF_4x6`, `PNG`, `ZPLII`), `QuoteMinutes` (15), `SpendLimitCentsPerMonth`, `LabelLinkMinutes` (1440), `PublicBaseUrl`,
 `TrackingPollAfterHours` (24), `TrackingStopDays` (60), `RefundCheckMinutes` (30), `PollBatch`, `PollLeaseMinutes`, `JobIntervalSeconds` (300), `WebhookToleranceSeconds` (300), `MaxBulk` (25), `RunBackgroundJobs`; `RateLimit:ShippingPerMinute`.
 
 ## 10. Testing
@@ -216,7 +216,7 @@ Other accounts' (and other brands') shipments, labels and quotes answer **404**.
 
 1. Create the platform **Shippo account**, add payment details (the platform pays Shippo; sellers are debited in the ledger), and connect the **carrier accounts** you want (USPS, UPS, FedEx, DHL Express).
 2. Create a **live API token** and set `SHIPPO_API_KEY` (never commit it). Test with a `shippo_test_` token first in a non-production environment.
-3. Register the **webhook** in Shippo: event `track_updated`, URL `https://<host>/api/v1/shipping/webhooks/shippo?token=<Shipping:WebhookSecret>`; set `Shipping:WebhookSecret` to a long random value.
+3. Register the **webhook** in Shippo: event `track_updated`, URL `https://<host>/api/v1/shipping/webhooks/shippo?token=<Shipping:WebhookSecret>`; set `Shipping:WebhookSecret` to a long random value. Also set `Shipping:LinkKey` (a third random value, never an Orders secret): it signs the buyer return-label links.
 4. Set `Shipping:PublicBaseUrl` to the public API URL (signed return-label links).
 5. Choose the **label format** (`PDF_4x6` for sheet printers, `ZPLII` for thermal printers) and tell sellers to set it in Settings > Shipping.
 6. Each seller adds a **ship-from address**, **package presets**, and a **return address**.
