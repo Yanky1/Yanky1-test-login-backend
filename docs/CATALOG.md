@@ -74,12 +74,14 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
   "questions": [ { "questionId": "Q-123", "question": "Microwave safe?", "answer": "Yes, up to 90 s.", "askedAt": "...", "answeredAt": "..." } ],
   "images": [ { "imageId": "...", "variantId": null, "width": 1200, "height": 1200, "contentType": "image/png", "sizeBytes": 48211, "alt": "Front", "isMain": true, "sortOrder": 0,
                 "path": "/api/internal/v1/catalog/images/<imageId>" } ],
+  "delivery": { "ships": true, "localDelivery": false, "serviceLocations": [] },
   "policies": { "returnsDays": 30, "returnsCondition": null, "warrantyMonths": null, "warrantyNote": null, "handlingDays": 2 },
   "service": null,
   "publishedAt": "...", "updatedAt": "..."
 }
 ```
 * **`searchTerms`** is a `string[]` built from the seller's search keywords (one free-text field of the product form): split on commas, semicolons and line breaks, trimmed, blanks and case-insensitive duplicates removed, order kept; an empty array when there are none. Editing the keywords creates a new version.
+* **`delivery`** says how the listing reaches the buyer, always present, always explicit: `{ships: bool, localDelivery: bool, serviceLocations: ("online"|"customer"|"seller")[]}`; see section 9 for how each value is derived.
 * **Money** is integer minor units plus `currency` (USD today). `variants[].price` is already resolved (the variant's own price, else the listing's). The sale window is sent
   raw (`startsAt`/`endsAt`); `active` is evaluated when the document is built, so evaluate the dates yourself if you cache the document. Sale start/end passing does not create a new version.
 * **Availability** is a *state*, never a quantity: `in_stock`, `low_stock` (at or below the seller's low-stock alert), `out_of_stock`, `backorder` (out of stock but backorders allowed);
@@ -178,4 +180,25 @@ The marketplace is ONE caller for all shoppers, so a per-IP key would be a globa
 * The caller is `marketplace`: the holder of `Orders:InboundSecret` is the only verified identity this API has.
 * A request that fails verification is answered with its own status (`401 ...`) while the per-IP bucket has room and with `429 rate_limited` after that. Verified requests never touch that bucket, so a forged flood from any address (even the marketplace's own) cannot make signed requests fail.
 * `429` bodies are `{code: "rate_limited", ...}` with `Retry-After: 60`. The old keys `RateLimit:InternalQuestionsPerMinute` and `RateLimit:InternalReportsPerMinute` are gone.
+
+## 9. Delivery options (`delivery`)
+```json
+"delivery": { "ships": true, "localDelivery": false, "serviceLocations": [] }                 // a product shipped by carrier
+"delivery": { "ships": true, "localDelivery": true,  "serviceLocations": [] }                 // ... and delivered locally too
+"delivery": { "ships": false, "localDelivery": false, "serviceLocations": ["online", "customer"] }   // a service
+"delivery": { "ships": false, "localDelivery": false, "serviceLocations": [] }                // nothing configured (products), explicit false / false / []
+```
+Present in the feed and in `GET /catalog/listings/{id}` (never on tombstones).
+
+| Value | Derived from | Products | Services |
+|---|---|---|---|
+| `ships` | an **unarchived shipping profile with at least one zone** that covers the listing's brand: account-wide (`brandId` empty) or that brand's own | yes | always `false` |
+| `localDelivery` | the local-delivery setting **that applies to the brand** (the brand's own *enabled* setting, else the account-wide *enabled* one: the same rule the checkout uses) has **at least one active zone** | yes | always `false` |
+| `serviceLocations` | the service's enabled location types, in the fixed order `online`, `customer`, `seller` | always `[]` | yes |
+
+**Freshness.** The document is built from the current settings on every read, so `delivery` is always current. The *version and the event* follow a settings change within seconds:
+changing a shipping profile, a delivery setting or a delivery zone writes a small refresh request in the same transaction (so the settings call returns at once, however many listings the account has).
+A background job (the same loop that dispatches the outbox, about every 10 seconds) then re-derives the delivery options of the account's (or brand's) visible listings in chunks of 200, each chunk in its own short transaction,
+and gives **only the listings whose options actually changed** a new version and a `listing.upserted` event through the outbox. Hidden, unlisted and unaffected listings get nothing. Changes to a service's location flags are part of the service
+details, so they bump the version immediately like any other listing edit. A repeated or interrupted run is safe (it compares against the signature stored with each version). Listings that predate the field are refreshed once at start-up.
 

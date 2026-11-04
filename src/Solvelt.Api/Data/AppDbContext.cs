@@ -50,6 +50,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
     public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
     public DbSet<CatalogCounter> CatalogCounters => Set<CatalogCounter>();
+    public DbSet<CatalogRefreshRequest> CatalogRefreshRequests => Set<CatalogRefreshRequest>();
     public DbSet<ContentReport> ContentReports => Set<ContentReport>();
     // orders + messaging (see Orders/)
     public DbSet<SellerOrder> Orders => Set<SellerOrder>();

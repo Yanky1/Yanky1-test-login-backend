@@ -110,6 +110,7 @@ public static class Seeder
         AppDbContext.Seed(db);
         await LegacyStatus.NormalizeAsync(db); // Live was removed as a seller status: any legacy row becomes Approved
         await Solvelt.Api.Catalog.CatalogTracking.BackfillAsync(db, sp.GetRequiredService<TimeProvider>()); // listings that existed before the catalog feed get their first version
+        await Solvelt.Api.Catalog.CatalogTracking.BackfillDeliveryAsync(db, sp.GetRequiredService<TimeProvider>()); // visible listings without delivery options get one refresh
         await Solvelt.Api.Teams.TeamService.BackfillAsync(db, sp.GetRequiredService<TimeProvider>());
 
         var roles = sp.GetRequiredService<RoleManager<IdentityRole<Guid>>>();

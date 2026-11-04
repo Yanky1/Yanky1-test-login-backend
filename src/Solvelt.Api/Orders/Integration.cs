@@ -204,6 +204,7 @@ public class OutboxWorker(IServiceScopeFactory scopes, ILogger<OutboxWorker> log
                 var rec = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Admin.JobRecorder>();
                 await rec.RunAsync("outbox-dispatcher", async () => new { sent = await scope.ServiceProvider.GetRequiredService<OutboxDispatcher>().DispatchDueAsync(stop) });
                 await rec.RunAsync("order-maintenance", () => scope.ServiceProvider.GetRequiredService<OrderMaintenance>().RunAsync(stop));
+                await rec.RunAsync("catalog-refresh", async () => new { bumped = await scope.ServiceProvider.GetRequiredService<Solvelt.Api.Catalog.CatalogRefreshJob>().RunAsync(stop) });
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Order background job failed"); }
             try { await Task.Delay(TimeSpan.FromSeconds(10), stop); } catch (OperationCanceledException) { }
