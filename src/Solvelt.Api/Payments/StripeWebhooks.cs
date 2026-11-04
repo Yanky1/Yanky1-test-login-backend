@@ -63,23 +63,40 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
 
         string outcome;
         var mails = new List<Func<Task>>();
+        // a dispute event reads the allocated rows and writes status / an unallocated item against them while the marketplace's own (serializable) events write the rows:
+        // it runs in a serializable transaction too, so on PostgreSQL one of the two fails with 40001 and Stripe's retry (409) sees the other's result
+        var serializable = type is "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed";
+        await using var tx = serializable ? await hooks.BeginSerializableAsync(db) : null;
+        bool saved;
         try
         {
-            outcome = type switch
+            try
             {
-                "account.updated" => await AccountUpdated(obj, created, mails),
-                "transfer.created" or "transfer.updated" or "transfer.reversed" or "transfer.paid" => await TransferEvent(type, obj, created),
-                "payout.created" or "payout.updated" or "payout.paid" or "payout.failed" or "payout.canceled" => await PayoutEvent(type, obj, account, created, mails),
-                "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed" => await DisputeEvent(obj, created),
-                _ => "ignored_type"
-            };
+                outcome = type switch
+                {
+                    "account.updated" => await AccountUpdated(obj, created, mails),
+                    "transfer.created" or "transfer.updated" or "transfer.reversed" or "transfer.paid" => await TransferEvent(type, obj, created),
+                    "payout.created" or "payout.updated" or "payout.paid" or "payout.failed" or "payout.canceled" => await PayoutEvent(type, obj, account, created, mails),
+                    "charge.dispute.created" or "charge.dispute.updated" or "charge.dispute.closed" => await DisputeEvent(obj, created),
+                    _ => "ignored_type"
+                };
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+            { db.ChangeTracker.Clear(); return new(400, "invalid_event"); }
+            db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "stripe", EventId = id, Type = type, ReceivedAt = time.UtcNow(), Outcome = outcome });
+            if (hooks.BeforeWebhookSave is { } bws) await bws();
+            saved = await ledger.SaveAsync();
+            if (saved && tx is not null) await hooks.CommitAsync(tx);   // a PostgreSQL serialization failure can surface at COMMIT
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-        { db.ChangeTracker.Clear(); return new(400, "invalid_event"); }
-        db.ProcessedPaymentEvents.Add(new ProcessedPaymentEvent { Source = "stripe", EventId = id, Type = type, ReceivedAt = time.UtcNow(), Outcome = outcome });
-        if (hooks.BeforeWebhookSave is { } bws) await bws();
-        if (!await ledger.SaveAsync())
+        catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex))
         {
+            // nothing was applied and the event is NOT acknowledged: Stripe retries. No rollback after a failed COMMIT (the transaction is already completed).
+            db.ChangeTracker.Clear();
+            return new(409, "concurrent_update");
+        }
+        if (!saved)
+        {
+            if (tx is not null) { try { await tx.RollbackAsync(); } catch (InvalidOperationException) { /* already completed */ } }
             if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "stripe" && p.EventId == id)) return new(200, "duplicate");
             return new(409, "concurrent_update");   // not acknowledged: Stripe retries the delivery
         }
@@ -218,7 +235,13 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         if (orders.Count > 1 || rows.Count > 1)
         {
             if (amount <= 0) return "invalid";
-            return await ingest.RecordStripeMultiSellerAsync(did, rows, pr?.MarketplaceOrderId, charge, rows.FirstOrDefault()?.Currency ?? orders.FirstOrDefault()?.Currency ?? cur, amount, status, Str(o, "reason"), due, created, now);
+            var shared = rows.FirstOrDefault()?.Currency ?? orders.FirstOrDefault()?.Currency ?? cur;
+            if (shared != cur)
+            {
+                await ingest.FlagOnceAsync("dispute_currency_mismatch", did, $"Stripe dispute {did} is in {cur} but the seller orders it covers are in {shared}: it was not recorded and does not count toward the allocation.", now);
+                return "flagged_currency_mismatch";
+            }
+            return await ingest.RecordStripeMultiSellerAsync(did, rows, pr?.MarketplaceOrderId, charge, shared, amount, status, Str(o, "reason"), due, created, now);
         }
         PaymentDispute? existing = null; Guid seller; Guid? orderId = null, bookingId = null; var currency = cur;
         if (orders.Count == 1) { existing = rows.FirstOrDefault(r => r.OrderId == orders[0].Id); seller = orders[0].SellerId; orderId = orders[0].Id; currency = orders[0].Currency; }
@@ -226,10 +249,22 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         else if (rows.Count == 1) { existing = rows[0]; seller = existing.SellerId; orderId = existing.OrderId; bookingId = existing.BookingId; currency = existing.Currency; }
         else
         {
-            db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "dispute_unattributed", Detail = $"Stripe dispute {did} could not be matched to a seller order/booking (charge/payment intent unknown).", CreatedAt = now });
+            await ingest.FlagOnceAsync("dispute_unattributed", did, $"Stripe dispute {did} could not be matched to a seller order/booking (charge/payment intent unknown).", now);
+            return "flagged_unattributed";
+        }
+        // the dispute is already allocated (by the marketplace) to a different seller order / booking than this Stripe charge maps to: a Stripe event may only update rows it can match
+        // unambiguously, so nobody is debited and staff are told (a second seller must never be debited for a dispute that is already someone else's)
+        if (existing is null && rows.Count > 0)
+        {
+            await ingest.FlagOnceAsync("dispute_unattributed", did, $"Stripe dispute {did} is already allocated to another seller order/booking than the one its charge maps to: nothing was recorded or debited.", now, seller);
             return "flagged_unattributed";
         }
         if (existing is not null) { seller = existing.SellerId; currency = existing.Currency; orderId = existing.OrderId; bookingId = existing.BookingId; }
+        if (currency != cur)
+        {
+            await ingest.FlagOnceAsync("dispute_currency_mismatch", did, $"Stripe dispute {did} is in {cur} but the seller order it maps to is in {currency}: it was not recorded.", now, seller);
+            return "flagged_currency_mismatch";
+        }
         if (amount <= 0) return "invalid";
         await ingest.ApplyDisputeAsync(existing, did, seller, currency, orderId, bookingId, amount, existing?.FeeCents ?? opt.Value.DefaultDisputeFeeCents, status, Str(o, "reason"), due, created, now);
         return "applied";

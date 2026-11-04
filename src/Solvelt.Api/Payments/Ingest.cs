@@ -246,6 +246,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             if (orders.Count == 0) return IngestResult.Err(404, "order_not_found", "No such order.");
             if (orders.Count > 1) return IngestResult.Err(422, "seller_order_required", "The marketplace order has several seller orders: send sellerOrderNumber (amountCents and feeCents are that seller order's share).");
             var o = orders[0];
+            if (ValidCurrency(d.Currency) && d.Currency != o.Currency) return IngestResult.Err(422, "currency_mismatch", "The currency does not match the order.");
             seller = o.SellerId; currency = o.Currency; orderId = o.Id; sale = o.ItemsCents - o.DiscountCents + o.ShippingCents;
             existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.OrderId == o.Id);
         }
@@ -338,6 +339,15 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}{sfx}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId);
         if (status == "won")
             await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}{sfx}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
+    }
+
+    /// <summary>One open reconciliation flag per (kind, key): a replayed or updated event does not raise it again.</summary>
+    public async Task<bool> FlagOnceAsync(string kind, string key, string detail, DateTime now, Guid? sellerId = null)
+    {
+        if (db.ReconciliationFlags.Local.Any(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(key))) return false;
+        if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(key))) return false;
+        db.ReconciliationFlags.Add(new ReconciliationFlag { SellerId = sellerId, Kind = kind, Detail = detail, CreatedAt = now });
+        return true;
     }
 
     // ---- Stripe disputes on a charge that covers several seller orders ----------------------------------------------------------
