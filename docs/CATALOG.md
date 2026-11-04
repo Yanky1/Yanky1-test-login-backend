@@ -25,8 +25,8 @@ When a visible listing stops being visible the contract says why (`reason`, firs
 
 Every listing has a `CatalogVersion` (`version` in the documents): a **globally unique, strictly increasing** integer, bumped in the **same transaction** as every change
 the marketplace can see (any edit of the listing, its variants, options, images, attributes, FAQs, service details or published Q&A; a status change; the seller's
-status, display name or country; the brand; the category; a change of the *public availability state*). Changes the marketplace cannot see (cost price, quality score,
-shipping box dimensions, internal notes, pending or hidden questions) do not move it.
+status, display name or country; the brand; the category; a change of the *public availability state*; the weight and the dimensions). Changes the marketplace cannot see (cost price, quality score,
+default package preset, internal notes, pending or hidden questions) do not move it.
 
 Versions come from one counter row (`catalog_counter`). Taking the next versions locks that row until the surrounding transaction commits, so catalog-changing
 transactions are serialized and **versions become visible in version order**: a reader that has seen version N has seen every version below N. That is what makes the
@@ -63,9 +63,10 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
   "price": { "amountMinor": 1999, "currency": "USD", "compareAtMinor": 2499,
              "sale": { "amountMinor": 1799, "startsAt": null, "endsAt": "2026-12-01T00:00:00Z", "active": true } },
   "availability": { "state": "in_stock", "allowBackorder": false },
+  "weightGrams": 420, "dimensionsMm": { "l": 125, "w": 80, "h": 95 },
   "options": [ { "name": "Size", "values": ["S", "M"] } ],
   "variants": [ { "variantId": "...", "sku": "MUG-S", "barcode": null, "values": ["S"],
-                  "price": { "amountMinor": 1850, "currency": "USD" },
+                  "price": { "amountMinor": 1850, "currency": "USD" }, "weightGrams": 420,
                   "availability": { "state": "low_stock" }, "imageIds": ["..."] } ],
   "category": { "id": "...", "name": "Kitchen & dining", "slug": "kitchen-dining", "path": [ { "id": "...", "name": "Home", "slug": "home" }, { "id": "...", "name": "Kitchen & dining", "slug": "kitchen-dining" } ] },
   "brand": { "brandId": "...", "name": "Clay & Co", "slug": "clay-co", "description": null, "website": "https://example.com" },
@@ -83,6 +84,7 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
 ```
 * **`searchTerms`** is a `string[]` built from the seller's search keywords (one free-text field of the product form, 250 characters): terms are separated by **commas, semicolons or line breaks** (a space belongs to the term: `coffee cup` is one term); control characters are stripped, terms trimmed, blanks and case-insensitive duplicates removed, order kept; at most **20 terms of 50 characters**; a term containing an **e-mail address or a phone number** (7+ digits in a run) is refused when the seller saves it and is never published; an empty array when there are none. Editing the keywords creates a new version.
 * **`delivery`** says how the listing reaches the buyer, always present, always explicit: `{ships: bool, localDelivery: bool, serviceLocations: ("online"|"customer"|"seller")[]}`; see section 9 for how each value is derived.
+* **Weight and size (C7)**, for weight-based shipping at checkout (`baseCents + ceil(weightGrams / 1000) x perKgCents`, `docs/SHIPPING.md`): `weightGrams` (int or `null`, always present) is the product's shipping weight; `dimensionsMm` is `{l, w, h}` in millimetres, or `null` unless **all three** are set. Variants have no weight of their own in the portal, so every `variants[].weightGrams` is the product's weight (it is there so a client can read the weight of the variant it prices; if per-variant weights are ever stored, the variant's own value will win and this field will carry it). There is **no per-listing shipping flag** (free-shipping eligibility, for example) in the portal, so none is sent and there is no `shipping` object: free shipping is the seller's account-level "free over" threshold, applied by the portal's shipping profile. Changing the weight or any dimension creates a new version and a `listing.upserted`.
 * **Money** is integer minor units plus `currency` (USD today). `variants[].price` is already resolved (the variant's own price, else the listing's). The sale window is sent
   raw (`startsAt`/`endsAt`); `active` is evaluated when the document is built, so evaluate the dates yourself if you cache the document. Sale start/end passing does not create a new version.
 * **Availability** is a *state*, never a quantity: `in_stock`, `low_stock` (at or below the seller's low-stock alert), `out_of_stock`, `backorder` (out of stock but backorders allowed);
@@ -90,7 +92,7 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
 * **Variants**: enabled variants only; images of disabled variants are not listed (the image endpoint still serves them by id while the listing is visible). **Questions**: only published answers; the asker's name is never included.
 * `service` (services only): `{pricingModel, priceMinor, minMinutes, maxMinutes, incrementMinutes, defaultDurationMinutes, online, atCustomer, atSeller, bookingMode, travelFeeMinor}`
   (no meeting links, no addresses, no intake forms).
-* **Never present**: cost prices, quality scores, reserved or exact stock, SKUs' internal notes, weights and box dimensions, seller contact name/phone/e-mail/address, brand contact e-mail,
+* **Never present**: cost prices, quality scores, reserved or exact stock, SKUs' internal notes, seller contact name/phone/e-mail/address, brand contact e-mail,
   buyer names, moderation reasons, draft data, or anything of a hidden, moderated or unlisted listing.
 
 `GET /catalog/listings/{id}` returns the same document, or `404 not_found` for anything not visible (unknown, draft, hidden, moderated, unlisted all look the same).
