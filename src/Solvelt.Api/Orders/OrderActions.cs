@@ -381,13 +381,11 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
                 l.ReservedQty = 0;
             }
             // the last open units of a line take the rounding remainder, so shipped + cancelled shares add up to the line total
-            var done = priorPerLine.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
+            var prior = priorPerLine.FirstOrDefault(p => p.Id == l.Id);
             var left = l.Quantity - l.RefundedQty - l.CancelledQty;
-            var cents = open == left ? OrderSupport.LineNet(l) - done : OrderSupport.Prorate(OrderSupport.LineNet(l), open, l.Quantity);
-            var doneTax = priorPerLine.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0;
-            var tax = open == left ? l.TaxCents - doneTax : OrderSupport.Prorate(l.TaxCents, open, l.Quantity);
+            var share = OrderSupport.LineShare(l, open, open == left, prior?.Cents ?? 0, prior?.Tax ?? 0);
             l.CancelledQty += open;
-            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = l.Id, Quantity = open, AmountCents = Math.Max(0, cents), TaxCents = Math.Max(0, tax) });
+            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = l.Id, Quantity = open, AmountCents = share.Amount, TaxCents = share.Tax });
         }
         refund.AmountCents = refund.Lines.Sum(x => x.AmountCents);
         db.Refunds.Add(refund);
@@ -525,18 +523,17 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             return (Res.Conflict("Nothing has shipped yet. Cancel the order instead of refunding it.", "refund_before_ship"), 0, 0, 0, plan);
         // only units that actually shipped can be refunded; unshipped units are cancelled (stock + reservation are handled there)
         static int Refundable(OrderLine l) => l.ShippedQty - l.RefundedQty;
-        long Cents(OrderLine l, int q, long done) => q == l.Quantity - l.RefundedQty - l.CancelledQty
-            ? OrderSupport.LineNet(l) - done            // everything that is left of the line: takes the rounding remainder
-            : OrderSupport.Prorate(OrderSupport.LineNet(l), q, l.Quantity);
-        long TaxOf(OrderLine l, int q, long doneTax) => q == l.Quantity - l.RefundedQty - l.CancelledQty
-            ? l.TaxCents - doneTax                         // the last refund of the line takes the remainder, so the shares add up to exactly the line's tax
-            : OrderSupport.Prorate(l.TaxCents, q, l.Quantity);
+        (long Amount, long Tax) Share(OrderLine l, int q)
+        {
+            var p = prior.FirstOrDefault(x => x.Id == l.Id);
+            return OrderSupport.LineShare(l, q, q == l.Quantity - l.RefundedQty - l.CancelledQty, p?.Cents ?? 0, p?.Tax ?? 0);   // the last refund of a line takes the remainder of its items and of its tax
+        }
         if (req.Full == true)
         {
             foreach (var l in o.Lines)
             {
                 var q = Refundable(l);
-                if (q > 0) plan.Add((l, q, Math.Max(0, Cents(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0)), Math.Max(0, TaxOf(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0))));
+                if (q > 0) { var sh = Share(l, q); plan.Add((l, q, sh.Amount, sh.Tax)); }
             }
             var ship = o.ShippingCents - priorShip;
             var shipTax = OrderSupport.ShippingTaxShare(o, priorShip, priorShipTax, ship);
@@ -549,8 +546,8 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             if (l is null || !ids.Add(l.Id)) return (Res.Invalid("An item doesn't belong to this order, or appears twice.", "lines"), 0, 0, 0, plan);
             var avail = Refundable(l);
             if (w.Quantity < 1 || w.Quantity > avail) return (Res.Invalid($"You can refund at most {Math.Max(0, avail)} shipped unit(s) of \"{l.Title}\".", "quantity"), 0, 0, 0, plan);
-            var done = prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
-            plan.Add((l, w.Quantity, Math.Max(0, Cents(l, w.Quantity, done)), Math.Max(0, TaxOf(l, w.Quantity, prior.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0))));
+            var sh = Share(l, w.Quantity);
+            plan.Add((l, w.Quantity, sh.Amount, sh.Tax));
         }
         var shipping = req.ShippingCents ?? 0;
         if (shipping < 0 || shipping > o.ShippingCents - priorShip) return (Res.Invalid("The shipping refund can't exceed the shipping that was charged.", "shipping"), 0, 0, 0, plan);

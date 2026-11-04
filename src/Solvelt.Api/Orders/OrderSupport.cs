@@ -37,7 +37,7 @@ public static class OrderSupport
 
     /// <summary>Fee = round-half-up(net items x basis points / 10000), pure integer math.</summary>
     public static long Fee(long itemsAfterDiscountCents, int basisPoints) =>
-        itemsAfterDiscountCents <= 0 ? 0 : (itemsAfterDiscountCents * basisPoints + 5000) / 10000;
+        itemsAfterDiscountCents <= 0 ? 0 : (long)(((Int128)itemsAfterDiscountCents * basisPoints + 5000) / 10000);   // 128-bit: 100 lines of up to 1e13 each cannot overflow a long here
 
     public static void Recalculate(SellerOrder o, int feeBasisPoints)
     {
@@ -56,11 +56,25 @@ public static class OrderSupport
     public static long ShippingTaxShare(SellerOrder o, long priorShipping, long priorShippingTax, long shipping)
     {
         if (o.ShippingTaxCents <= 0 || o.ShippingCents <= 0 || shipping <= 0) return 0;
-        return priorShipping + shipping >= o.ShippingCents ? Math.Max(0, o.ShippingTaxCents - priorShippingTax) : o.ShippingTaxCents * shipping / o.ShippingCents;
+        return priorShipping + shipping >= o.ShippingCents ? Math.Max(0, o.ShippingTaxCents - priorShippingTax) : (long)((Int128)o.ShippingTaxCents * shipping / o.ShippingCents);
     }
 
     /// <summary>Share of a line's discount/tax for a partial quantity (integer, rounds down; the remainder stays on the last unit).</summary>
-    public static long Prorate(long total, int qty, int ofQty) => ofQty <= 0 ? 0 : total * qty / ofQty;
+    public static long Prorate(long total, int qty, int ofQty) => ofQty <= 0 ? 0 : (long)((Int128)total * qty / ofQty);   // 128-bit: total x qty can exceed a long
+
+    /// <summary>
+    /// What refunding (or cancelling) <paramref name="qty"/> units of a line gives back: the items without tax (unit price x quantity - discount) and the tax are prorated SEPARATELY, each floored,
+    /// and the refund of the last remaining units takes the remainder of each part, so neither part is ever negative and all refunds of a line add up to exactly its items and its tax.
+    /// The amount is their sum; <c>amount - tax</c> is exactly what the marketplace sends back as items without tax.
+    /// </summary>
+    public static (long Amount, long Tax) LineShare(OrderLine l, int qty, bool lastUnits, long doneAmount, long doneTax)
+    {
+        var itemsTotal = Math.Max(0, l.UnitPriceCents * l.Quantity - l.DiscountCents);
+        var doneItems = Math.Max(0, doneAmount - doneTax);
+        var items = Math.Max(0, lastUnits ? itemsTotal - doneItems : Prorate(itemsTotal, qty, l.Quantity));
+        var tax = Math.Max(0, lastUnits ? l.TaxCents - doneTax : Prorate(l.TaxCents, qty, l.Quantity));
+        return (items + tax, tax);
+    }
 
     public static long LineNet(OrderLine l) => l.UnitPriceCents * l.Quantity - l.DiscountCents + l.TaxCents;
 
