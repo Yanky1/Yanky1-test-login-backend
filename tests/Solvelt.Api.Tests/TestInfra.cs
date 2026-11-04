@@ -21,7 +21,10 @@ namespace Solvelt.Api.Tests;
 
 public class ApiFactory : WebApplicationFactory<Program>
 {
-    public FakeTimeProvider Time { get; } = new(DateTimeOffset.UtcNow);
+    public ApiFactory() { Time = new FakeTimeProvider(StartTime); }
+    /// <summary>Where the fake clock starts: the real time by default. A fixture that needs a fixed instant overrides this (FakeTimeProvider can only move forward, so setting an earlier time afterwards throws once the real clock has passed it).</summary>
+    protected virtual DateTimeOffset StartTime => DateTimeOffset.UtcNow;
+    public FakeTimeProvider Time { get; }
     public string Dir { get; } = Path.Combine(Path.GetTempPath(), "solvelt-tests-" + Guid.NewGuid().ToString("N"));
     public Dictionary<string, string?> Extra { get; } = new();
     public const string AdminEmail = "admin@example.com";
