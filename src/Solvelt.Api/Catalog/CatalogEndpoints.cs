@@ -121,12 +121,11 @@ public static class CatalogEndpoints
         // ---- images: the original bytes of images of LISTED items only; every other id is a plain 404 ------------------------------------
         g.MapGet("/images/{imageId:guid}", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, IFileStorage storage, Guid imageId) =>
         {
-            var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
+            var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted, Signing.ImagePurpose);   // the image key (or, for compatibility, the inbound secret)
             if (!v.Ok) return InternalEndpoints.Err(v.Status, v.Code, v.Message);
             var img = await (from i in db.ProductImages.AsNoTracking()
                              join p in db.Products.AsNoTracking() on i.ProductId equals p.Id
                              where i.Id == imageId && p.CatalogListed
-                                   && (i.VariantId == null || db.Variants.Any(x => x.Id == i.VariantId && x.Enabled))
                              select new { i.StorageKey, i.ContentType, i.Size }).FirstOrDefaultAsync(ctx.RequestAborted);
             if (img is null) return Results.NotFound();
             var s = await storage.OpenReadAsync(img.StorageKey, ctx.RequestAborted);

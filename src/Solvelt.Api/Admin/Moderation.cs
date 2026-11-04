@@ -86,7 +86,9 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
                 }
             case "message":
                 {
-                    var m = await db.Messages.AsNoTracking().Where(x => x.MarketplaceMessageId == target).Select(x => new { x.Id, x.SellerId, x.Text }).FirstOrDefaultAsync();
+                    var matches = await db.Messages.AsNoTracking().Where(x => x.MarketplaceMessageId == target).Select(x => new { x.Id, x.SellerId, x.Text }).Take(2).ToListAsync();
+                    if (matches.Count > 1) return new(422, "ambiguous_target", "This message id exists for several sellers; the report cannot be matched to one message.");
+                    var m = matches.FirstOrDefault();
                     if (m is not null) { queueTarget = m.Id; sellerId = m.SellerId; summary = Cut(Mask.Text(m.Text), 160); }
                     else if (Guid.TryParse(target, out var bid) && await db.BookingMessages.AsNoTracking().Where(x => x.Id == bid).Select(x => new { x.SellerId, x.Text }).FirstOrDefaultAsync() is { } bm)
                     { queueTarget = bid; sellerId = bm.SellerId; summary = Cut(Mask.Text(bm.Text), 160); queueKind = "booking_message"; }
