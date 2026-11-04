@@ -13,6 +13,8 @@ public class ShippingOptions
     public string ShippoApiKey { get; set; } = "";
     /// <summary>Verifies tracking webhooks (HMAC signature header, or ?token= for providers that cannot sign).</summary>
     public string WebhookSecret { get; set; } = "";
+    /// <summary>Signs the short-lived label links the marketplace hands to buyers. Its own secret: the Orders secrets are shared with the marketplace, which must not be able to mint label links.</summary>
+    public string LinkKey { get; set; } = "";
     public bool AllowTestKeyInProduction { get; set; }
     public bool AllowLiveKeyOutsideProduction { get; set; }
     public string LabelFormat { get; set; } = "PDF_4x6";
@@ -39,9 +41,9 @@ public class ShippingOptions
 }
 
 /// <summary>Short-lived signed links to a label file (return labels for the buyer, via the marketplace). HMAC over "label:{id}:{exp}".</summary>
-public class LabelLinks(IOptions<OrderOptions> orders, IOptions<ShippingOptions> opt, TimeProvider time)
+public class LabelLinks(IOptions<ShippingOptions> opt, TimeProvider time)
 {
-    private byte[] Key => SHA256.HashData(Encoding.UTF8.GetBytes("solvelt-label-link|" + orders.Value.OutboundSecret));
+    private byte[] Key => SHA256.HashData(Encoding.UTF8.GetBytes("solvelt-label-link|" + opt.Value.LinkKey));
     private string Sig(Guid id, long exp) => Convert.ToHexString(HMACSHA256.HashData(Key, Encoding.UTF8.GetBytes($"label:{id:N}:{exp}"))).ToLowerInvariant();
 
     public (string Url, DateTime ExpiresAt) Create(Guid labelId)
