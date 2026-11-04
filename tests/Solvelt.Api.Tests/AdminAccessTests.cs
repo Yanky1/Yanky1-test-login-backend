@@ -51,6 +51,8 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("POST", $"/api/v1/admin/listings/{G}/unhide", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("GET", "/api/v1/admin/lookups/orders?q=SO-2026", StaffPermission.LookupsView, null),
         ("GET", $"/api/v1/admin/lookups/orders/{G}", StaffPermission.LookupsView, null),
+        ("GET", $"/api/v1/admin/sellers/{G}/local-delivery", StaffPermission.DeliveryView, null),
+        ("POST", $"/api/v1/admin/local-delivery/deliveries/{G}/proof-access", StaffPermission.LookupsReveal, new { reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/lookups/orders/{G}/reveal", StaffPermission.LookupsReveal, new { reason = StaffKit.Why }),
         ("GET", "/api/v1/admin/outbox", StaffPermission.IntegrationsView, null),
         ("POST", $"/api/v1/admin/outbox/{G}/retry", StaffPermission.IntegrationsAct, new { reason = StaffKit.Why }),
