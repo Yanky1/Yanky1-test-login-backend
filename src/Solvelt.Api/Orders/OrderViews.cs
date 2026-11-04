@@ -127,7 +127,7 @@ public static class OrderViews
             notes = notes.Select(n => new { id = n.Id, text = n.Text, author = names.GetValueOrDefault(n.AuthorId, ""), createdAt = n.CreatedAt }),
             conversationId = conv,
             needsAttention = o.NeedsAttention, attentionReason = o.AttentionReason?.Replace("tracking:", ""), attentionAt = o.AttentionAt,
-            returnShipments = returnShipments.Select(r => new { id = r.Id, returnId = r.ReturnId, carrier = r.Carrier, service = r.Service, trackingNumber = r.TrackingNumber, trackingUrl = Tracking.Url(r.Carrier, r.TrackingNumber), trackingStatus = r.TrackingStatus ?? "unknown", eta = r.Eta, deliveredAt = r.DeliveredAt, labelId = r.LabelId }),
+            returnShipments = returnShipments.Select(r => new { id = r.Id, returnId = r.ReturnId, carrier = r.Carrier, service = r.Service, trackingNumber = r.TrackingNumber, trackingUrl = Tracking.Url(r.Carrier, r.TrackingNumber), trackingStatus = r.TrackingStatus ?? "unknown", eta = r.Eta, deliveredAt = r.DeliveredAt, labelId = r.LabelId, voided = r.DeliveredAt == null && r.TrackingStoppedAt != null }),
             stockMismatch = events.Any(e => e.Type == "stock.mismatch"),
             actions = Actions(o, a, managerRefundLimit),
             reasons = new { cancel = OrderSupport.CancelReasons, refund = OrderSupport.RefundReasons, rejectReturn = OrderSupport.RejectReasons, carriers = Tracking.Carriers }

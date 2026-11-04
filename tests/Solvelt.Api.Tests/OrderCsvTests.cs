@@ -54,7 +54,7 @@ public class OrderCsvTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var s = await NewShop(f);
         var (_, id, num, _) = await Place(s, qty: 3);
         await Ok(Act(s.Owner, id, "accept"));
-        var ok = await Node(await Upload(s.Owner, $"order_number,carrier,tracking_number,sku,quantity\n{num},UPS,1Z999AA10123456784,{s.Sku},2\n", true));
+        var ok = await Node(await Upload(s.Owner, $"order_number,carrier,tracking_number,sku,quantity\n{num},UPS,1Z999AA10123456800,{s.Sku},2\n", true));
         Assert.Equal(1, (int)ok["valid"]!);
         Assert.Equal("PartiallyShipped", St(await Detail(s.Owner, id)));
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(s.Owner, "foo,bar\n1,2\n", false)).StatusCode);        // missing columns
