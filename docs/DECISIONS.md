@@ -286,3 +286,7 @@
 | L26 | Own key for proof links | Proof URLs are signed with `LocalDelivery:ProofUrlKey`, not the Orders secret that the marketplace shares (anyone holding it could mint any expiry). Required outside Development/Testing (start-up refuses to run without it, or with a key equal to an Orders secret). | Review, finding 6 |
 | L27 | PostgreSQL | The capacity insert (`INSERT ... ON CONFLICT DO NOTHING` + conditional UPDATE) is covered by SQLite tests only; there is no automated PostgreSQL test (documented in LOCAL-DELIVERY.md, section 12). | Review note |
 | L28 | Server-stamped events and the stale checks | An event sent without `clientAt` is ordered by arrival: it is neither compared against `LastEventClientAt` nor stored in it, so a phone whose clock runs a few minutes slow is not silently ignored after such an event. Events with a `clientAt` keep the per-stop and route-wide rules (L21-L24). | Review follow-up |
+| I20 | Release anchor | An order without a delivery mark releases from its completion, else its last return-received/refund time, using the same delay and window. | Review round 3 |
+| I21 | Lease and reconciliation | Lease renewed at every step; reconciliation limited to `ReconcileDays` (35); an expired lease is never revived. | Review round 3 |
+| I22 | Inquiries and labels | Inquiries move no money but are respondable with a due date and one email; `Negative` = owed < 0 so a label debit against a pending sale is not a negative balance. | Review round 3 |
+
