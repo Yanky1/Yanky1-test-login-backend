@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
@@ -21,6 +23,30 @@ public class CatalogFactory : OrdersFactory
         Extra["RateLimit:InternalReportsPerCallerPerMinute"] = "100000";
         Extra["RateLimit:InternalUnsignedPerMinute"] = "100000";
     }
+}
+
+/// <summary>Records every SQL command text the portal sends, in order (opt-in per test factory).</summary>
+public sealed class SqlLog : DbCommandInterceptor
+{
+    private readonly List<string> _items = [];
+    private void Add(DbCommand c) { lock (_items) _items.Add(c.CommandText); }
+    public List<string> All() { lock (_items) return _items.ToList(); }
+    public void Clear() { lock (_items) _items.Clear(); }
+
+    public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result) { Add(command); return result; }
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken ct = default) { Add(command); return new(result); }
+    public override InterceptionResult<int> NonQueryExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<int> result) { Add(command); return result; }
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken ct = default) { Add(command); return new(result); }
+    public override InterceptionResult<object> ScalarExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<object> result) { Add(command); return result; }
+    public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<object> result, CancellationToken ct = default) { Add(command); return new(result); }
+}
+
+/// <summary>A catalog factory whose SQL is recorded (see <see cref="SqlLog"/>).</summary>
+public class CatalogSqlLogFactory : CatalogFactory
+{
+    public SqlLog Log { get; } = new();
+    protected override void ConfigureTestServices(Microsoft.Extensions.DependencyInjection.IServiceCollection services) =>
+        Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions.ConfigureDbContext<Solvelt.Api.Data.AppDbContext>(services, o => o.AddInterceptors(Log));
 }
 
 /// <summary>Image downloads accept ONLY the image key (the inbound secret no longer works for them).</summary>
