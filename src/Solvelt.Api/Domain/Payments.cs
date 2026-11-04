@@ -126,6 +126,7 @@ public class PaymentDispute
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid SellerId { get; set; }
     public string ExternalId { get; set; } = "";
+    /// <summary>The SELLER order this share of the dispute was booked against (a Stripe dispute can span several seller orders: the key is (ExternalId, OrderId)).</summary>
     public Guid? OrderId { get; set; }
     public Guid? BookingId { get; set; }
     public string Currency { get; set; } = "USD";
@@ -139,6 +140,29 @@ public class PaymentDispute
     public DateTime EventAt { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>A Stripe dispute on a charge that covers several seller orders and is not (fully) allocated by marketplace dispute.* events yet. Moves no money; open while the allocated shares are below the Stripe amount.</summary>
+public class UnallocatedDispute
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string ExternalId { get; set; } = "";
+    public string? MarketplaceOrderId { get; set; }
+    public string? ChargeRef { get; set; }
+    public string Currency { get; set; } = "USD";
+    /// <summary>The amount Stripe reports (all sellers together).</summary>
+    public long AmountCents { get; set; }
+    /// <summary>Sum of the per-seller-order shares the marketplace has allocated so far.</summary>
+    public long AllocatedCents { get; set; }
+    public string Status { get; set; } = "needs_response";
+    public string? Reason { get; set; }
+    public DateTime? EvidenceDueBy { get; set; }
+    public DateTime EventAt { get; set; }
+    public Guid? FlagId { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    public DateTime? ResolvedAt { get; set; }
 }
 
 /// <summary>The payment reference (Stripe charge / payment intent id) the marketplace reports for an order or booking.</summary>
