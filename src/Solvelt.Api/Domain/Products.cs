@@ -101,6 +101,8 @@ public class Product
     public string? CatalogUnlistReason { get; set; }
     /// <summary>Availability signature (per variant) as of the last stock-driven version; null = unknown, the next stock refresh bumps once.</summary>
     public string? CatalogStockState { get; set; }
+    /// <summary>Delivery signature (ships / local delivery / service locations) as of the last version; null = unknown, the next refresh bumps once.</summary>
+    public string? CatalogDeliveryState { get; set; }
     /// <summary>Concurrency token bumped by every image add/remove: parallel uploads can't both pass the 9-image check.</summary>
     public int ImageSeq { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -213,4 +215,18 @@ public class CatalogCounter
 {
     public int Id { get; set; } = 1;
     public long Value { get; set; }
+}
+
+/// <summary>
+/// "Delivery settings of this account (and brand) changed": the catalog refresh job re-derives the delivery options of the listings in scope and bumps (and re-emits
+/// <c>listing.upserted</c> for) the ones that actually changed. Written in the same transaction as the settings change, processed in the background in chunks.
+/// </summary>
+public class CatalogRefreshRequest
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid SellerId { get; set; }
+    /// <summary>Null: every listing of the account.</summary>
+    public Guid? BrandId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ProcessedAt { get; set; }
 }

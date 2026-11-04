@@ -21,6 +21,7 @@ public static class CatalogEndpoints
     public static WebApplicationBuilder AddCatalog(this WebApplicationBuilder builder)
     {
         builder.Services.AddScoped<CatalogReader>();
+        builder.Services.AddScoped<CatalogRefreshJob>();
         var cfg = builder.Configuration;
         var feed = cfg.GetValue("RateLimit:InternalCatalogPerMinute", 1200);
         builder.Services.AddSingleton(new MarketplaceWriteLimits(
@@ -41,6 +42,9 @@ public static class CatalogEndpoints
 
     public static void MapCatalogInternal(this WebApplication app)
     {
+        if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
+            app.MapPost("/api/dev/catalog/refresh", async (CatalogRefreshJob job) => Results.Ok(new { bumped = await job.RunAsync() })).AllowAnonymous();   // what the background worker does every few seconds
+
         var g = app.MapGroup("/api/internal/v1/catalog").RequireRateLimiting("internal-catalog").AllowAnonymous();
 
         // ---- the feed -------------------------------------------------------------------------------------------------------------
