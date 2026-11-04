@@ -7,26 +7,60 @@ using Solvelt.Api.Orders;
 
 namespace Solvelt.Api.Payments;
 
-/// <summary>Atomic lease on a named job (UPDATE ... WHERE expired): at most one instance runs it at a time, a crashed holder's lease simply expires.</summary>
-public class JobLeaseService(AppDbContext db, TimeProvider time, IOptions<PaymentOptions> opt)
+public sealed class LeaseLostException(string name) : Exception($"The lease '{name}' now belongs to another runner: this run stops.");
+
+/// <summary>
+/// Atomic lease on a named job (UPDATE ... WHERE expired): at most one runner holds it, a crashed holder's lease simply expires. The runner that acquired it keeps an
+/// OWNER TOKEN in this (scoped) instance; only that token may renew or release the lease, so a runner that lost it can neither extend nor expire the new owner's lease.
+/// </summary>
+public class JobLeaseService(AppDbContext db, TimeProvider time, IOptions<PaymentOptions> opt, PaymentTestHooks hooks)
 {
+    private string? _name;
+    /// <summary>The token of the lease this instance holds (null: none).</summary>
+    public string? Token { get; private set; }
+
     public async Task<bool> TryAcquireAsync(string name, CancellationToken ct = default)
     {
+        var token = Guid.NewGuid().ToString("N");
         var now = time.UtcNow(); var until = now.AddSeconds(opt.Value.LeaseSeconds);
-        if (await db.PaymentJobLeases.Where(l => l.Name == name && l.LockedUntil < now).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, until), ct) == 1) return true;
-        try { db.PaymentJobLeases.Add(new PaymentJobLease { Name = name, LockedUntil = until }); await db.SaveChangesAsync(ct); return true; }
+        if (await db.PaymentJobLeases.Where(l => l.Name == name && l.LockedUntil < now).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, until).SetProperty(l => l.Owner, token), ct) == 1)
+        { _name = name; Token = token; return true; }
+        try
+        {
+            db.PaymentJobLeases.Add(new PaymentJobLease { Name = name, LockedUntil = until, Owner = token }); await db.SaveChangesAsync(ct);
+            _name = name; Token = token; return true;
+        }
         catch (DbUpdateException ex) when (DbErrors.IsUnique(ex)) { db.ChangeTracker.Clear(); return false; }
     }
 
-    /// <summary>Extends a lease that is still alive (a long run keeps its lease; an expired one is never revived, another instance may own it by now).</summary>
-    public async Task RenewAsync(string name, CancellationToken ct = default)
+    /// <summary>Extends the lease this instance holds, if it still owns it and it has not expired. False: it was lost (never revived: another runner may own it by now).</summary>
+    public async Task<bool> RenewAsync(CancellationToken ct = default)
     {
+        if (Token is null || _name is null) return false;
         var now = time.UtcNow();
-        await db.PaymentJobLeases.Where(l => l.Name == name && l.LockedUntil > now).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, now.AddSeconds(opt.Value.LeaseSeconds)), ct);
+        return await db.PaymentJobLeases.Where(l => l.Name == _name && l.Owner == Token && l.LockedUntil > now)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, now.AddSeconds(opt.Value.LeaseSeconds)), ct) == 1;
     }
 
-    public async Task ReleaseAsync(string name, CancellationToken ct = default) =>
-        await db.PaymentJobLeases.Where(l => l.Name == name).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, time.UtcNow().AddSeconds(-1)), CancellationToken.None);
+    /// <summary>
+    /// Called at the top of every step of a job. Holding no lease in this scope (a direct call by a test or a dev helper) is a no-op; holding one that was lost throws
+    /// <see cref="LeaseLostException"/>, which aborts the run.
+    /// </summary>
+    public async Task EnsureAsync(CancellationToken ct = default)
+    {
+        if (Token is null) return;
+        if (!await RenewAsync(ct)) throw new LeaseLostException(_name ?? "?");
+        if (hooks.AfterLeaseRenew is { } h) await h();
+    }
+
+    /// <summary>Releases the lease this instance holds. Another owner's lease is never touched (the update is conditional on the token).</summary>
+    public async Task ReleaseAsync(string name, string? token = null, CancellationToken ct = default)
+    {
+        token ??= Token;
+        if (token is null) return;
+        await db.PaymentJobLeases.Where(l => l.Name == name && l.Owner == token).ExecuteUpdateAsync(u => u.SetProperty(l => l.LockedUntil, time.UtcNow().AddSeconds(-1)), CancellationToken.None);
+        if (token == Token) Token = null;
+    }
 }
 
 public record ReleaseSummary(int Released, int ReserveReleased, long ReleasedCents);
@@ -40,6 +74,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
 
     public async Task<ReleaseSummary> RunAsync(CancellationToken ct = default)
     {
+        await leases.EnsureAsync(ct);
         var o = opt.Value; var now = time.UtcNow();
         int released = 0; long cents = 0;
 
@@ -48,9 +83,9 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             .GroupBy(e => e.OrderId!.Value).Select(g => new { Id = g.Key, Sum = g.Sum(x => x.AmountCents), Max = g.Max(x => x.Id) }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var p in pendingOrders)
         {
+            await leases.EnsureAsync(ct);
             var ord = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == p.Id, ct);
             if (ord is null || !await EligibleAsync(ord, now, ct)) continue;
-            await leases.RenewAsync(TransferService.JobName, ct);
             if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
             if (await ReleaseAsync(ord.SellerId, ord.Currency, p.Id, null, ord.Number, ct) is { } got) { released++; cents += got; }
         }
@@ -58,6 +93,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             .GroupBy(e => e.BookingId!.Value).Select(g => new { Id = g.Key, Sum = g.Sum(x => x.AmountCents), Max = g.Max(x => x.Id), Cur = g.Max(x => x.Currency)! }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var p in pendingBookings)
         {
+            await leases.EnsureAsync(ct);
             var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.Id == p.Id, ct);
             if (b is null || !ReleasableBooking.Contains(b.Status)) continue;
             var anchor = b.Status == BookingStatus.Completed ? b.CompletedAt ?? b.UpdatedAt : b.UpdatedAt;
@@ -114,7 +150,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
                 orderId, bookingId);
             if (j is null) return null;
             await db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+            await hooks.CommitAsync(tx, ct);
             return amount;
         }
         catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex)) { db.ChangeTracker.Clear(); return null; }   // lost a race (unique key, or a PostgreSQL serialization failure at the write or at COMMIT): the next run re-reads
@@ -128,6 +164,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         var n = 0;
         foreach (var r in reserves)
         {
+            await leases.EnsureAsync(ct);
             var j = await ledger.PostAsync(r.SellerId, r.Currency, "reserve_release", $"reserve-release:{r.Id}", "Reserve released",
                 [new(LedgerAccount.Reserved, -r.AmountCents, "reserve"), new(LedgerAccount.Available, r.AmountCents, "reserve")], r.OrderId, r.BookingId);
             if (j is not null && await ledger.SaveAsync(ct)) n++;
@@ -158,13 +195,14 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
 
     public async Task<TransferSummary> RunAsync(CancellationToken ct = default)
     {
+        await leases.EnsureAsync(ct);
         int created = 0, paused = 0, skipped = 0;
         var o = opt.Value; var now = time.UtcNow(); var day = now.Date;
         var sellers = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Available)
             .GroupBy(e => new { e.SellerId, e.Currency }).Select(g => new { g.Key.SellerId, g.Key.Currency, Sum = g.Sum(x => x.AmountCents) }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var s in sellers)
         {
-            await leases.RenewAsync(JobName, ct);
+            await leases.EnsureAsync(ct);
             if (s.Sum < o.MinTransferCents) { skipped++; continue; }
             var acct = await db.PayoutAccounts.AsNoTracking().FirstOrDefaultAsync(a => a.SellerId == s.SellerId, ct);
             var status = await db.Sellers.AsNoTracking().Where(x => x.Id == s.SellerId).Select(x => x.Status).FirstOrDefaultAsync(ct);
@@ -193,7 +231,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
             .OrderBy(t => t.CreatedAt).Take(100).Select(t => t.Id).ToListAsync(ct);
         foreach (var id in due)
         {
-            await leases.RenewAsync(JobName, ct);
+            await leases.EnsureAsync(ct);
             var lease = time.UtcNow().AddMinutes(2);
             var claimed = await db.PaymentTransfers.Where(t => t.Id == id && t.Status == TransferStatus.Pending && (t.LockedUntil == null || t.LockedUntil < now))
                 .ExecuteUpdateAsync(u => u.SetProperty(t => t.LockedUntil, lease), ct);
@@ -281,7 +319,7 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
                 [new(LedgerAccount.Available, -t.AmountCents, "transfer"), new(LedgerAccount.Settled, t.AmountCents, "transfer")], sourceRef: t.Id.ToString());
             if (j is null) { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return (false, "conflict"); }   // status change rolled back with it
             await db.SaveChangesAsync();
-            await tx.CommitAsync();
+            await hooks.CommitAsync(tx);
             return (true, "ok");
         }
         catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex)) { db.ChangeTracker.Clear(); return (false, "conflict"); }
@@ -300,12 +338,12 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
     public async Task<ReconcileSummary> RunAsync(CancellationToken ct = default)
     {
         var now = time.UtcNow(); int checkedN = 0, flagged = 0;
-        await leases.RenewAsync(TransferService.JobName, ct);
+        await leases.EnsureAsync(ct);
         var since = now.AddDays(-opt.Value.ReconcileDays);
-        var transfers = await db.PaymentTransfers.AsNoTracking().Where(t => (t.Status == TransferStatus.Created || t.Status == TransferStatus.Reversed) && t.CreatedAt >= since).ToListAsync(ct);
+        var transfers = await db.PaymentTransfers.AsNoTracking().Where(t => (t.Status == TransferStatus.Created || t.Status == TransferStatus.Reversed) && (t.CreatedAt >= since || t.UpdatedAt >= since)).ToListAsync(ct);
         foreach (var t in transfers)
         {
-            await leases.RenewAsync(TransferService.JobName, ct);
+            await leases.EnsureAsync(ct);
             checkedN++;
             string? problem = null;
             if (t.StripeTransferId is null) problem = "ledger transfer has no Stripe transfer id";
@@ -355,6 +393,7 @@ public class PaymentsWorker(IServiceScopeFactory scopes, IOptions<PaymentOptions
                         await rec.RunAsync("payments-transfers", async () => await sp.GetRequiredService<TransferService>().RunAsync(stop));
                         await rec.RunAsync("payments-reconcile", async () => await sp.GetRequiredService<ReconciliationService>().RunAsync(stop));
                     }
+                    catch (LeaseLostException ex) { log.LogWarning("{Message}", ex.Message); }
                     finally { await lease.ReleaseAsync(TransferService.JobName); }
                 }
             }
