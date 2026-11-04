@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Data;
+using Solvelt.Api.Bookings;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Products;
 using Solvelt.Api.Services;
@@ -130,7 +131,8 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                 {
                     pricingModel = sd.PricingModel.ToString().ToLowerInvariant(), priceMinor = sd.PriceCents, minMinutes = sd.MinMinutes, maxMinutes = sd.MaxMinutes, incrementMinutes = sd.IncrementMinutes,
                     defaultDurationMinutes = sd.DefaultDurationMinutes, online = sd.Online, atCustomer = sd.AtCustomer, atSeller = sd.AtSeller, bookingMode = sd.BookingMode.ToString().ToLowerInvariant(),
-                    travelFeeMinor = sd.TravelFeeCents
+                    travelFeeMinor = sd.TravelFeeCents,
+                    policy = PolicyView.Of(sd)
                 },
                 publishedAt = p.PublishedAt,
                 updatedAt = p.UpdatedAt

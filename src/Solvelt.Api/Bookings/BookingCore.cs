@@ -22,7 +22,28 @@ public record ServiceArea(List<string>? PostalCodes, AreaRadius? Radius);
 public record IntakeQuestion(string Id, string Label, string Type, List<string>? Options, bool Required);
 public record AddOn(string Id, string Name, long PriceCents, int ExtraMinutes);
 public record IntakeAnswer(string Id, string? Answer);
-public record BookingPolicy(int CancelFreeHours, int CancelFeePercent, int MaxReschedules, int NoShowFeePercent, int IncrementMinutes, int ApprovalHours);
+/// <summary>The policy of a service as it was when a booking was made (stored as <c>Booking.PolicyJson</c>). <c>ApprovalHours</c> is null for instant-booking services.</summary>
+public record BookingPolicy(int CancelFreeHours, int CancelFeePercent, int MaxReschedules, int NoShowFeePercent, int IncrementMinutes, int? ApprovalHours);
+
+/// <summary>The policy object marketplaces read (C11): <c>{cancelFreeHours, cancelFeePercent, noShowFeePercent, maxReschedules, approvalHours}</c>.</summary>
+public static class PolicyView
+{
+    /// <summary>The SNAPSHOT of a booking (never the service's current policy). A value the snapshot does not hold is null.</summary>
+    public static object OfSnapshot(string? json)
+    {
+        int? Get(JsonElement root, string name) => root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var n) ? n : null;
+        JsonElement el = default;
+        try { if (!string.IsNullOrWhiteSpace(json)) { using var doc = JsonDocument.Parse(json); el = doc.RootElement.Clone(); } } catch (JsonException) { }
+        return new { cancelFreeHours = Get(el, "cancelFreeHours"), cancelFeePercent = Get(el, "cancelFeePercent"), noShowFeePercent = Get(el, "noShowFeePercent"), maxReschedules = Get(el, "maxReschedules"), approvalHours = Get(el, "approvalHours") };
+    }
+
+    /// <summary>The CURRENT policy of a service (catalog document, options endpoint). <c>approvalHours</c> is null for instant-booking services.</summary>
+    public static object Of(ServiceDetails d) => new
+    {
+        cancelFreeHours = (int?)d.CancelFreeHours, cancelFeePercent = (int?)d.CancelFeePercent, noShowFeePercent = (int?)d.NoShowFeePercent, maxReschedules = (int?)d.MaxReschedules,
+        approvalHours = d.BookingMode == BookingMode.Instant ? null : (int?)d.ApprovalHours
+    };
+}
 
 public static class BJson
 {
