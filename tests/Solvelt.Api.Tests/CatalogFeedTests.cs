@@ -212,6 +212,18 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
     }
 
     [Fact]
+    public async Task Versions_are_handed_out_by_the_counter_row_which_always_equals_the_highest_version()
+    {
+        // The counter row is what serializes catalog-changing transactions on PostgreSQL (a row lock held until commit); a version taken any other way
+        // (MAX()+1, a sequence) would not be visible in commit order. SQLite cannot show that race, so this pins the mechanism itself.
+        var s = await Orders.NewShop(f);
+        await SetPrice(s.Owner, s.Product, 12); await SetPrice(s.Owner, s.Product, 13);
+        var (counter, max) = f.WithDb(db => (db.CatalogCounters.AsNoTracking().Select(c => c.Value).Single(), db.Products.AsNoTracking().Max(p => p.CatalogVersion)));
+        Assert.True(counter > 0);
+        Assert.Equal(max, counter);
+    }
+
+    [Fact]
     public async Task After_a_burst_of_concurrent_updates_the_feed_returns_every_change_and_any_resumed_cursor_converges_to_the_final_state()
     {
         var s = await Orders.NewShop(f);
