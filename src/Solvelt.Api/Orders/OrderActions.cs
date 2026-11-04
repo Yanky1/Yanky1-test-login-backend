@@ -243,6 +243,17 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         return res;
     }
 
+    /// <summary>The order's delivery time: never earlier than any shipment left or arrived (the release hold and the return window start from it, so an early value would pay out early).</summary>
+    internal static DateTime LastOf(SellerOrder o, DateTime when)
+    {
+        foreach (var s in o.Shipments)
+        {
+            if (s.ShippedAt > when) when = s.ShippedAt;
+            if (s.DeliveredAt is { } d && d > when) when = d;
+        }
+        return when;
+    }
+
     public async Task<Res> MarkDeliveredAsync(SellerOrder o, Guid actor, int? version, Party by = Party.Seller, string? tracking = null, DateTime? at = null)
     {
         var now = time.UtcNow();
@@ -258,7 +269,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         }
         if (o.Status != OrderStatus.Shipped) return Res.Conflict($"This order is {OrderStateMachine.Label(o.Status)}. Only a fully shipped order can be marked delivered.");
         if (!await ClaimAsync(o, version)) return Stale();
-        if (o.Shipments.Count > 0 && o.Shipments.Max(x => x.ShippedAt) is var lastShipped && when < lastShipped) when = lastShipped;   // never earlier than the last shipment left
+        when = LastOf(o, when);   // never earlier than the last shipment left or arrived
         OrderStateMachine.Move(o, OrderStatus.Delivered);
         o.DeliveredAt = when;
         foreach (var s in o.Shipments) s.DeliveredAt ??= when;
@@ -284,6 +295,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (o.Status == OrderStatus.Shipped && o.Shipments.All(s => s.DeliveredAt != null) && OrderStateMachine.Can(o.Status, OrderStatus.Delivered))
         {
             OrderStateMachine.Move(o, OrderStatus.Delivered);
+            when = LastOf(o, when);   // the last parcel to ARRIVE may have been reported with an older time than another parcel's shipment or arrival
             o.DeliveredAt = when;
             orderDelivered = true;
             db.AddEvent(o.Id, "order.delivered", Party.System, null, "Delivered (carrier tracking)", now);
