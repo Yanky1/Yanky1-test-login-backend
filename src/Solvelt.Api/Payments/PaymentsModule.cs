@@ -21,13 +21,15 @@ public static class PaymentsModule
         var so = cfg.GetSection(StripeOptions.Section).Get<StripeOptions>() ?? new StripeOptions();
         // env vars STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET are accepted next to Stripe:SecretKey / Stripe:WebhookSecret
         var key = !string.IsNullOrWhiteSpace(so.SecretKey) ? so.SecretKey : Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? "";
-        var hook = !string.IsNullOrWhiteSpace(so.WebhookSecret) ? so.WebhookSecret : Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET") ?? "";
-        builder.Services.PostConfigure<StripeOptions>(o => { o.SecretKey = key; o.WebhookSecret = hook; });
+        var hook = Pick(so.WebhookSecret, "STRIPE_WEBHOOK_SECRET");
+        var connectHook = Pick(so.ConnectWebhookSecret, "STRIPE_CONNECT_WEBHOOK_SECRET");
+        builder.Services.PostConfigure<StripeOptions>(o => { o.SecretKey = key; o.WebhookSecret = hook; o.ConnectWebhookSecret = connectHook; });
         var dev = env.IsDevelopment() || env.IsEnvironment("Testing");
         var prod = env.IsProduction();
         if (key.Length > 0)
         {
             ValidateKey(key, prod, p.AllowTestKeysInProduction, p.AllowLiveKeysOutsideProduction);
+            ValidateWebhookSecrets(key, hook, connectHook, p.AllowSingleWebhookSecret);
             builder.Services.AddSingleton<IPaymentProvider, StripePaymentProvider>();
         }
         else if (dev) { builder.Services.AddSingleton<FakePaymentProvider>(); builder.Services.AddSingleton<IPaymentProvider>(sp => sp.GetRequiredService<FakePaymentProvider>()); }
@@ -54,6 +56,18 @@ public static class PaymentsModule
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = p.WebhooksPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
         return builder;
+    }
+
+    /// <summary>The configured value, else the environment variable (both optional), trimmed.</summary>
+    public static string Pick(string? configured, string envVar) => (!string.IsNullOrWhiteSpace(configured) ? configured : Environment.GetEnvironmentVariable(envVar) ?? "").Trim();
+
+    /// <summary>Stripe signs the platform endpoint and the Connect endpoint with DIFFERENT secrets: with a live key both must be configured, unless one secret is accepted on purpose.</summary>
+    public static void ValidateWebhookSecrets(string key, string platformSecret, string connectSecret, bool allowSingle)
+    {
+        var live = key.StartsWith("sk_live_") || key.StartsWith("rk_live_");
+        if (!live || allowSingle) return;
+        if (platformSecret.Length == 0 || connectSecret.Length == 0)
+            throw new InvalidOperationException("A live Stripe key needs BOTH webhook secrets: Stripe:WebhookSecret (STRIPE_WEBHOOK_SECRET, platform endpoint) and Stripe:ConnectWebhookSecret (STRIPE_CONNECT_WEBHOOK_SECRET, Connect endpoint). Set Payments:AllowSingleWebhookSecret=true to accept a single secret on purpose.");
     }
 
     /// <summary>Separate test/live key handling: a secret key must look like one; production refuses test keys and other environments refuse live keys unless allowed on purpose.</summary>
@@ -101,13 +115,16 @@ public static class PaymentsModule
         }).RequireRateLimiting("internal").AllowAnonymous();
 
         // Stripe -> portal. Authenticated by the endpoint signing secret only (never a bearer token); 2xx also for duplicates and ignored events.
-        app.MapPost("/api/webhooks/stripe", async (HttpContext ctx, StripeWebhookService svc, IOptions<PaymentOptions> opt) =>
-        {
-            var body = await ReadBody(ctx.Request, 1024 * 1024);
-            if (body is null) return Err(413, "too_large", "Request body too large.");
-            var r = await svc.HandleAsync(body, ctx.Request.Headers["Stripe-Signature"].ToString());
-            return r.Status == 200 ? Results.Json(new { received = true, status = r.Code, outcome = r.Outcome }) : Err(r.Status, r.Code, "Webhook rejected: " + r.Code);
-        }).RequireRateLimiting("stripe-webhooks").AllowAnonymous();
+        // /api/webhooks/stripe takes both endpoints (each event must be signed with the secret of ITS endpoint when both secrets are configured);
+        // /api/webhooks/stripe/connect is the optional dedicated Connect endpoint: only the Connect secret (or the single secret when no Connect secret is set) is accepted there.
+        foreach (var (path, endpoint) in new[] { ("/api/webhooks/stripe", StripeEndpoint.Any), ("/api/webhooks/stripe/connect", StripeEndpoint.Connect) })
+            app.MapPost(path, async (HttpContext ctx, StripeWebhookService svc) =>
+            {
+                var body = await ReadBody(ctx.Request, 1024 * 1024);
+                if (body is null) return Err(413, "too_large", "Request body too large.");
+                var r = await svc.HandleAsync(body, ctx.Request.Headers["Stripe-Signature"].ToString(), endpoint);
+                return r.Status == 200 ? Results.Json(new { received = true, status = r.Code, outcome = r.Outcome }) : Err(r.Status, r.Code, "Webhook rejected: " + r.Code);
+            }).RequireRateLimiting("stripe-webhooks").AllowAnonymous();
     }
 
     /// <summary>Development/Testing helpers (never mapped elsewhere): drive the fake provider and the jobs from E2E tests and the simulator.</summary>
