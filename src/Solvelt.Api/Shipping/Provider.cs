@@ -92,6 +92,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
     public bool ExpireRates { get; set; }
     public string? FailPurchaseWith { get; set; }
     public int PurchaseDelayMs { get; set; }
+    /// <summary>Makes a tracking poll take this long (a slow carrier): lets a test keep one instance mid-poll while another tries to claim the same shipment.</summary>
+    public int PollDelayMs { get; set; }
     /// <summary>pending_then_success (default: pending on request, success when polled), success, hold (stays pending), error.</summary>
     public string RefundMode { get; set; } = "pending_then_success";
     public bool FailRegistration { get; set; }
@@ -187,10 +189,11 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
         return Task.FromResult(true);
     }
 
-    public Task<TrackingSnapshot?> GetTrackingAsync(string carrier, string trackingNumber, CancellationToken ct = default)
+    public async Task<TrackingSnapshot?> GetTrackingAsync(string carrier, string trackingNumber, CancellationToken ct = default)
     {
         Interlocked.Increment(ref TrackingPolls);
-        lock (_gate) return Task.FromResult(_tracking.TryGetValue(trackingNumber, out var s) ? s : null);
+        if (PollDelayMs > 0) await Task.Delay(PollDelayMs, ct);
+        lock (_gate) return _tracking.TryGetValue(trackingNumber, out var s) ? s : null;
     }
 
     /// <summary>Test helper: what a poll of this tracking number returns.</summary>

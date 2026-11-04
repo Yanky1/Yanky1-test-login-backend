@@ -319,13 +319,9 @@ public class ShippingTrackingTests
         Assert.Equal(1, (await Ship.Maintenance(f)).Polled);
     }
 
-    [Fact]
-    public async Task Two_instances_running_the_job_at_once_poll_a_shipment_exactly_once()
+    private static async Task<MaintenanceSummary[]> TwoInstancesTogether(ShipFactory f)
     {
-        using var f = new ShipFactory();
-        await Bought(f);
-        f.Time.Advance(TimeSpan.FromHours(30));
-        // hold both instances between "found the shipment" and "claimed it": without the atomic claim both would poll
+        // hold both instances between "found the shipment" and "claimed it", then let them claim at the same moment
         var arrived = 0; var gate = new TaskCompletionSource();
         f.Services.GetRequiredService<ShippingTestHooks>().AfterPollCandidate = async _ =>
         {
@@ -334,7 +330,32 @@ public class ShippingTrackingTests
         };
         var both = await Task.WhenAll(Ship.Maintenance(f), Ship.Maintenance(f));
         Assert.Equal(2, arrived);                                                                // both really reached the claim together
-        Assert.Equal(1, f.Provider.TrackingPolls);
-        Assert.Equal(1, both.Sum(x => x.Polled));
+        return both;
+    }
+
+    [Fact]
+    public async Task Two_instances_never_poll_a_shipment_twice_even_when_the_second_claims_after_the_first_finished()
+    {
+        using var f = new ShipFactory();
+        await Bought(f);
+        f.Time.Advance(TimeSpan.FromHours(30));
+        // the first instance may finish (and release its lease) before the second claims: the claim must re-check "still due"
+        var gate = new TaskCompletionSource(); var seen = 0;
+        f.Services.GetRequiredService<ShippingTestHooks>().AfterPollCandidate = async _ => { if (Interlocked.Increment(ref seen) == 1) await gate.Task; else gate.TrySetResult(); };
+        var first = Ship.Maintenance(f);                                                         // holds at the hook until the second has also found the shipment
+        var second = Ship.Maintenance(f);
+        var done = await Task.WhenAll(first, second);
+        Assert.Equal(1, f.Provider.TrackingPolls); Assert.Equal(1, done.Sum(x => x.Polled));
+    }
+
+    [Fact]
+    public async Task Two_instances_claiming_at_the_same_moment_while_the_carrier_is_slow_poll_exactly_once()
+    {
+        using var f = new ShipFactory();
+        await Bought(f);
+        f.Time.Advance(TimeSpan.FromHours(30));
+        f.Provider.PollDelayMs = 400;                                                            // the winner is still mid-poll when the loser tries to claim: only the lease stops it
+        var both = await TwoInstancesTogether(f);
+        Assert.Equal(1, f.Provider.TrackingPolls); Assert.Equal(1, both.Sum(x => x.Polled));
     }
 }
