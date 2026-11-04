@@ -34,7 +34,13 @@ Central table: `Teams/Permissions.cs` (`Permissions.Has(role, permission)`), enf
 | `OrderRefund` (see `docs/ORDERS.md`) | ✔ | ✔ | limit | – |
 | `PaymentsRead` (balances, ledger, transfers, payouts, statements, disputes; `docs/PAYMENTS.md`) | ✔ | ✔ | – | – |
 | `PaymentsManage` (start/continue payout onboarding, Stripe Express dashboard link) | ✔ | – | – | – |
+| `DeliveryRead` (local delivery settings, dispatch board, routes; `docs/LOCAL-DELIVERY.md`) | ✔ | ✔ | ✔ | ✔ |
+| `DeliverySettings` (zones, fees, windows, cutoff) | ✔ | ✔ | – | – |
+| `DeliveryDispatch` (assign drivers, routes, convert orders to local) | ✔ | ✔ | ✔ (their brands) | – |
+| `DeliveryDrive` (the `/driver` app: own route and stops) | ✔ | ✔ | ✔ | – |
 | `ProvidersManage` (mark members as service providers, edit anyone's hours/time off, account ICS feed; see `docs/SERVICES.md`) | ✔ | ✔ | – | – |
+
+**Driver role** (added by workstream L): a fifth role, numerically *below* Viewer, whose only permission is `DeliveryDrive`. It is invited like any member (role `Driver`), sees only the deliveries of routes assigned to it (address/phone only while the stop is active), and has no access to products, orders, money, messages, team or settings: `DriverGuard` answers `403 driver_forbidden` for every path outside `/api/v1/driver`, sign-in/session/security and `team/leave`. Details: `docs/LOCAL-DELIVERY.md`.
 
 Owner/Admin always have all-brand scope; Manager/Viewer have *all brands* or a list.
 Rules: nobody edits their own role (use *Leave*); nobody changes or removes a member with a higher role, nor grants a higher role than their own; only an Owner can touch an Owner or create one (via role change or transfer); Owners can't be *invited*; an account always keeps ≥ 1 active Owner (leave/remove/demote refused with `409 last_owner`); the last active brand can't be archived (`409 last_brand`).

@@ -57,3 +57,11 @@ Each item lists a short design note so it can be added later.
 * **Payments: PDF statements** - render the monthly statement (already computed by `statements/{month}`) with a server-side PDF library; CSV and on-screen exist.
 * **Payments: per-line release and partial release** - release only the delivered shipments of a partially shipped order (needs per-shipment ledger attribution).
 * **Payments: staff screens** - admin UI over the existing `/api/v1/admin/payments` endpoints (separate workstream).
+
+* **Local delivery: third-party courier APIs** - a provider interface (`ICourierProvider`: quote, create job, cancel, webhook status) for Uber Direct / DoorDash Drive; the local shipment model and normalized statuses already fit (a courier job maps to a `LocalDelivery` with an external id); needs per-job cost on the delivery and a fallback when no courier accepts.
+* **Local delivery: real route optimizer** - plug a routing provider behind `IRouteOptimizer` (Google Route Optimization, OSRM/VROOM self-hosted): config `LocalDelivery:Optimizer:Provider` + key, time-window constraints from the window of each stop, driver start/end depot, traffic-aware ETA instead of the 30 km/h straight-line estimate.
+* **Local delivery: driver payroll and cost tracking** - per-delivery and per-km driver cost, route cost vs fee paid; needs driver rates on the membership and a report.
+* **Local delivery: native driver apps** - the PWA covers v1; native adds background location, push for new stops and better camera control.
+* **Local delivery: live map for the seller** - the board refreshes periodically; a live map would stream coarse positions over the existing SSE hub (single node today; needs the broker mentioned in ORDERS.md for several nodes).
+* **Local delivery: multi-day routes, partial-order deliveries, cash on delivery, geocoding** - routes are one driver and one day; a local delivery covers the whole unshipped order; payment is always taken by the marketplace; coordinates come from the marketplace (add an `IGeocoder` to resolve addresses in the portal).
+
