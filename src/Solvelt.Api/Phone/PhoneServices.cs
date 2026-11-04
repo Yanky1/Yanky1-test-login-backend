@@ -215,7 +215,7 @@ public static class PhoneTemplates
     private static EmailMessage M(string to, string kind, string subject, string line)
     {
         string[] paras = [line];
-        return new EmailMessage(to, kind, subject, EmailLayout.Html(subject, subject, paras, null, null, "You received this email because of activity on your Solvelt seller account."), EmailLayout.Text(subject, paras, null, null));
+        return new EmailMessage(to, kind, subject, EmailLayout.Html(subject, subject, paras, null, null, "You received this email because of activity on your Solvelt seller account.", "Account security"), EmailLayout.Text(subject, paras, null, null));
     }
     private const string Tail = " If this wasn't you, reset your password and contact support.";
     public static EmailMessage PhoneAdded(string to, string masked) => M(to, "phone-added", "A phone number was added to your account", $"The mobile number ending in {masked[^4..]} was added to your account.{Tail}");
@@ -224,7 +224,7 @@ public static class PhoneTemplates
     public static EmailMessage StepUpEmail(string to, string code)
     {
         string[] paras = ["Someone asked to add a phone number to your account. Enter this code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."];
-        return new EmailMessage(to, "phone-stepup-code", "Confirm it's you", EmailLayout.Html("Confirm it's you", "Confirm it's you", paras, null, code, "You received this email because of activity on your Solvelt seller account."), EmailLayout.Text("Confirm it's you", paras, null, code));
+        return new EmailMessage(to, "phone-stepup-code", "Confirm it's you", EmailLayout.Html("Confirm it's you", "Confirm it's you", paras, null, code, "You received this email because of activity on your Solvelt seller account.", "Account security"), EmailLayout.Text("Confirm it's you", paras, null, code));
     }
     public static EmailMessage PinChanged(string to) => M(to, "phone-pin-changed", "Your phone PIN was changed", "The PIN used to sign in by phone was set or changed." + Tail);
     public static EmailMessage SignedOutAll(string to) => M(to, "phone-signout-all", "You were signed out of all devices", "A phone session signed you out of all devices." + Tail);

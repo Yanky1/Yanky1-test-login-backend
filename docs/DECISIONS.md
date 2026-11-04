@@ -215,9 +215,11 @@
 | # | Decision | Why |
 |---|---|---|
 | J1 | One shared shell (`EmailLayout`) replaces the three private HTML builders. | A single place to keep email-client-safe markup and encoding; the old builders had drifted (the phone emails had no card at all). |
-| J2 | Footer support address comes from `Phone:HelpContact` via a static `EmailLayout.SupportEmail` set at start-up. | Templates are static and have no DI; it is the only configured support address, and the brief forbids hard-coding one. |
+| J2 | (Superseded by J5.) Footer support address came from `Phone:HelpContact` via a static `EmailLayout.SupportEmail`. | Templates are static and have no DI; it is the only configured support address, and the brief forbids hard-coding one. |
 | J3 | No social icons, no image logo. | No real social URLs or hosted logo exist; a text wordmark needs no remote image. Designer to supply a logo URL. |
 | J4 | Playfair Display is requested first and falls back to Georgia; Plus Jakarta Sans falls back to Arial. | Most clients block web fonts; the stacks degrade without layout breakage. |
+| J5 | Support address is resolved by `Mailer` at send time (token in the shell), from `Email:SupportAddress` then `Phone:HelpContact`, validated as a plain address. | The first version used a mutable static set by `PhoneModule`, which parallel test classes could race on, and it used free-text `HelpContact` as a `mailto:` target. |
+| J6 | Only http, https and mailto links are rendered in emails; others drop the button in both parts. | A `javascript:` or `data:` href must never reach a mailbox, whatever a caller passes. |
 
 ## Local delivery (workstream L)
 
