@@ -53,7 +53,7 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         foreach (var x in pii)
         {
             x.BuyerName = "Redacted"; x.BuyerPhone = null; x.BuyerRelayEmail = null; x.GiftMessage = null;
-            x.ShipName = "Redacted"; x.ShipLine1 = "Redacted"; x.ShipLine2 = null; x.ShipCity = "Redacted"; x.ShipRegion = null; x.ShipPostalCode = "Redacted";
+            x.ShipName = "Redacted"; x.ShipLine1 = "Redacted"; x.ShipLine2 = null; x.ShipCity = "Redacted"; x.ShipRegion = null; x.ShipPostalCode = "Redacted"; x.ShipLat = null; x.ShipLng = null;
             x.PiiRedactedAt = now; x.Version++; x.UpdatedAt = now;
             // free-text that can carry buyer data: event texts, buyer comments, cancellation notes, internal notes, outbound payloads
             await db.OrderEvents.Where(e => e.OrderId == x.Id && e.Type != "order.pii_redacted").ExecuteUpdateAsync(u => u.SetProperty(e => e.Text, (string?)null), ct);
