@@ -46,6 +46,8 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("POST", $"/api/v1/admin/moderation/{G}/dismiss", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/moderation/{G}/warn-seller", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/moderation/{G}/escalate-suspend", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
+        ("POST", $"/api/v1/admin/moderation/{G}/hide-content", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
+        ("POST", $"/api/v1/admin/moderation/{G}/remove-content", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("GET", $"/api/v1/admin/listings/{G}", StaffPermission.ModerationView, null),
         ("POST", $"/api/v1/admin/listings/{G}/hide", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
         ("POST", $"/api/v1/admin/listings/{G}/unhide", StaffPermission.ModerationAct, new { reason = StaffKit.Why }),
