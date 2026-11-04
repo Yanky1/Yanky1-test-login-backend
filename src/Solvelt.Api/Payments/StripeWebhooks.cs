@@ -39,6 +39,9 @@ public static class StripeSignature
 
 public record WebhookResult(int Status, string Code, string Outcome = "");
 
+/// <summary>Which webhook URL a delivery arrived on: the shared one (platform and Connect events) or the dedicated Connect one.</summary>
+public enum StripeEndpoint { Any, Connect }
+
 /// <summary>
 /// Applies Stripe events. Idempotent on the event id (the processed-event row commits with the effects), order independent (every mutable row carries the
 /// Stripe event time of the last applied event and older events are ignored), unknown objects/types are acknowledged and ignored.
@@ -46,12 +49,28 @@ public record WebhookResult(int Status, string Code, string Outcome = "");
 public class StripeWebhookService(AppDbContext db, LedgerService ledger, PaymentIngestService ingest, PaymentNotifier notifier, TimeProvider time,
     IOptions<StripeOptions> stripe, IOptions<PaymentOptions> opt, PaymentTestHooks hooks)
 {
-    public async Task<WebhookResult> HandleAsync(string body, string? signature)
+    public async Task<WebhookResult> HandleAsync(string body, string? signature, StripeEndpoint endpoint = StripeEndpoint.Any)
     {
-        var secret = stripe.Value.WebhookSecret;
-        if (string.IsNullOrEmpty(secret)) return new(503, "webhook_not_configured");
-        var bad = StripeSignature.Verify(secret, signature, body, time.GetUtcNow().ToUnixTimeSeconds(), opt.Value.WebhookToleranceSeconds);
-        if (bad is not null) return new(400, bad);
+        // Stripe signs the platform endpoint and the Connect endpoint with DIFFERENT secrets. Verify against the secret(s) that endpoint may use, remember which one matched, and
+        // (below, once the event is parsed) require the Connect secret for Connect events and the platform secret for platform events when both are configured.
+        var platform = stripe.Value.WebhookSecret ?? ""; var connect = stripe.Value.ConnectWebhookSecret ?? "";
+        if (platform.Length == 0 && connect.Length == 0) return new(503, "webhook_not_configured");
+        var both = platform.Length > 0 && connect.Length > 0 && platform != connect;      // one secret (or two equal ones) = the single-secret behaviour (Stripe CLI)
+        var candidates = new List<(string Kind, string Secret)>();
+        if (endpoint == StripeEndpoint.Connect) candidates.Add(connect.Length > 0 ? ("connect", connect) : ("platform", platform));
+        else
+        {
+            if (platform.Length > 0) candidates.Add(("platform", platform));
+            if (connect.Length > 0 && connect != platform) candidates.Add(("connect", connect));
+        }
+        string? matched = null, bad = null; var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
+        foreach (var (kind, secret) in candidates)
+        {
+            var err = StripeSignature.Verify(secret, signature, body, nowUnix, opt.Value.WebhookToleranceSeconds);
+            if (err is null) { matched = kind; break; }
+            bad = bad is null or "bad_signature" ? err : bad;
+        }
+        if (matched is null) return new(400, bad ?? "bad_signature");
         JsonElement root;
         try { root = JsonDocument.Parse(body).RootElement; if (root.ValueKind != JsonValueKind.Object) return new(400, "invalid_json"); }
         catch (JsonException) { return new(400, "invalid_json"); }
@@ -59,6 +78,8 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         if (id is null or "" || type is null || !root.TryGetProperty("data", out var data) || !data.TryGetProperty("object", out var obj)) return new(400, "invalid_event");
         var created = root.TryGetProperty("created", out var c) && c.TryGetInt64(out var cu) ? DateTimeOffset.FromUnixTimeSeconds(cu).UtcDateTime : time.UtcNow();
         var account = Str(root, "account");
+        // both secrets configured: a Connect event (it carries `account`) must be signed with the Connect secret, a platform event with the platform secret
+        if (both && endpoint == StripeEndpoint.Any && matched != (account is not null ? "connect" : "platform")) return new(400, "wrong_endpoint_secret");
         if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "stripe" && p.EventId == id)) return new(200, "duplicate");
 
         string outcome;
