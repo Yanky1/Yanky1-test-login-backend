@@ -245,10 +245,11 @@ public static class ShippingAdminEndpoints
         p.AGet("/refunds", async (string? state, int? page, int? pageSize, AppDbContext db) =>
         {
             var (pg, size) = AdminHttp.Paging(page, pageSize);
-            var q = db.ShippingLabels.AsNoTracking().Where(l => l.Status == LabelStatus.Voiding || l.Status == LabelStatus.RefundFailed);
+            var q = db.ShippingLabels.AsNoTracking().Where(l => l.Status == LabelStatus.Voiding || l.Status == LabelStatus.RefundFailed || l.RefundStatus == "review");
             if (state == "pending") q = q.Where(l => l.Status == LabelStatus.Voiding);
             else if (state == "failed") q = q.Where(l => l.Status == LabelStatus.RefundFailed);
-            else if (!string.IsNullOrEmpty(state)) return Validation.Invalid("state", "Use pending or failed.");
+            else if (state == "review") q = q.Where(l => l.RefundStatus == "review");   // purchases the provider search could not resolve
+            else if (!string.IsNullOrEmpty(state)) return Validation.Invalid("state", "Use pending, failed or review.");
             var rows = await q.OrderBy(l => l.RefundRequestedAt).Skip((pg - 1) * size).Take(size).ToListAsync();
             return Results.Ok(new { total = await q.CountAsync(), page = pg, pageSize = size, items = rows.Select(LabelRow) });
         }, StaffPermission.ShippingView);

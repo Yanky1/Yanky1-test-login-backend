@@ -79,8 +79,8 @@ public static class ShippingModelConfig
         {
             e.Property(x => x.TrackingStatusDetail).HasMaxLength(300);
             e.HasIndex(x => new { x.TrackingStoppedAt, x.LastTrackingAt });
-            // two LIVE carrier parcels can never share a number (the check in the ship flow is check-then-insert, this makes it race-proof); a delivered or stopped parcel frees the number
-            e.HasIndex(x => x.TrackingNumber).IsUnique().HasDatabaseName("UX_order_shipments_live_tracking").HasFilter("\"Method\" = 'carrier' AND \"DeliveredAt\" IS NULL AND \"TrackingStoppedAt\" IS NULL");
+            // two LIVE carrier parcels of one carrier can never share a number (the check in the ship flow is check-then-insert, this makes it race-proof); a delivered or stopped parcel frees the number. Numbers are only unique per carrier, so another carrier's identical string is legitimate
+            e.HasIndex(x => new { x.Carrier, x.TrackingNumber }).IsUnique().HasDatabaseName("UX_order_shipments_live_tracking").HasFilter("\"Method\" = 'carrier' AND \"DeliveredAt\" IS NULL AND \"TrackingStoppedAt\" IS NULL");
         });
     }
 }
