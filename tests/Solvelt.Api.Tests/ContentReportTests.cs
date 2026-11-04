@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
 using static Solvelt.Api.Tests.Cat;
 
