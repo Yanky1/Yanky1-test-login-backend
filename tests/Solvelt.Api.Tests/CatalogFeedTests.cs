@@ -117,7 +117,7 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
         {
             Assert.DoesNotContain("Zed", body);                     // the asker's name is buyer data
             Assert.DoesNotContain(email, body);
-            Assert.DoesNotContain("777", body);                     // cost 7.77 -> 777 cents
+            Assert.DoesNotMatch(@"[:,\[]777[,}\]]", body);       // cost 7.77 -> 777 cents as a JSON number (a bare "777" can occur inside random ids)
             Assert.DoesNotContain("cost", body, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("qualityScore", body, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("reserved", body, StringComparison.OrdinalIgnoreCase);
