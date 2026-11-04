@@ -119,18 +119,45 @@ public class OutboxSink
     public void Clear() { lock (_l) _items.Clear(); }
 }
 
+/// <summary>Sequence scopes of the outbox: every event of one seller order, or of one booking, is delivered in the order it was written.</summary>
+public static class OutboxScopes
+{
+    public static string Order(SellerOrder o) => "so:" + o.Id.ToString("N");
+    public static string Order(Guid sellerOrderId) => "so:" + sellerOrderId.ToString("N");
+    public static string Booking(Guid bookingId) => "bk:" + bookingId.ToString("N");
+}
+
 /// <summary>Writes outbound events. Call <see cref="Enqueue"/> BEFORE the SaveChanges that persists the state change: both commit in one transaction.</summary>
 public class Outbox(AppDbContext db, TimeProvider time)
 {
     /// <param name="orderKey">Optional per-aggregate ordering key: the dispatcher never sends a message while an older one (smaller key) of the same aggregate is still pending.</param>
-    public OutboxMessage Enqueue(string type, Guid? sellerId, string aggregateId, object data, long? orderKey = null)
+    /// <summary>The ordered-sequence scope of an event payload: its seller order or its booking, null for everything else (listings, messages, quotes, reports).</summary>
+    internal static string? ScopeOf(string payloadJson)
+    {
+        var data = System.Text.Json.Nodes.JsonNode.Parse(payloadJson)?["data"];
+        if (Guid.TryParse((string?)data?["order"]?["sellerOrderId"], out var so)) return OutboxScopes.Order(so);
+        if (Guid.TryParse((string?)data?["booking"]?["bookingId"], out var bk)) return OutboxScopes.Booking(bk);
+        return null;
+    }
+
+    /// <param name="scope">Ordered-sequence scope (<see cref="OutboxScopes"/>): the event gets the next sequence number of that scope and is delivered after every earlier event of it. The caller serializes writers of one scope (order version claim, booking lock), so numbers do not tie.</param>
+    public OutboxMessage Enqueue(string type, Guid? sellerId, string aggregateId, object data, long? orderKey = null, string? scope = null)
     {
         var id = Guid.NewGuid();
         var now = time.UtcNow();
+        var payload = OrderJson.Ser(new { id, type, createdAt = now, data });
+        // an event about a seller order (data.order.sellerOrderId) or a booking (data.booking.bookingId) joins that order's / booking's ordered sequence
+        if (scope is null && orderKey is null) scope = ScopeOf(payload);
+        if (scope is not null && orderKey is null)
+        {
+            var queued = db.ChangeTracker.Entries<OutboxMessage>().Where(e => e.State == EntityState.Added && e.Entity.SequenceScope == scope).Select(e => e.Entity.OrderKey ?? 0).DefaultIfEmpty(0).Max();
+            var stored = db.Outbox.AsNoTracking().Where(x => x.SequenceScope == scope).Max(x => (long?)x.OrderKey) ?? 0;
+            orderKey = Math.Max(queued, stored) + 1;
+        }
         var m = new OutboxMessage
         {
-            Id = id, EventType = type, SellerId = sellerId, AggregateId = aggregateId, OrderKey = orderKey, CreatedAt = now, NextAttemptAt = now,
-            PayloadJson = OrderJson.Ser(new { id, type, createdAt = now, data })
+            Id = id, EventType = type, SellerId = sellerId, AggregateId = aggregateId, OrderKey = orderKey, SequenceScope = scope, CreatedAt = now, NextAttemptAt = now,
+            PayloadJson = payload
         };
         db.Outbox.Add(m);
         return m;
@@ -141,11 +168,20 @@ public class Outbox(AppDbContext db, TimeProvider time)
 public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeProvider time, IHttpClientFactory http, OutboxSink sink,
     IHostEnvironment env, ILogger<OutboxDispatcher> log)
 {
+    /// <summary>An older event of the same seller order / booking is Dead (it never reached the marketplace): the envelope says so, so the consumer knows its view of that order has a gap.</summary>
+    internal static string MarkPredecessorDead(string payloadJson)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(payloadJson)!.AsObject();
+        node["predecessorDead"] = true;
+        return node.ToJsonString();
+    }
+
     public async Task<int> DispatchDueAsync(CancellationToken ct = default, int batch = 50)
     {
         var o = opt.Value;
         var now = time.UtcNow();
         var due = await db.Outbox.AsNoTracking().Where(m => m.Status == OutboxStatus.Pending && m.NextAttemptAt <= now && (m.LockedUntil == null || m.LockedUntil < now))
+            .Where(m => m.SequenceScope == null || !db.Outbox.Any(x => x.SequenceScope == m.SequenceScope && x.OrderKey < m.OrderKey && x.Status == OutboxStatus.Pending))   // held back: an older event of its seller order / booking is not delivered yet
             .OrderBy(m => m.CreatedAt).Take(batch).ToListAsync(ct);
         var done = 0;
         foreach (var candidate in due)
@@ -162,6 +198,13 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
                     continue;
                 }
             }
+            // ordered sequences (seller order, booking): re-check inside the loop (an earlier candidate of the same batch may just have failed), and note a Dead predecessor
+            var predecessorDead = false;
+            if (candidate.SequenceScope is { } scope && candidate.OrderKey is { } seq)
+            {
+                if (await db.Outbox.AnyAsync(x => x.SequenceScope == scope && x.OrderKey < seq && x.Status == OutboxStatus.Pending, ct)) continue;
+                predecessorDead = await db.Outbox.AnyAsync(x => x.SequenceScope == scope && x.OrderKey < seq && x.Status == OutboxStatus.Dead, ct);
+            }
             // claim atomically: only the dispatcher whose UPDATE touches the row sends it (lease expires if that instance dies mid-send)
             var id = candidate.Id;
             var lease = time.UtcNow().AddMinutes(2);
@@ -171,17 +214,18 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
             var m = await db.Outbox.AsNoTracking().FirstAsync(x => x.Id == id, ct);
             var ok = false; string? err = null;
             var ts = time.GetUtcNow().ToUnixTimeSeconds().ToString();
-            var sig = Signing.SignOutbound(o.OutboundSecret, ts, m.PayloadJson);
+            var body = predecessorDead ? MarkPredecessorDead(m.PayloadJson) : m.PayloadJson;   // the marker is part of the signed body; the stored payload is untouched
+            var sig = Signing.SignOutbound(o.OutboundSecret, ts, body);
             try
             {
                 if (string.IsNullOrEmpty(o.WebhookUrl))
                 {
-                    if (env.IsDevelopment() || env.IsEnvironment("Testing")) { sink.Add(new(m.Id, m.EventType, m.PayloadJson, ts, sig, now)); ok = true; }
+                    if (env.IsDevelopment() || env.IsEnvironment("Testing")) { sink.Add(new(m.Id, m.EventType, body, ts, sig, now)); ok = true; }
                     else err = "No webhook URL configured";
                 }
                 else
                 {
-                    using var req = new HttpRequestMessage(HttpMethod.Post, o.WebhookUrl) { Content = new StringContent(m.PayloadJson, Encoding.UTF8, "application/json") };
+                    using var req = new HttpRequestMessage(HttpMethod.Post, o.WebhookUrl) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
                     req.Headers.Add(Signing.TimestampHeader, ts);
                     req.Headers.Add(Signing.SignatureHeader, sig);
                     req.Headers.Add(Signing.EventIdHeader, m.Id.ToString());

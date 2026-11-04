@@ -274,6 +274,11 @@ public class OutboxMessage
     public string AggregateId { get; set; } = "";
     /// <summary>Per-aggregate ordering key (listing events carry the catalog version): a message is never sent while an older one of the same aggregate is still pending.</summary>
     public long? OrderKey { get; set; }
+    /// <summary>
+    /// Ordered-sequence scope (one seller order, one booking): events of one scope are delivered strictly in <see cref="OrderKey"/> order (never while an older one is pending, leased or in backoff).
+    /// Unlike the listing keys (latest wins) every event of a scope is delivered. A Dead predecessor does not block its successors: they carry <c>predecessorDead: true</c>.
+    /// </summary>
+    public string? SequenceScope { get; set; }
     public string PayloadJson { get; set; } = "{}";
     public OutboxStatus Status { get; set; } = OutboxStatus.Pending;
     public int Attempts { get; set; }

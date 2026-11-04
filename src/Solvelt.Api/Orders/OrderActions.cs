@@ -357,8 +357,16 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     }
 
     /// <summary>Cancels the units that have not shipped yet of a partly shipped order: stock released, refund for those units recorded, the order continues as Shipped.</summary>
+    /// <summary>Refunds already recorded on the order (C14): <c>order.cancelled</c> names them so the marketplace knows which refunds <c>refundDueCents</c> already nets out. Taken before the cancel records anything of its own.</summary>
+    private async Task<(List<Guid> Ids, long Cents)> AccountedRefundsAsync(SellerOrder o)
+    {
+        var rows = await db.Refunds.AsNoTracking().Where(r => r.OrderId == o.Id).OrderBy(r => r.CreatedAt).ThenBy(r => r.Id).Select(r => new { r.Id, r.AmountCents }).ToListAsync();
+        return (rows.Select(r => r.Id).ToList(), rows.Sum(r => r.AmountCents));
+    }
+
     private async Task<Res> CancelRemainderAsync(SellerOrder o, Guid actor, string reason, string? note, bool restock)
     {
+        var accounted = await AccountedRefundsAsync(o);
         var now = time.UtcNow();
         var refund = new OrderRefund { OrderId = o.Id, Reason = "cancelled_remainder", Note = note?.Trim(), CreatedAt = now, CreatedBy = actor };
         var priorPerLine = await db.RefundLines.Where(x => db.Refunds.Any(r => r.Id == x.RefundId && r.OrderId == o.Id)).GroupBy(x => x.OrderLineId).Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents), Tax = g.Sum(x => x.TaxCents) }).ToListAsync();
@@ -391,6 +399,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         outbox.Enqueue("order.cancelled", o.SellerId, o.MarketplaceOrderId, new
         {
             order = Ref(o), partial = true, reason, note, restocked = restock, cancelledBy = "seller", refundDueCents = refund.AmountCents,
+            refundIdsAccounted = accounted.Ids, previouslyRefundedCents = accounted.Cents,
             taxCents = refund.Lines.Sum(x => x.TaxCents), shippingTaxCents = 0L,       // a remainder cancel carries no shipping, so no shipping tax
             lines = refund.Lines.Select(x => new { marketplaceLineId = o.Lines.First(l => l.Id == x.OrderLineId).MarketplaceLineId, quantity = x.Quantity, amountCents = x.AmountCents, taxCents = x.TaxCents })
         });
@@ -401,6 +410,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
 
     private async Task<Res> DoCancelAsync(SellerOrder o, Guid actor, string reason, string? note, bool restock, Party by, OrderCancellation? request)
     {
+        var accounted = await AccountedRefundsAsync(o);
         var now = time.UtcNow();
         foreach (var l in o.Lines)
         {
@@ -424,6 +434,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         outbox.Enqueue("order.cancelled", o.SellerId, o.MarketplaceOrderId, new
         {
             order = Ref(o), reason, note, restocked = restock, cancelledBy = by.ToString().ToLowerInvariant(), refundDueCents = o.TotalCents - o.RefundedCents,
+            refundIdsAccounted = accounted.Ids, previouslyRefundedCents = accounted.Cents,
             taxCents = o.TaxCents + o.ShippingTaxCents, shippingTaxCents = o.ShippingTaxCents       // the tax inside refundDueCents (nothing shipped, so nothing was refunded before)
         });
         var r = await SaveAsync(o, "order.changed");

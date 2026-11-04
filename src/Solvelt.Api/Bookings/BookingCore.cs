@@ -132,3 +132,11 @@ public class CalendarService(AppDbContext db, IOptions<BookingOptions> opt)
         where l.ProductId == productId && m.Status == MembershipStatus.Active && p.IsProvider
         select m;
 }
+
+
+/// <summary>Seams for tests only; every member is null in production.</summary>
+public sealed class BookingTestHooks
+{
+    /// <summary>Runs right after a confirm took the provider lock, before the decision about the hold is made.</summary>
+    public Func<Task>? AfterConfirmLock { get; set; }
+}

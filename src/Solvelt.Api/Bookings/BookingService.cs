@@ -21,7 +21,7 @@ public record Actor(string Kind, Guid? UserId = null)
 }
 
 /// <summary>Creates holds and bookings (no double booking), and applies every lifecycle action. All state changes go through <see cref="BookingStateMachine"/>.</summary>
-public partial class BookingService(AppDbContext db, CalendarService cal, Outbox outbox, IOptions<BookingOptions> opt, TimeProvider time)
+public partial class BookingService(AppDbContext db, CalendarService cal, Outbox outbox, IOptions<BookingOptions> opt, TimeProvider time, BookingTestHooks hooks)
 {
     [GeneratedRegex(@"^[A-Za-z0-9_.:\-]{1,64}$")] private static partial Regex IdRe();
 
@@ -329,7 +329,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         var b = await db.Bookings.FirstOrDefaultAsync(x => x.MarketplaceBookingId == mid);
         if (b is null) return BRes.Fail(404, "booking_not_found", "Booking not found.");
         if (b.Status is BookingStatus.Confirmed or BookingStatus.Requested or BookingStatus.Rescheduled) return Existing(b);
-        if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) return BRes.Conflict($"A {b.Status} booking can't be confirmed.");
+        if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) return BRes.Conflict($"A {b.Status} booking can't be confirmed.", "hold_not_confirmable");
         if (!BuyerOk(r.Buyer)) return BRes.Invalid("buyer.displayName is required.", "buyer_required");
         var (p, d) = await ServiceAsync(b.ProductId);
         if (p is null || d is null) return BRes.Fail(409, "service_unavailable", "The service is no longer available.");
@@ -340,15 +340,16 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         await using var tx = await db.Database.BeginTransactionAsync();
         if (!await ClaimCalendarAsync(b.ProviderId)) { await tx.RollbackAsync(); return BRes.Fail(409, "slot_unavailable", "That time is no longer available."); }
         // everything below is decided INSIDE the provider lock: re-read the booking (a parallel confirm may have won) and take the time now
+        if (hooks.AfterConfirmLock is { } hook) await hook();   // test seam: lets a test move the clock between the request and the decision below (null in production)
         await db.Entry(b).ReloadAsync();
         if (b.Status is BookingStatus.Confirmed or BookingStatus.Requested or BookingStatus.Rescheduled) { await tx.RollbackAsync(); return Existing(b); }
-        if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) { await tx.RollbackAsync(); return BRes.Conflict($"A {b.Status} booking can't be confirmed."); }
+        if (b.Status is not (BookingStatus.Hold or BookingStatus.Expired)) { await tx.RollbackAsync(); return BRes.Conflict($"A {b.Status} booking can't be confirmed.", "hold_not_confirmable"); }
         var now = time.UtcNow();
-        var wasLive = b.Status == BookingStatus.Hold && b.HoldExpiresAt > now;
-        if (!wasLive)
+        // a hold that is no longer live (its time has passed, or the job already marked it Expired) is never confirmed: the buyer was told it lapsed (C15). Decided with the time taken under the lock.
+        if (b.Status == BookingStatus.Expired || b.HoldExpiresAt is not { } until || until <= now)
         {
-            var held = new Plan(b.Location, b.DurationMinutes, b.DurationMinutes, b.PriceCents, b.AddOnsCents, b.TravelFeeCents, b.AddOnsJson, b.AddressJson, b.PostalCode, b.IntakeAnswersJson);
-            if (!await SlotFreeAsync(b.SellerId, b.ProviderId, d, BJson.Utc(b.StartUtc), held, b.Id, false, now)) { await tx.RollbackAsync(); db.ChangeTracker.Clear(); return BRes.Fail(409, "slot_unavailable", "The hold expired and the time was taken."); }
+            await tx.RollbackAsync(); db.ChangeTracker.Clear();
+            return BRes.Conflict("The hold has expired. Create a new hold.", "hold_expired");
         }
         if (pl is not null)
         {
