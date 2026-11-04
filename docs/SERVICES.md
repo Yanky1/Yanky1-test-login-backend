@@ -42,7 +42,7 @@ Availability for "any provider" merges the providers' slots (`providerIds` per s
 
 ## 3. No double booking
 Every booking write runs in a transaction that **first bumps `provider_profiles.CalendarSeq` with an atomic `UPDATE`** (a per-provider lock: on PostgreSQL the row lock is held until commit, on SQLite writers serialise), then **re-reads the provider's calendar** and re-checks the slot with the same engine, and only then inserts/moves the booking. Two simultaneous requests for one slot: exactly one `201`, the rest `409 slot_unavailable` (test: 8 parallel requests). Idempotency: the marketplace booking id has a unique index; a race on it returns the winner's booking (`200`, `created:false`).
-Reschedule, propose-accept, reassign and re-confirm of an expired hold use the same lock.
+Reschedule, propose-accept, reassign and confirm of a hold use the same lock.
 
 ## 4. Booking state machine
 ```mermaid
@@ -104,7 +104,7 @@ Same HMAC scheme, replay protection and body cap as `docs/ORDERS.md` section 3.1
 |---|---|---|
 | `GET /services/{id}/availability` | `from`, `to` (<= 62 days), `providerId?`, `location` (`online\|customer\|seller`), `postalCode`, `lat`, `lng`, `minutes?`, `addOns=a,b` | `{durationMinutes, priceCents, providers:[{providerId,timeZone}], slots:[{startAt,endAt,providerIds}]}` |
 | `POST /bookings/holds` | booking body (below) | `201` `{created, booking}` status `Hold`, `holdExpiresAt` (10 min) |
-| `POST /bookings/{mid}/confirm` | buyer, address, intake answers | `Confirmed` (instant) or `Requested`; an expired hold is re-checked and may answer `409` |
+| `POST /bookings/{mid}/confirm` | buyer, address, intake answers | `Confirmed` (instant) or `Requested`. **A hold that is no longer live is never confirmed (C15):** a `Hold` whose `holdExpiresAt` has passed, or one already marked `Expired`, answers `409 hold_expired` (no booking, no event); the decision and the time are taken under the provider lock, so a confirm that races expiry loses. A `Cancelled`, `Declined` or otherwise final booking answers `409 hold_not_confirmable`. An already confirmed (or requested) booking answers `200` with the existing booking (idempotent). The marketplace creates a new hold instead. There is no internal path that re-confirms a lapsed hold. |
 | `POST /bookings` | booking body | create in one step (or convert the hold with that id); idempotent on `marketplaceBookingId` |
 | `GET /bookings/{mid}` | - | summary (meeting link only for confirmed online bookings) |
 | `POST /bookings/{mid}/reschedule-requests` | `{requestId, newStart}` | applied or pending (see 4) |

@@ -136,6 +136,7 @@ public static class BookingsModule
         var cfg = builder.Configuration;
         builder.Services.Configure<BookingOptions>(cfg.GetSection(BookingOptions.Section));
         builder.Services.AddScoped<CalendarService>();
+        builder.Services.AddSingleton<BookingTestHooks>();
         builder.Services.AddScoped<BookingService>();
         builder.Services.AddScoped<QuoteService>();
         builder.Services.AddScoped<BookingMaintenance>();

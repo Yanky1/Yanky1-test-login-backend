@@ -115,6 +115,8 @@ public static class OrderModel
             e.ToTable("outbox_messages");
             e.HasIndex(x => new { x.Status, x.NextAttemptAt });
             e.HasIndex(x => new { x.AggregateId, x.OrderKey });
+            e.HasIndex(x => new { x.SequenceScope, x.OrderKey });
+            e.Property(x => x.SequenceScope).HasMaxLength(64);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(12);
             e.Property(x => x.EventType).HasMaxLength(64);
             e.Property(x => x.AggregateId).HasMaxLength(64);

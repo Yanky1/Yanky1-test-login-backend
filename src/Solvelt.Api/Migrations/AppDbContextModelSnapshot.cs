@@ -2917,6 +2917,10 @@ namespace Solvelt.Api.Migrations
                     b.Property<Guid?>("SellerId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("SequenceScope")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(12)
@@ -2925,6 +2929,8 @@ namespace Solvelt.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AggregateId", "OrderKey");
+
+                    b.HasIndex("SequenceScope", "OrderKey");
 
                     b.HasIndex("Status", "NextAttemptAt");
 

@@ -183,7 +183,7 @@ public class BookingFlowTests : IClassFixture<SvcFactory>
     }
 
     [Fact]
-    public async Task Confirming_a_live_hold_books_it_and_an_expired_hold_can_only_be_confirmed_if_the_slot_is_still_free()
+    public async Task Confirming_a_live_hold_books_it_and_a_lapsed_hold_is_never_confirmed_even_when_the_slot_is_still_free()
     {
         var b = await Svc.NewBiz(_f);
         var wed = Svc.Next(_f, DayOfWeek.Wednesday);
@@ -193,18 +193,19 @@ public class BookingFlowTests : IClassFixture<SvcFactory>
         Assert.Equal(HttpStatusCode.OK, c1.StatusCode);
         Assert.Equal("Confirmed", (string)(await Orders.Node(c1))["booking"]!["status"]!);
         Assert.Equal(HttpStatusCode.OK, (await Svc.Post(b, $"/bookings/{mid}/confirm", Svc.Body(b, mid, start, "online"))).StatusCode);    // idempotent
-        // expired hold, slot still free -> confirm works
+        // expired hold, slot still free -> 409 hold_expired (C15: the buyer was told it lapsed, a confirm that races expiry never books)
         var mid2 = Svc.BookingId(); var start2 = Svc.Local(b.Tz, wed, 14);
         await Svc.Post(b, "/bookings/holds", Svc.Body(b, mid2, start2, "online"));
         _f.Time.Advance(TimeSpan.FromMinutes(30)); await RunJobs();
-        Assert.Equal(HttpStatusCode.OK, (await Svc.Post(b, $"/bookings/{mid2}/confirm", Svc.Body(b, mid2, start2, "online"))).StatusCode);
-        // expired hold whose slot was taken meanwhile -> 409
+        var lapsed = await Svc.Post(b, $"/bookings/{mid2}/confirm", Svc.Body(b, mid2, start2, "online"));
+        Assert.Equal(HttpStatusCode.Conflict, lapsed.StatusCode); Assert.Equal("hold_expired", await lapsed.ErrCode());
+        // expired hold whose slot was taken meanwhile -> 409 as well
         var mid3 = Svc.BookingId(); var start3 = Svc.Local(b.Tz, wed, 16);
         await Svc.Post(b, "/bookings/holds", Svc.Body(b, mid3, start3, "online", minutes: 60));
         _f.Time.Advance(TimeSpan.FromMinutes(30));
         Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, "/bookings", Svc.Body(b, Svc.BookingId(), start3, "online", minutes: 60))).StatusCode);
         var late = await Svc.Post(b, $"/bookings/{mid3}/confirm", Svc.Body(b, mid3, start3, "online"));
-        Assert.Equal(HttpStatusCode.Conflict, late.StatusCode); Assert.Equal("slot_unavailable", await late.ErrCode());
+        Assert.Equal(HttpStatusCode.Conflict, late.StatusCode); Assert.Equal("hold_expired", await late.ErrCode());
         Assert.Equal(HttpStatusCode.NotFound, (await Svc.Post(b, "/bookings/nope/confirm", Svc.Body(b, "nope", start3, "online"))).StatusCode);
     }
 
