@@ -1397,6 +1397,33 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("catalog_refresh_requests", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Domain.CatalogTombstone", b =>
+                {
+                    b.Property<Guid>("ListingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ListingId");
+
+                    b.HasIndex("Version")
+                        .IsUnique();
+
+                    b.ToTable("catalog_tombstones", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Domain.Category", b =>
                 {
                     b.Property<Guid>("Id")
