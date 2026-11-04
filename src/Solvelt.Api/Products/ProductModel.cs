@@ -53,6 +53,7 @@ public static class ProductModel
             e.HasMany(x => x.Faqs).WithOne().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
         });
         b.Entity<CatalogCounter>(e => { e.ToTable("catalog_counter"); e.HasKey(x => x.Id); e.Property(x => x.Id).ValueGeneratedNever(); e.HasData(new CatalogCounter { Id = 1, Value = 0 }); });
+        b.Entity<CatalogTombstone>(e => { e.ToTable("catalog_tombstones"); e.HasKey(x => x.ListingId); e.Property(x => x.ListingId).ValueGeneratedNever(); e.HasIndex(x => x.Version).IsUnique(); e.Property(x => x.Reason).HasMaxLength(24); });
         b.Entity<CatalogRefreshRequest>(e => { e.ToTable("catalog_refresh_requests"); e.HasIndex(x => new { x.ProcessedAt, x.CreatedAt }); });
         b.Entity<SkuClaim>(e =>
         {

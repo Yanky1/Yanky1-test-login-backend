@@ -230,3 +230,17 @@ public class CatalogRefreshRequest
     public DateTime CreatedAt { get; set; }
     public DateTime? ProcessedAt { get; set; }
 }
+
+/// <summary>
+/// What is left of a listing that was visible to the marketplace and was then DELETED (the product row and its own tombstone columns are gone). Carries a version from the same
+/// counter, so a feed reader whose cursor is behind the deletion still learns about it. Kept for good (one small row per deleted listing).
+/// </summary>
+public class CatalogTombstone
+{
+    public Guid ListingId { get; set; }
+    public Guid SellerId { get; set; }
+    public long Version { get; set; }
+    public string Reason { get; set; } = "deleted";
+    public DateTime CreatedAt { get; set; }
+}
+
