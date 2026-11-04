@@ -84,7 +84,7 @@ Rules on top of the diagram:
 * **Propose a new time** (Requested only): stored as `proposedStartAt`, the slot is *not* reserved; the buyer answers through `proposal-responses`. Accepting re-checks the slot (`409` if gone) and confirms at the new time; declining cancels the request.
 * **Seller reschedule** moves the booking at once to a free slot and emits `booking.rescheduled` with `requiresBuyerConsent:true` (the marketplace asks the buyer; the buyer can cancel without a fee). It does not count against the buyer's reschedule limit.
 * **Buyer reschedule request**: instant-booking services apply it immediately if the slot is free; request-mode services keep it pending (`rescheduleRequestedStartAt`) for approve/decline. Refused with `409 reschedule_limit` after `maxReschedules`, and `409 too_late` inside the free window (`cancelFreeHours`). Idempotent on `requestId`.
-* **Cancellation fee**: only when a **buyer** cancels a *confirmed/rescheduled* booking less than `cancelFreeHours` before the start: `round-half-up(total x cancelFeePercent / 100)`. Pending requests, holds and every seller cancellation are free. The fee is recorded on the booking and sent in `booking.cancelled` (`cancellationFeeCents`, `refundDueCents`). Policy values are **snapshotted at booking time**, later edits of the service never change an existing booking.
+* **Cancellation fee**: only when a **buyer** cancels a *confirmed/rescheduled* booking less than `cancelFreeHours` before the start: `round-half-up(total x cancelFeePercent / 100)`. Pending requests, holds and every seller cancellation are free. The fee is recorded on the booking and sent in `booking.cancelled` (`cancellationFeeCents`, `refundDueCents`). Policy values are **snapshotted at booking time**, later edits of the service never change an existing booking. The marketplace can read the snapshot (see "Policy in booking summaries" in section 6).
 * **No-show**: only once the start time has passed (`409 too_early`); fee = `noShowFeePercent` of the total.
 * **Complete** (hourly): the time actually worked is required. Billed minutes = actual rounded **up** to the billing increment; if `billed >` the **full booked duration (add-on minutes included, they are already priced as add-ons)** an **additional charge request** is recorded and sent (`booking.additional_charge_requested`, `amountCents = round(rate x extraMinutes / 60)`); the booked price is never changed. Less time or fixed/quote jobs: no extra event.
 * **Reschedule requests** are cleared by start, complete and no-show; approve/decline of a pending request is only possible on a Confirmed/Rescheduled booking (`409` otherwise).
@@ -155,6 +155,31 @@ X-Solvelt-Signature: v1=<hmac of "1767225600\n2f0d...\nGET\n/api/internal/v1/ser
 | `message.sent` | `kind:"booking"`, `messageId`, `text`, `sentAt` |
 
 All events are written in the **same transaction** as the state change (a rejected action writes nothing) and use the existing signing, leases, retries and dead-letter handling.
+
+### Policy in booking summaries (C11)
+Every booking summary (`GET /bookings/{mid}`, hold and confirm responses) and the data of every `booking.*` event carries `policy: { cancelFreeHours, cancelFeePercent, noShowFeePercent, maxReschedules, approvalHours }`, read from the booking's **snapshot** (`Booking.PolicyJson`), never from the service's current policy, so a later service edit never changes it. A value the snapshot does not hold is `null`; `approvalHours` is `null` for instant-booking services (a service that needs approval snapshots its approval window). Bookings made before this field existed carry what their snapshot stored (their `approvalHours` may be the service default even for an instant service). `cancellationFeeCents` in `booking.cancelled` stays authoritative: the fee is `round-half-up(total x cancelFeePercent / 100)`, charged only when a buyer cancels a confirmed booking inside the free window (fewer than `cancelFreeHours` before the start); the buyer side may show a preview from the same numbers. The policy is not personal data and stays after redaction; no other field was added to the events.
+```json
+{ "booking": { "marketplaceBookingId": "BK-1", "status": "Confirmed", "totalCents": 14500, "cancellationFeeCents": 0,
+  "policy": { "cancelFreeHours": 24, "cancelFeePercent": 50, "noShowFeePercent": 100, "maxReschedules": 2, "approvalHours": null } } }
+```
+
+### Booking options: `GET /api/internal/v1/services/{serviceId}/options` (C12)
+Signed like the other internal GETs (stale, replay and unsigned requests are `401`; failed requests share the small per-IP bucket, verified ones a per-service bucket). Only services that are **visible in the catalog** are served; anything else (unknown, draft, paused, hidden, moderated, not a service) is `404 not_found`. Answers `ETag` (a hash of the body, so it follows what a buyer would see) and `Cache-Control: private, max-age=300`; `If-None-Match` with the current tag is `304`.
+```json
+{ "serviceId": "...", "version": 1840,
+  "addOns": [ { "id": "deep", "name": "Deep clean", "priceCents": 2500, "extraMinutes": 30 } ],
+  "intakeQuestions": [ { "id": "pets", "label": "Any pets?", "kind": "yesNo", "required": false },
+                       { "id": "size", "label": "Home size", "kind": "choice", "required": true, "choices": ["S", "M", "L"] } ],
+  "providers": [ { "providerId": "<membership id>", "displayName": "Jane D." } ],
+  "assignment": "buyerChoice",
+  "policy": { "cancelFreeHours": 24, "cancelFeePercent": 50, "noShowFeePercent": 100, "maxReschedules": 2, "approvalHours": null },
+  "travel": { "feeCents": 1000, "serviceAreaPostalCodes": ["11201", "112*"], "serviceRadiusKm": 10 } }
+```
+* `kind` is `text`, `choice` or `yesNo` (the question types the portal stores; `longText`, `number`, `maxLength` and add-on `description` do not exist yet and are not sent). `choices` only for `choice`. `travel` fields appear only when set; the seller's address, base coordinates, meeting link and online instructions are never sent.
+* `providers` lists only **eligible and ready** providers (active, flagged as provider, linked to the service, with working hours). `providerId` is the opaque membership id a hold accepts. `displayName` is the first name plus last initial taken from the part of the provider's sign-in address before the `@` (the portal stores no other name); never the address, phone or calendar data. There is no provider photo (`photoImageId` is not sent).
+* `assignment` is `buyerChoice`, `leastBusy` or `roundRobin`. Providers are listed for display in every case, but **only with `buyerChoice` may the marketplace send a `providerId`** in a hold; with another rule the portal assigns.
+* Hold and confirm accept `addOnIds`, `intakeAnswers` and an optional `providerId`; an add-on id that is not in the current options is `422 add_on`, an intake answer that does not fit its question `422 intake_invalid`.
+* Changing add-ons, intake questions, assignment, policy or travel gives the listing a new version and a `listing.upserted`; so does linking or unlinking a provider. A change that does not move the version (a provider's working hours) still changes the `ETag`.
 
 ## 7. Seller API (`/api/v1/seller/...`)
 | Area | Endpoints |
