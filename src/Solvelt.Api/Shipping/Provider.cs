@@ -94,6 +94,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
 
     // ---- knobs and counters for tests ----
     public bool ExpireRates { get; set; }
+    /// <summary>The currency the fake quotes rates in (a carrier account billed in another currency than the order).</summary>
+    public string RateCurrency { get; set; } = "USD";
     public string? FailPurchaseWith { get; set; }
     public int PurchaseDelayMs { get; set; }
     /// <summary>Makes a tracking poll take this long (a slow carrier): lets a test keep one instance mid-poll while another tries to claim the same shipment.</summary>
@@ -132,8 +134,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
             foreach (var p in plan)
             {
                 var id = "fake_rate_" + Next();
-                _rates[id] = (p.C, p.S, p.Cents, "USD", p.Days);
-                list.Add(new RateOffer(id, p.C, p.S, p.Cents, "USD", p.Days, today.AddDays(p.Days)));
+                _rates[id] = (p.C, p.S, p.Cents, RateCurrency, p.Days);
+                list.Add(new RateOffer(id, p.C, p.S, p.Cents, RateCurrency, p.Days, today.AddDays(p.Days)));
             }
         return Task.FromResult(new RateSet(shp, list));
     }

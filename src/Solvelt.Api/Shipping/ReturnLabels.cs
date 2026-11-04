@@ -52,6 +52,8 @@ public class ReturnLabelService(AppDbContext db, IShippingProvider provider, IFi
         var pool = set.Rates.Where(r => (req.Carrier is null || r.Carrier.Equals(req.Carrier, StringComparison.OrdinalIgnoreCase)) && (req.Service is null || r.Service.Equals(req.Service, StringComparison.OrdinalIgnoreCase))).ToList();
         var rate = pool.OrderBy(r => r.AmountCents).ThenBy(r => r.EstimatedDays ?? 99).FirstOrDefault();
         if (rate is null) return Res.Conflict("No carrier offered a return rate for this package.", "no_rates");
+        // the debit lands in the label's currency: a currency the seller has no sales in would leave a negative balance that is never recovered
+        if (!string.Equals(rate.Currency, o.Currency, StringComparison.OrdinalIgnoreCase)) return new(false, 422, "currency_mismatch", "This rate is in " + rate.Currency + ", but the order is in " + o.Currency + ". Labels are only bought in the order's currency.");
 
         var key = $"{o.SellerId:N}:ret:{returnId:N}:" + (string.IsNullOrWhiteSpace(req.IdempotencyKey) ? "default" : req.IdempotencyKey.Trim());
         var label = new ShippingLabel
