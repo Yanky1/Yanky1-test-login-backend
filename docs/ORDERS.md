@@ -153,12 +153,12 @@ then delivered by the dispatcher to `Orders:WebhookUrl`:
 ```
 POST <WebhookUrl>
 X-Solvelt-Timestamp: <unix seconds>
-X-Solvelt-Event-Id: <outbox id>          # use for idempotency: events may be delivered more than once
+X-Solvelt-Event-Id: <outbox id>          # NOT signed, informational: the signed body's `id` is the event id; use that for idempotency (events may be delivered more than once)
 X-Solvelt-Event-Type: order.shipped
 X-Solvelt-Signature: v1=HMAC-SHA256(Orders:OutboundSecret, "<timestamp>.<raw body>")
 { "id": "<event id>", "type": "order.shipped", "createdAt": "...", "data": { ... } }
 ```
-Respond `2xx` to acknowledge. Each message is **leased** (`LockedUntil`, atomic UPDATE) before sending, so several portal instances never send the same event twice; delivery is still *at least once*, so dedupe on `X-Solvelt-Event-Id`. Anything else (or a network error) is retried with **exponential backoff** `Orders:OutboxBackoffSeconds x 2^(attempt-1)`
+Respond `2xx` to acknowledge. Each message is **leased** (`LockedUntil`, atomic UPDATE) before sending, so several portal instances never send the same event twice; delivery is still *at least once*, so dedupe on the signed body `id` (for `listing.upserted` / `listing.unlisted` the listing's `version` is the natural key as well). The `X-Solvelt-Event-Id` header is not covered by the signature. Anything else (or a network error) is retried with **exponential backoff** `Orders:OutboxBackoffSeconds x 2^(attempt-1)`
 (default 30 s, 60 s, 120 s ... capped at 1 h) up to `Orders:OutboxMaxAttempts` (8); then the message is **Dead** (visible at
 `GET /api/v1/admin/outbox?status=dead`, re-queued with `POST /api/v1/admin/outbox/{id}/retry`). With no `WebhookUrl`, Development/Testing deliver to an
 in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signature); Production keeps events pending.
