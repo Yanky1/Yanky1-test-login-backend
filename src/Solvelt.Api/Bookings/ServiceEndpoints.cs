@@ -211,6 +211,17 @@ public static partial class ServiceEndpoints
             return Results.Json(new { providers = members.Select(m => new { membershipId = m.Id, email = m.Email, role = m.Role.ToString(), timeZone = m.TimeZone, eligible = linked.Contains(m.Id) }) });
         }).RequirePermission(Permission.BrandWorkRead);
 
+        // Seller-side view of the same slot engine the marketplace uses: the times a buyer could book right now (for proposing / reschedule / quote times).
+        // Same brand scoping as the rest of the listing; the booking service enforces the window and the per-call day limit.
+        s.MapGet("/{id:guid}/slots", async (Guid id, HttpContext ctx, AppDbContext db, BookingService svc, DateTime? from, DateTime? to, Guid? providerId, string? location, string? postalCode, int? minutes) =>
+        {
+            var a = ctx.GetAccess()!;
+            if (await LoadService(db, a, id, false) is null) return Results.NotFound();
+            if (from is null || to is null) return Validation.Invalid("from", "from and to are required.");
+            var r = await svc.AvailabilityAsync(id, from.Value, to.Value, providerId, location, postalCode, null, null, minutes, null);
+            return r.Ok ? Results.Json(r.Data ?? new { ok = true }, BJson.Opts) : ProviderEndpoints.Problem(r.Status, r.Code, r.Message);
+        }).RequirePermission(Permission.BrandWorkRead);
+
         s.MapPut("/{id:guid}/providers", async (Guid id, ProvidersWrite w, HttpContext ctx, AppDbContext db, CategoryService cats, CalendarService cal, IAuditLog audit, TimeProvider time) =>
         {
             var a = ctx.GetAccess()!;
