@@ -122,6 +122,8 @@ written in the same transaction as the decision and the audit entry:
 | `warn-seller` | `dismissed` | the content stays; the seller is warned |
 | `escalate-suspend` | `removed` | the seller is suspended, so their listings are unlisted |
 
+Every decision is **atomic**: it claims the open report with a conditional update, so when several staff decide the same report at the same moment exactly one wins (`200`) and the others get `409 already_resolved` without any side effect (no event, no audit entry, no seller suspension); each marketplace report is decided, and its event queued, once. `hide-content` on a report about a listing that staff ALREADY hid decides the report as `hidden` without hiding the listing again (`remove-content` still archives it).
+
 `warn-seller` and `escalate-suspend` answer `409 no_seller` for review reports (no seller on this portal). All of these need `ModerationAct`, a reason, and are audited. Hiding, removing
 or suspending also unlists the listing from the catalog feed (`listing.unlisted`, `docs/CATALOG.md`).
 
