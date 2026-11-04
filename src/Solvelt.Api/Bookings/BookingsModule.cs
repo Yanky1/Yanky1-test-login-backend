@@ -188,6 +188,21 @@ public static class BookingsModule
         var read = g.MapGroup("");
         var write = g.MapGroup("").RequireRateLimiting("internal");
 
+        // C12: what a buyer can choose before a hold. Same signing, stale and replay rules as the other internal GETs; only services visible in the catalog; ETag + 304.
+        read.MapGet("/services/{serviceId:guid}/options", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, AvailabilityLimits limits, Guid serviceId) =>
+        {
+            var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
+            if (!v.Ok) return limits.TryFailed(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") ? Err(v.Status, v.Code, v.Message) : Err(429, "rate_limited", "Too many failed requests.");
+            if (!limits.TryService(serviceId)) return Err(429, "rate_limited", "Too many requests for this service.");
+            var built = await ServiceOptions.BuildAsync(db, serviceId, ctx.RequestAborted);
+            if (built is null) return Err(404, "not_found", "This service is not available.");      // unknown, not a service, draft, hidden, moderated and unlisted all look the same
+            var etag = ServiceOptions.ETagOf(built.Value.Json);
+            ctx.Response.Headers.ETag = etag;
+            ctx.Response.Headers.CacheControl = "private, max-age=300";
+            if (ServiceOptions.Matches(ctx.Request.Headers.IfNoneMatch.ToString(), etag)) return Results.StatusCode(StatusCodes.Status304NotModified);
+            return Results.Text(built.Value.Json, "application/json");
+        });
+
         read.MapGet("/services/{serviceId:guid}/availability", async (HttpContext ctx, InboundVerifier verifier, BookingService svc, AvailabilityLimits limits, Guid serviceId, DateTime? from, DateTime? to,
             Guid? providerId, string? location, string? postalCode, double? lat, double? lng, int? minutes, string? addOns) =>
         {
