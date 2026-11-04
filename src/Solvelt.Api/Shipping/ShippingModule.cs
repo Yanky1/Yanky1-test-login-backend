@@ -16,7 +16,14 @@ public static class ShippingModule
         var dev = env.IsDevelopment() || env.IsEnvironment("Testing");
         var hook = o.WebhookSecret;
         if (string.IsNullOrWhiteSpace(hook) && dev) hook = "dev-only-shipping-webhook-secret-0123456789";
-        builder.Services.PostConfigure<ShippingOptions>(x => { x.ShippoApiKey = key; x.WebhookSecret = hook; });
+        var linkKey = o.LinkKey;
+        if (string.IsNullOrWhiteSpace(linkKey))
+        {
+            if (!dev) throw new InvalidOperationException("Shipping:LinkKey must be configured outside Development/Testing (it signs label links and must not be an Orders secret).");
+            linkKey = "dev-only-shipping-link-key-0123456789abcdef";
+        }
+        else if (linkKey == cfg["Orders:OutboundSecret"] || linkKey == cfg["Orders:InboundSecret"]) throw new InvalidOperationException("Shipping:LinkKey must differ from the Orders secrets.");
+        builder.Services.PostConfigure<ShippingOptions>(x => { x.ShippoApiKey = key; x.WebhookSecret = hook; x.LinkKey = linkKey; });
         if (key.Length > 0)
         {
             ValidateKey(key, env.IsProduction(), o.AllowTestKeyInProduction, o.AllowLiveKeyOutsideProduction);
