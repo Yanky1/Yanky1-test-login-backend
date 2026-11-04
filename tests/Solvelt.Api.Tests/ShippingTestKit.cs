@@ -115,9 +115,9 @@ public static class Ship
         return f.NewClient().SendAsync(req);
     }
 
-    public static async Task<string> Track(ApiFactory f, string tracking, string status, DateTime? at = null, string? eventId = null, string? detail = null)
+    public static async Task<string> Track(ApiFactory f, string tracking, string status, DateTime? at = null, string? eventId = null, string? detail = null, string? carrier = null)
     {
-        var r = await Hook(f, TrackBody(tracking, status, at ?? f.Time.GetUtcNow().UtcDateTime, eventId, detail));
+        var r = await Hook(f, TrackBody(tracking, status, at ?? f.Time.GetUtcNow().UtcDateTime, eventId, detail, carrier ?? (tracking.StartsWith("1Z") ? "ups" : "usps")));
         Assert.True(r.IsSuccessStatusCode, await r.Content.ReadAsStringAsync());
         return (string)(await Orders.Node(r))["outcome"]!;
     }
