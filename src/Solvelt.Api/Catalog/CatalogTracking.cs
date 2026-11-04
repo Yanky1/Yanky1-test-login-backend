@@ -12,7 +12,7 @@ namespace Solvelt.Api.Catalog;
 /// <summary>Why a listing is not visible to the marketplace (the <c>reason</c> of <c>listing.unlisted</c>).</summary>
 public static class UnlistReasons
 {
-    public const string NotActive = "not_active", Archived = "archived", SellerSuspended = "seller_suspended", Moderated = "moderated", BrandRemoved = "brand_removed";
+    public const string NotActive = "not_active", Archived = "archived", SellerSuspended = "seller_suspended", Moderated = "moderated", BrandRemoved = "brand_removed", Deleted = "deleted";
 }
 
 /// <summary>The single definition of "is this listing visible to the marketplace" and of the public availability state. Pure functions: used by the version tracker AND the feed.</summary>
@@ -190,7 +190,7 @@ public static class CatalogTracking
     {
         if (ids.Count == 0) return false;
         var tracked = db.ChangeTracker.Entries<Product>().Where(e => ids.Contains(e.Entity.Id)).ToList();
-        if (tracked.Any(e => e.State == EntityState.Deleted ? e.Entity.CatalogListed : e.Entity.CatalogListed || e.Entity.Status == ProductStatus.Active)) return true;
+        if (tracked.Any(e => e.State == EntityState.Deleted ? e.Entity.CatalogEverListed : e.Entity.CatalogListed || e.Entity.Status == ProductStatus.Active)) return true;
         var rest = ids.Except(tracked.Select(e => e.Entity.Id)).ToList();
         return rest.Count > 0 && await db.Products.AsNoTracking().AnyAsync(p => rest.Contains(p.Id) && (p.CatalogListed || p.Status == ProductStatus.Active), ct);
     }
@@ -217,9 +217,10 @@ public static class CatalogTracking
         foreach (var e in entries.Values.OrderBy(e => e.Entity.Id))
         {
             var p = e.Entity;
-            var reason = e.State == EntityState.Deleted ? UnlistReasons.Archived
+            var deleted = e.State == EntityState.Deleted;
+            var reason = deleted ? UnlistReasons.Deleted
                 : CatalogRules.UnlistReason(p, sellers.GetValueOrDefault(p.SellerId), brands.GetValueOrDefault(p.BrandId));
-            if (reason is not null && !p.CatalogListed) continue;     // not visible before, not visible now: nothing to tell the marketplace
+            if (reason is not null && !p.CatalogListed && !(deleted && p.CatalogEverListed)) continue;   // not visible before, not visible now: nothing to tell the marketplace (except that a listing the marketplace has seen is now gone for good)
             work.Add((e, reason));
         }
         if (work.Count == 0) return;
@@ -240,6 +241,8 @@ public static class CatalogTracking
                 p.CatalogStockState = reason is null ? stock.GetValueOrDefault(p.Id) : null;
                 p.CatalogDeliveryState = reason is null ? delivery.GetValueOrDefault(p.Id)?.Signature : null;
             }
+            if (e.State == EntityState.Deleted)         // the row is going away: its tombstone moves into a table of its own, with a version, so the feed still reports it
+                undo.Requests.Add(db.Entry(db.CatalogTombstones.Add(new CatalogTombstone { ListingId = p.Id, SellerId = p.SellerId, Version = version, Reason = UnlistReasons.Deleted, CreatedAt = clock.UtcNow() }).Entity));
             var msg = reason is null ? outbox.Enqueue("listing.upserted", p.SellerId, p.Id.ToString(), new { listingId = p.Id, version }, version)
                                      : outbox.Enqueue("listing.unlisted", p.SellerId, p.Id.ToString(), new { listingId = p.Id, version, reason }, version);
             undo.Outbox.Add(db.Entry(msg));
