@@ -28,16 +28,20 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
     public static string? Shown(string? s) { s = s?.Trim(); return string.IsNullOrEmpty(s) ? null : s.Length > 500 ? s[..500] : s; }
 
     /// <summary>
-    /// Records the decision on every still-undecided marketplace report of this queue row and queues one <c>content.report_decided</c> event per report. The caller saves
-    /// (its SaveChanges commits the decision, the audit entry and the events together).
+    /// Records the decision on every still-undecided marketplace report of this queue row and queues one <c>content.report_decided</c> event per report. Each report is CLAIMED with a
+    /// conditional UPDATE (<c>WHERE Decision IS NULL</c>) and its event is queued only if this call won the claim, so concurrent decisions can never emit an event twice. Runs inside the
+    /// decision's transaction; the caller's SaveChanges (the audit entry) commits the events with it.
     /// </summary>
     private async Task DecideAsync(ModerationReport row, string decision, string? shownToUser)
     {
-        var open = await db.ContentReports.Where(c => c.ModerationReportId == row.Id && c.Decision == null).ToListAsync();
+        var open = await db.ContentReports.AsNoTracking().Where(c => c.ModerationReportId == row.Id && c.Decision == null).ToListAsync();
         var now = time.UtcNow();
         foreach (var c in open)
         {
-            c.Decision = decision; c.DecidedAt = now;
+            var id = c.Id;
+            var claimed = await db.ContentReports.Where(x => x.Id == id && x.Decision == null)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Decision, decision).SetProperty(x => x.DecidedAt, (DateTime?)now));
+            if (claimed != 1) continue;
             outbox.Enqueue("content.report_decided", row.SellerId == Guid.Empty ? null : row.SellerId, c.Id.ToString(),
                 new { reportId = c.ReportId, kind = c.Kind, targetId = c.TargetRef, decision, reasonShownToUser = shownToUser });
         }
@@ -182,82 +186,133 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
             await mailer.SendAsync(Templates.Notification(e, kind, subject, heading, extra is null ? [reason] : [extra, "Reason: " + reason]));
     }
 
-    private void Resolve(ModerationReport r, StaffContext s, ReportStatus st, string resolution, string reason)
-    { r.Status = st; r.ResolvedAt = time.UtcNow(); r.ResolvedBy = s.UserId; r.Resolution = resolution; r.ResolutionNote = reason; }
+    /// <summary>
+    /// Claims an OPEN report row for a decision: a conditional UPDATE (<c>WHERE Id AND Status = Open</c>) that exactly one of several concurrent deciders wins. The loser gets
+    /// false and must not do anything else (no event, no audit, no side effect).
+    /// </summary>
+    private async Task<bool> ClaimAsync(Guid id, StaffContext s, ReportStatus st, string resolution, string reason)
+    {
+        var now = time.UtcNow(); var uid = (Guid?)s.UserId;
+        return await db.ModerationReports.Where(x => x.Id == id && x.Status == ReportStatus.Open).ExecuteUpdateAsync(u => u
+            .SetProperty(x => x.Status, st).SetProperty(x => x.ResolvedAt, (DateTime?)now).SetProperty(x => x.ResolvedBy, uid)
+            .SetProperty(x => x.Resolution, resolution).SetProperty(x => x.ResolutionNote, reason)) == 1;
+    }
+
+    private static IResult AlreadyResolved() => AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+
+    /// <summary>Runs one decision in one transaction (the caller's, or one opened here): the claim, the decision rows, the events and the audit entry commit together or not at all.</summary>
+    private async Task<IResult> InTx(Func<Task<IResult>> work)
+    {
+        await using var tx = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync() : null;
+        try
+        {
+            var res = await work();
+            if (tx is not null) { if ((res as IStatusCodeHttpResult)?.StatusCode is >= 400) await tx.RollbackAsync(); else await tx.CommitAsync(); }
+            return res;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            db.ChangeTracker.Clear();
+            if (tx is not null) await tx.RollbackAsync();
+            return AdminHttp.Err(409, "conflict", "The item was changed by someone else at the same time; reload and try again.");
+        }
+    }
 
     public async Task<IResult> DismissAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
-        var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
+        var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
-        if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
-        Resolve(r, s, ReportStatus.Dismissed, "dismissed", reason);
-        await DecideAsync(r, DecisionDismissed, shown);
-        await audit.WriteAsync(s, "moderation.dismissed", "report", id, reason, new { status = "Open" }, new { status = "Dismissed" });
-        return Results.Ok(new { id, status = "Dismissed" });
+        if (r.Status != ReportStatus.Open) return AlreadyResolved();
+        return await InTx(async () =>
+        {
+            if (!await ClaimAsync(id, s, ReportStatus.Dismissed, "dismissed", reason)) return AlreadyResolved();
+            await DecideAsync(r, DecisionDismissed, shown);
+            await audit.WriteAsync(s, "moderation.dismissed", "report", id, reason, new { status = "Open" }, new { status = "Dismissed" });
+            return Results.Ok(new { id, status = "Dismissed" });
+        });
     }
 
     public async Task<IResult> WarnAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
-        var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
+        var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
-        if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.Status != ReportStatus.Open) return AlreadyResolved();
         if (r.SellerId == Guid.Empty) return AdminHttp.Err(409, "no_seller", "This report has no seller on this portal (it concerns marketplace content).");
-        Resolve(r, s, ReportStatus.Actioned, "warned", reason);
-        await DecideAsync(r, DecisionDismissed, shown);   // the content stays: to the reporter the report is closed without a content action
-        await audit.WriteAsync(s, "moderation.seller_warned", "report", id, reason, extra: "seller=" + r.SellerId);
-        await NotifyAsync(r.SellerId, "moderation-warning", "A notice about your Solvelt account", "A notice from Solvelt", reason,
-            "We received a report about content on your account and ask you to review our seller rules.");
-        return Results.Ok(new { id, status = "Actioned", resolution = "warned" });
+        return await InTx(async () =>
+        {
+            if (!await ClaimAsync(id, s, ReportStatus.Actioned, "warned", reason)) return AlreadyResolved();
+            await DecideAsync(r, DecisionDismissed, shown);   // the content stays: to the reporter the report is closed without a content action
+            await audit.WriteAsync(s, "moderation.seller_warned", "report", id, reason, extra: "seller=" + r.SellerId);
+            await NotifyAsync(r.SellerId, "moderation-warning", "A notice about your Solvelt account", "A notice from Solvelt", reason,
+                "We received a report about content on your account and ask you to review our seller rules.");
+            return Results.Ok(new { id, status = "Actioned", resolution = "warned" });
+        });
     }
 
     public async Task<IResult> EscalateAsync(StaffContext s, Guid id, string reason, string? shown = null)
     {
-        var r = await db.ModerationReports.FirstOrDefaultAsync(x => x.Id == id);
+        var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
-        if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.Status != ReportStatus.Open) return AlreadyResolved();
         if (r.SellerId == Guid.Empty) return AdminHttp.Err(409, "no_seller", "This report has no seller on this portal (it concerns marketplace content).");
-        var res = await sellers.ChangeStatusAsync(s, r.SellerId, SellerStatus.Suspended, "moderation.escalated_suspend", reason);
-        var status = (res as IStatusCodeHttpResult)?.StatusCode ?? 200;
-        if (status >= 400) return res;
-        db.ChangeTracker.Clear();
-        r = await db.ModerationReports.FirstAsync(x => x.Id == id);
-        Resolve(r, s, ReportStatus.Actioned, "suspended", reason);
-        await DecideAsync(r, DecisionRemoved, shown);     // suspending the seller takes all their listings off the marketplace
-        await audit.WriteAsync(s, "moderation.escalated", "report", id, reason, extra: "seller=" + r.SellerId);
-        return Results.Ok(new { id, status = "Actioned", resolution = "suspended" });
+        return await InTx(async () =>
+        {
+            if (!await ClaimAsync(id, s, ReportStatus.Actioned, "suspended", reason)) return AlreadyResolved();     // the winner suspends; a loser never touches the seller
+            var res = await sellers.ChangeStatusAsync(s, r.SellerId, SellerStatus.Suspended, "moderation.escalated_suspend", reason);
+            if (((res as IStatusCodeHttpResult)?.StatusCode ?? 200) >= 400) return res;                              // InTx rolls the claim back: the report stays open
+            await DecideAsync(r, DecisionRemoved, shown);     // suspending the seller takes all their listings off the marketplace
+            await audit.WriteAsync(s, "moderation.escalated", "report", id, reason, extra: "seller=" + r.SellerId);
+            return Results.Ok(new { id, status = "Actioned", resolution = "suspended" });
+        });
     }
 
     public async Task<IResult> HideListingAsync(StaffContext s, Guid productId, string reason, Guid? reportId = null, string? shown = null, bool remove = false)
     {
         var p = await db.Products.FirstOrDefaultAsync(x => x.Id == productId);
         if (p is null) return Results.NotFound();
-        if (p.ModeratedAt is not null && !remove) return AdminHttp.Err(409, "already_hidden", "This listing is already hidden.");
-        if (p.ModeratedAt is null) { p.ModerationPrevStatus = p.Status; p.ModeratedAt = time.UtcNow(); p.ModerationReason = reason; p.ModeratedBy = s.UserId; }
-        if (remove) p.Status = ProductStatus.Archived;
-        else if (p.Status == ProductStatus.Active) p.Status = ProductStatus.Inactive;
-        p.Version++; p.UpdatedAt = time.UtcNow();
-        foreach (var r in await db.ModerationReports.Where(x => x.Kind == "listing" && x.TargetId == productId && x.Status == ReportStatus.Open).ToListAsync())
+        var already = p.ModeratedAt is not null;
+        if (already && !remove && reportId is null) return AdminHttp.Err(409, "already_hidden", "This listing is already hidden.");
+        return await InTx(async () =>
         {
-            Resolve(r, s, ReportStatus.Actioned, remove ? "removed" : "hidden", reason);
-            await DecideAsync(r, remove ? DecisionRemoved : DecisionHidden, shown);
-        }
-        audit.Add(s, remove ? "listing.removed" : "listing.hidden", "listing", productId, reason, new { status = p.ModerationPrevStatus.ToString() }, new { status = p.Status.ToString(), hidden = true }, "seller=" + p.SellerId);
-        await db.SaveChangesAsync();
-        await NotifyAsync(p.SellerId, "listing-hidden", "A listing was hidden", "One of your listings was hidden", reason, $"Solvelt hid your listing \"{p.Title}\".");
-        return Results.Ok(new { productId, hidden = true });
+            // a report decided as "hidden" on a listing that staff already hid: the decision is recorded, the listing is not hidden a second time
+            var change = !already || remove;
+            var decision = remove ? DecisionRemoved : DecisionHidden;
+            if (change)
+            {
+                if (!already) { p.ModerationPrevStatus = p.Status; p.ModeratedAt = time.UtcNow(); p.ModerationReason = reason; p.ModeratedBy = s.UserId; }
+                if (remove) p.Status = ProductStatus.Archived;
+                else if (p.Status == ProductStatus.Active) p.Status = ProductStatus.Inactive;
+                p.Version++; p.UpdatedAt = time.UtcNow();
+            }
+            var claimedAny = false;
+            foreach (var r in await db.ModerationReports.AsNoTracking().Where(x => x.Kind == "listing" && x.TargetId == productId && x.Status == ReportStatus.Open).ToListAsync())
+            {
+                if (!await ClaimAsync(r.Id, s, ReportStatus.Actioned, remove ? "removed" : "hidden", reason)) continue;   // another decider got this one
+                claimedAny = true;
+                await DecideAsync(r, decision, shown);
+            }
+            if (!change && !claimedAny) return AlreadyResolved();
+            audit.Add(s, change ? (remove ? "listing.removed" : "listing.hidden") : "listing.report_decided_hidden", "listing", productId, reason,
+                new { status = p.ModerationPrevStatus.ToString() }, new { status = p.Status.ToString(), hidden = true }, "seller=" + p.SellerId);
+            await db.SaveChangesAsync();
+            if (change) await NotifyAsync(p.SellerId, "listing-hidden", "A listing was hidden", "One of your listings was hidden", reason, $"Solvelt hid your listing \"{p.Title}\".");
+            return Results.Ok(new { productId, hidden = true });
+        });
     }
 
     public async Task<IResult> DecideContentAsync(StaffContext s, Guid id, string reason, string decision, string? shown)
     {
         var r = await db.ModerationReports.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
         if (r is null) return Results.NotFound();
-        if (r.Status != ReportStatus.Open) return AdminHttp.Err(409, "already_resolved", "This report is already resolved.");
+        if (r.Status != ReportStatus.Open) return AlreadyResolved();
         if (r.Kind == "listing") return await HideListingAsync(s, r.TargetId, reason, id, shown, remove: decision == DecisionRemoved);
-        var row = await db.ModerationReports.FirstAsync(x => x.Id == id);
-        Resolve(row, s, ReportStatus.Actioned, decision, reason);
-        await DecideAsync(row, decision, shown);
-        await audit.WriteAsync(s, "moderation." + decision, "report", id, reason, extra: "kind=" + row.Kind);
-        return Results.Ok(new { id, status = "Actioned", resolution = decision });
+        return await InTx(async () =>
+        {
+            if (!await ClaimAsync(id, s, ReportStatus.Actioned, decision, reason)) return AlreadyResolved();
+            await DecideAsync(r, decision, shown);
+            await audit.WriteAsync(s, "moderation." + decision, "report", id, reason, extra: "kind=" + r.Kind);
+            return Results.Ok(new { id, status = "Actioned", resolution = decision });
+        });
     }
 
     public async Task<IResult> UnhideListingAsync(StaffContext s, Guid productId, string reason)

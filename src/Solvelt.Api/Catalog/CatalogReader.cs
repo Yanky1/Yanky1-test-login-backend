@@ -23,6 +23,8 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
 
     private static object DeliveryOf(DeliveryInfo d) => new { ships = d.Ships, localDelivery = d.LocalDelivery, serviceLocations = d.ServiceLocations };
 
+    public object Tombstone(CatalogTombstone t) => new { listingId = t.ListingId, version = t.Version, listed = false, reason = t.Reason };
+
     public object Tombstone(Product p) => new { listingId = p.Id, version = p.CatalogVersion, listed = false, reason = p.CatalogUnlistReason };
 
     /// <summary>Documents for visible listings (in the order of <paramref name="products"/>). Callers pass only products with <c>CatalogListed</c>.</summary>
