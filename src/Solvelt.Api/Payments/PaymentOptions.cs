@@ -31,6 +31,8 @@ public class PaymentOptions
     public int WebhooksPerMinute { get; set; } = 1200;
     public bool AllowTestKeysInProduction { get; set; }
     public bool AllowLiveKeysOutsideProduction { get; set; }
+    /// <summary>With a live Stripe key the platform AND the Connect webhook secret are required at startup (Stripe signs each endpoint with its own secret). Set to accept a single secret on purpose (Stripe CLI, one shared secret).</summary>
+    public bool AllowSingleWebhookSecret { get; set; }
 }
 
 /// <summary>Configuration section "Stripe". Secret key + webhook secret; no key = deterministic fake provider (dev/tests).</summary>
@@ -39,6 +41,8 @@ public class StripeOptions
     public const string Section = "Stripe";
     public string SecretKey { get; set; } = "";
     public string WebhookSecret { get; set; } = "";
+    /// <summary>Signing secret of the Stripe CONNECT webhook endpoint (events of connected accounts). Stripe issues a different secret per endpoint; empty = the single <see cref="WebhookSecret"/> is used for everything.</summary>
+    public string ConnectWebhookSecret { get; set; } = "";
     /// <summary>Two-letter country for new Express accounts when the seller account has none.</summary>
     public string DefaultCountry { get; set; } = "US";
 }
