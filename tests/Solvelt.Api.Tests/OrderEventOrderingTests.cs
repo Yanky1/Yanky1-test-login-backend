@@ -68,10 +68,10 @@ public class OrderEventOrderingTests : IClassFixture<WebhookFactory>
         FailOnly("refund.issued", number);
         await Ok(Act(s.Owner, id, "refunds", new { reason = "goodwill", lines = new[] { new { lineId = line, quantity = 1 } } }));
         await Ok(Act(s.Owner, id, "cancel", new { reason = "other" }));
-        for (var i = 0; i < 8; i++) { await Dispatch(); _f.Time.Advance(TimeSpan.FromHours(2)); }   // 8 attempts: the refund event is Dead
+        int mark; lock (_f.Calls) mark = _f.Calls.Count;
+        for (var i = 0; i < 8; i++) { await Dispatch(); _f.Time.Advance(TimeSpan.FromHours(2)); }   // 8 attempts: the refund event is Dead, and in that very call its successor is sent
         var refund = _f.WithDb(db => db.Outbox.AsNoTracking().Single(m => m.AggregateId == mid && m.EventType == "refund.issued"));
         Assert.Equal(OutboxStatus.Dead, refund.Status);
-        int mark; lock (_f.Calls) mark = _f.Calls.Count;
         await Drain();
         var cancel = Received(mark).Single(x => x.Type == "order.cancelled" && x.Number == number);
         Assert.True((bool)cancel.Body["predecessorDead"]!);                                       // part of the signed body
