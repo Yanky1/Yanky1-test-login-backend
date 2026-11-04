@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Solvelt.Api.Shipping;
 
 namespace Solvelt.Api.ShippoTests;
@@ -19,7 +18,7 @@ public sealed class ShippoFactAttribute : FactAttribute
 public class ShippoTestModeTests
 {
     private static ShippoShippingProvider Provider() =>
-        new(new HttpClient(), Options.Create(new ShippingOptions { ShippoApiKey = ShippoFactAttribute.Key! }), NullLogger<ShippoShippingProvider>.Instance);
+        new(new HttpClient(), Microsoft.Extensions.Options.Options.Create(new ShippingOptions { ShippoApiKey = ShippoFactAttribute.Key! }), NullLogger<ShippoShippingProvider>.Instance);
 
     private static readonly ShipAddress From = new("Acme Shop", "Acme", "215 Clayton St.", null, "San Francisco", "CA", "94117", "US", "+1 555 341 9393", "shop@example.com");
     private static readonly ShipAddress To = new("Jane Buyer", null, "965 Mission St", null, "San Francisco", "CA", "94103", "US", "+1 555 341 9394", null);
