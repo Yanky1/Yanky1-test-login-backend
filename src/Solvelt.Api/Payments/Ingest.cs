@@ -94,9 +94,20 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
 
     private static bool ValidCurrency(string? c) => c is { Length: 3 } && c.All(char.IsAsciiLetterUpper);
 
+    /// <summary>An event's currency: absent stays absent (null); otherwise trimmed and upper-cased ("eur" is EUR, so it is compared with the sale's currency like any other).
+    /// False: a currency was sent but is not a 3-letter code (422 invalid_currency). Every handler normalises BEFORE it validates or compares.</summary>
+    private static bool NormalizeCurrency(string? raw, out string? currency)
+    {
+        currency = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim().ToUpperInvariant();
+        return currency is null || ValidCurrency(currency);
+    }
+    private static IngestResult BadCurrency() => IngestResult.Err(422, "invalid_currency", "currency must be a 3-letter ISO 4217 code (for example USD).");
+
     private async Task<IngestResult> CapturedAsync(MarketplacePaymentEvent ev)
     {
         var d = ev.Data.Deserialize<CapturedData>(J)!;
+        if (!NormalizeCurrency(d.Currency, out var capCur)) return BadCurrency();
+        d = d with { Currency = capCur };
         var kind = d.Kind ?? "order";
         if (!CaptureKinds.Contains(kind)) return IngestResult.Err(422, "invalid_kind", "kind must be one of " + string.Join(", ", CaptureKinds) + ".");
         if (string.IsNullOrWhiteSpace(d.PaymentRef) || d.PaymentRef.Length > 120) return IngestResult.Err(422, "invalid_payment_ref", "paymentRef (Stripe charge or payment intent id) is required.");
@@ -122,7 +133,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         else
         {
             if (string.IsNullOrWhiteSpace(d.MarketplaceBookingId)) return IngestResult.Err(422, "invalid_event", "marketplaceBookingId is required.");
-            if (!ValidCurrency(d.Currency)) return IngestResult.Err(422, "invalid_currency", "currency (ISO 4217, upper case) is required for bookings.");
+            if (!ValidCurrency(d.Currency)) return IngestResult.Err(422, "invalid_currency", "currency (ISO 4217) is required for bookings.");
             var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == d.MarketplaceBookingId);
             if (b is null) return IngestResult.Err(404, "booking_not_found", "No such booking (yet). Retry after the booking was created.");
             var bps = await settings.FeeBasisPointsAsync();
@@ -179,6 +190,8 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     private async Task<IngestResult> RefundAsync(MarketplacePaymentEvent ev)
     {
         var d = ev.Data.Deserialize<RefundData>(J)!;
+        if (!NormalizeCurrency(d.Currency, out var refCur)) return BadCurrency();
+        d = d with { Currency = refCur };
         if (string.IsNullOrWhiteSpace(d.RefundId) || d.RefundId.Length > 100) return IngestResult.Err(422, "invalid_event", "refundId is required.");
         long items = d.AmountCents ?? 0, ship = d.ShippingCents ?? 0;
         if (items < 0 || ship < 0 || items > MaxCents || ship > MaxCents || items + ship == 0) return IngestResult.Err(422, "invalid_amount", "amountCents / shippingCents must be non-negative integers, at least one above zero.");
@@ -237,6 +250,8 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     private async Task<IngestResult> DisputeAsync(MarketplacePaymentEvent ev)
     {
         var d = ev.Data.Deserialize<DisputeData>(J)!;
+        if (!NormalizeCurrency(d.Currency, out var dispCur)) return BadCurrency();
+        d = d with { Currency = dispCur };
         if (string.IsNullOrWhiteSpace(d.DisputeId) || d.DisputeId.Length > 100) return IngestResult.Err(422, "invalid_event", "disputeId is required.");
         // One Stripe dispute can span several seller orders: the key is (disputeId, seller order) and every event carries that seller order's share.
         PaymentDispute? existing; Guid seller; string currency; Guid? orderId = null, bookingId = null; long? sale = null;
@@ -256,7 +271,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             if (b is null) return IngestResult.Err(404, "booking_not_found", "No such booking.");
             seller = b.SellerId; bookingId = b.Id;
             existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.BookingId == b.Id);
-            currency = existing?.Currency ?? (ValidCurrency(d.Currency) ? d.Currency! : "USD");
+            // the currency the booking was captured in decides (like refunds); only a booking without a recorded sale takes the event's
+            var bookedIn = await db.LedgerJournals.AsNoTracking().Where(j => j.BookingId == b.Id).Select(j => j.Currency).FirstOrDefaultAsync();
+            currency = existing?.Currency ?? bookedIn ?? (ValidCurrency(d.Currency) ? d.Currency! : "USD");
+            if (ValidCurrency(d.Currency) && d.Currency != currency) return IngestResult.Err(422, "currency_mismatch", "The currency does not match the booking.");
         }
         else
         {
@@ -341,11 +359,14 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}{sfx}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
     }
 
-    /// <summary>One open reconciliation flag per (kind, key): a replayed or updated event does not raise it again.</summary>
+    /// <summary>One open reconciliation flag per (kind, dispute id): a replayed or updated event does not raise it again. The detail must contain "dispute {key} " (the id followed by a
+    /// space), so that dp_1 is never taken for dp_12.</summary>
     public async Task<bool> FlagOnceAsync(string kind, string key, string detail, DateTime now, Guid? sellerId = null)
     {
-        if (db.ReconciliationFlags.Local.Any(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(key))) return false;
-        if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(key))) return false;
+        var marker = $"dispute {key} ";
+        if (!detail.Contains(marker)) throw new ArgumentException("The flag detail must name the dispute as 'dispute {id} '.", nameof(detail));
+        if (db.ReconciliationFlags.Local.Any(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(marker))) return false;
+        if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == kind && f.ResolvedAt == null && f.Detail.Contains(marker))) return false;
         db.ReconciliationFlags.Add(new ReconciliationFlag { SellerId = sellerId, Kind = kind, Detail = detail, CreatedAt = now });
         return true;
     }

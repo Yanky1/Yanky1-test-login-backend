@@ -383,7 +383,7 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
         var wonItems = await db.UnallocatedDisputes.AsNoTracking().Where(u => u.Status == "won" && u.ResolvedAt == null && u.EventAt <= wonBefore).ToListAsync(ct);
         foreach (var u in wonItems)
         {
-            if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == "dispute_won_unallocated" && f.Detail.Contains(u.ExternalId) && f.ResolvedAt == null, ct)) continue;
+            if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == "dispute_won_unallocated" && f.Detail.Contains("dispute " + u.ExternalId + " ") && f.ResolvedAt == null, ct)) continue;
             db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "dispute_won_unallocated", CreatedAt = now,
                 Detail = $"Stripe reports dispute {u.ExternalId} as won, but the marketplace has still not allocated it to seller orders ({u.AllocatedCents} of {u.AmountCents} {u.Currency} minor units): no seller credit exists." });
             flagged++;

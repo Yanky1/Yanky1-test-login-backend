@@ -251,6 +251,14 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         if (pr?.MarketplaceOrderId is { } mo) orders = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mo).ToListAsync();
         else if (pr?.MarketplaceBookingId is { } mb) booking = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == mb);
         var now = time.UtcNow();
+        // The dispute id identifies the dispute; the charge only says which seller orders / booking Stripe believes it is on. When the charge maps to some and a row the marketplace
+        // allocated sits OUTSIDE them, the two sources disagree: nothing is recorded (no status change on rows of another order, nothing counted toward another allocation, no debit) and staff
+        // are told. A charge that maps to nothing at all cannot contradict anything: the dispute id decides.
+        if ((orders.Count > 0 || booking is not null) && rows.Any(r => !orders.Any(x => x.Id == r.OrderId) && !(booking is not null && r.BookingId == booking.Id)))
+        {
+            await ingest.FlagOnceAsync("dispute_unattributed", did, $"Stripe dispute {did} is already allocated to seller orders/bookings that the charge it reports does not map to: nothing was recorded or debited.", now, orders.Count > 0 ? orders[0].SellerId : booking?.SellerId);
+            return "flagged_unattributed";
+        }
         // One charge, several seller orders: Stripe cannot say how the dispute splits, so it never debits anybody. It only records status / evidence date on the rows the marketplace
         // already allocated, and keeps a staff-visible item open while the allocated shares are below the Stripe amount. The money comes from the marketplace's per-seller-order events.
         if (orders.Count > 1 || rows.Count > 1)
@@ -271,13 +279,6 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         else
         {
             await ingest.FlagOnceAsync("dispute_unattributed", did, $"Stripe dispute {did} could not be matched to a seller order/booking (charge/payment intent unknown).", now);
-            return "flagged_unattributed";
-        }
-        // the dispute is already allocated (by the marketplace) to a different seller order / booking than this Stripe charge maps to: a Stripe event may only update rows it can match
-        // unambiguously, so nobody is debited and staff are told (a second seller must never be debited for a dispute that is already someone else's)
-        if (existing is null && rows.Count > 0)
-        {
-            await ingest.FlagOnceAsync("dispute_unattributed", did, $"Stripe dispute {did} is already allocated to another seller order/booking than the one its charge maps to: nothing was recorded or debited.", now, seller);
             return "flagged_unattributed";
         }
         if (existing is not null) { seller = existing.SellerId; currency = existing.Currency; orderId = existing.OrderId; bookingId = existing.BookingId; }
