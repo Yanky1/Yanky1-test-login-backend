@@ -130,6 +130,7 @@ public static class CatalogTracking
                 case ProductAttributeValue a: t.Child(a.ProductId); break;
                 case ProductFaq f: t.Child(f.ProductId); break;
                 case ServiceDetails s: t.Child(s.ProductId); break;
+                case ServiceProviderLink sl: t.Child(sl.ProductId); break;                      // the providers a buyer can pick are part of the options document
                 case ProductQuestion q:
                     {
                         var was = e.State == EntityState.Added ? QuestionState.Hidden : (QuestionState)e.OriginalValues[nameof(ProductQuestion.State)]!;
