@@ -6,7 +6,6 @@ public static class Templates
     private static string BannerFor(string kind) => kind switch
     {
         "verify-code" or "change-email-code" or "email-changed" or "stepup-code" or "locked" or "reset-password" or "password-changed" => "Account security",
-        "signup-existing" => "Sign-up attempt",
         "application-received" or "approved" or "needs-info" or "rejected" => "Seller application",
         _ => "Seller portal"
     };

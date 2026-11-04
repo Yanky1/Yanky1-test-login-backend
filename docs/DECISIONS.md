@@ -220,6 +220,8 @@
 | J4 | Playfair Display is requested first and falls back to Georgia; Plus Jakarta Sans falls back to Arial. | Most clients block web fonts; the stacks degrade without layout breakage. |
 | J5 | Support address is resolved by `Mailer` at send time (token in the shell), from `Email:SupportAddress` then `Phone:HelpContact`, validated as a plain address. | The first version used a mutable static set by `PhoneModule`, which parallel test classes could race on, and it used free-text `HelpContact` as a `mailto:` target. |
 | J6 | Only http, https and mailto links are rendered in emails; others drop the button in both parts. | A `javascript:` or `data:` href must never reach a mailbox, whatever a caller passes. |
+| J7 | The host refuses to start outside Development/Testing when the support address is the default or a placeholder domain. | A placeholder in every footer is a deployment mistake; this follows the existing rule for secrets and keys (HMAC secret, proof-URL key) instead of a log line nobody reads. Test factories that mimic production set `Email:SupportAddress`. |
+| J8 | Support addresses are validated with a conservative allow-list (`[A-Za-z0-9._+-]@host`), not by escaping. | `a?bcc=e@x.co` is a valid mailbox but turns the `mailto:` link into one that adds a hidden BCC; refusing is simpler and safer than escaping. |
 
 ## Local delivery (workstream L)
 
