@@ -235,6 +235,8 @@ public class LabelService(AppDbContext db, IShippingProvider provider, IFileStor
         var rates = JsonSerializer.Deserialize<List<QuotedRate>>(quote.RatesJson, J)!;
         var rate = rates.FirstOrDefault(r => r.RateId == req.RateId);
         if (rate is null) return Res.Invalid("That rate isn't part of this quote.", "rate");
+        // the debit lands in the label's currency: a currency the seller has no sales in would leave a negative balance that is never recovered
+        if (!string.Equals(rate.Currency, o.Currency, StringComparison.OrdinalIgnoreCase)) return new(false, 422, "currency_mismatch", "This rate is in " + rate.Currency + ", but the order is in " + o.Currency + ". Labels are only bought in the order's currency.");
         var qrk = $"{quote.Id:N}:{rate.RateId}";
         var key = $"{o.SellerId:N}:" + (string.IsNullOrWhiteSpace(req.IdempotencyKey) ? ShippingSupport.Hash($"{o.Id}|{qrk}")[..32] : req.IdempotencyKey.Trim());
         if (key.Length > 160) return Res.Invalid("The idempotency key is too long.", "idempotency_key");

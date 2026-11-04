@@ -246,12 +246,13 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             var s = o.Shipments.FirstOrDefault(x => x.TrackingNumber == Tracking.Normalize(tracking));
             if (s is null) return Res.Fail(404, "not_found", "No shipment with that tracking number.");
             if (!await ClaimAsync(o, version)) return Stale();
-            s.DeliveredAt ??= when;
+            s.DeliveredAt ??= when < s.ShippedAt ? s.ShippedAt : when;   // a reported time can't precede the shipment (it would start the payout hold early)
             db.AddEvent(o.Id, "shipment.delivered", by, null, s.TrackingNumber, now);
             return await SaveAsync(o, "order.changed");
         }
         if (o.Status != OrderStatus.Shipped) return Res.Conflict($"This order is {OrderStateMachine.Label(o.Status)}. Only a fully shipped order can be marked delivered.");
         if (!await ClaimAsync(o, version)) return Stale();
+        if (o.Shipments.Count > 0 && o.Shipments.Max(x => x.ShippedAt) is var lastShipped && when < lastShipped) when = lastShipped;   // never earlier than the last shipment left
         OrderStateMachine.Move(o, OrderStatus.Delivered);
         o.DeliveredAt = when;
         foreach (var s in o.Shipments) s.DeliveredAt ??= when;

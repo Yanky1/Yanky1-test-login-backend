@@ -214,6 +214,53 @@ public class ShippingReviewTests
     }
 }
 
+public class ShippingMoneyReviewTests
+{
+    [Fact]
+    public async Task A_manual_or_marketplace_delivery_time_before_the_shipment_is_clamped_to_it()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (mid, id, _) = await Ship.Accepted(s);
+        await Orders.Ok(Orders.Act(s.Owner, id, "ship", Orders.Ship(carrier: "UPS", tracking: "1Z999AA10123456811")));
+        var r = await Orders.Inbound(f, $"/api/internal/v1/orders/{mid}/delivery-confirmations", new { deliveredAt = f.Time.GetUtcNow().UtcDateTime.AddDays(-90) });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var o = Ship.Order(f, id);
+        Assert.Equal(OrderStatus.Delivered, o.Status); Assert.True(o.DeliveredAt >= Ship.Shipments(f, id).Single().ShippedAt);   // never before it shipped: no early payout
+    }
+
+    [Fact]
+    public async Task A_rate_in_another_currency_than_the_order_is_refused_before_the_provider_is_called()
+    {
+        using var f = new ShipFactory();
+        var (s, _, pkg) = await Ship.NewShop(f);
+        var (_, id, _) = await Ship.Accepted(s);
+        f.Provider.RateCurrency = "EUR";
+        var q = await Ship.Quote(s.Owner, id, pkg);
+        var r = await Ship.Buy(s.Owner, id, q);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, r.StatusCode); Assert.Equal("currency_mismatch", await Orders.Code(r));
+        Assert.Equal(0, f.Provider.Purchases); Assert.Empty(Ship.Journals(f, s.Seller, "shipping_label")); Assert.Empty(Ship.Labels(f, id));
+    }
+
+    [Fact]
+    public async Task A_return_rate_in_another_currency_than_the_order_is_refused()
+    {
+        using var f = new ShipFactory();
+        var (s, _, pkg) = await Ship.NewShop(f);
+        var (mid, id, _) = await Ship.Accepted(s, qty: 2, lid: "RL1");
+        var label = await Ship.BuyCheapest(s.Owner, id, pkg);
+        await Ship.Track(f, Ship.Tn(label), "delivered");
+        Assert.Equal(HttpStatusCode.OK, (await Orders.Inbound(f, $"/api/internal/v1/orders/{mid}/return-requests", new { returnId = "R1", reason = "not_as_described", lines = new[] { new { marketplaceLineId = "RL1", quantity = 1 } } })).StatusCode);
+        var rid = (string)(await Orders.Detail(s.Owner, id))["returns"]![0]!["id"]!;
+        await Orders.Ok(Orders.Act(s.Owner, id, $"returns/{rid}/approve", new { note = "ok" }));
+        var before = f.Provider.Purchases;
+        f.Provider.RateCurrency = "EUR";
+        var r = await s.Owner.Post($"/api/v1/seller/shipping/orders/{id}/returns/{rid}/label", new { package = Ship.Pkg(pkg) });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, r.StatusCode); Assert.Equal("currency_mismatch", await Orders.Code(r));
+        Assert.Equal(before, f.Provider.Purchases); Assert.Single(Ship.Journals(f, s.Seller, "shipping_label"));   // only the outbound label was ever debited
+    }
+}
+
 /// <summary>Label links are signed with their own key, never with a secret the marketplace also holds.</summary>
 public class ShippingLinkKeyTests
 {
