@@ -26,8 +26,18 @@ public static class OrderViews
         itemCount = o.Lines.Sum(l => l.Quantity), itemsSummary = Summary(o), thumbnailLineId = o.Lines.FirstOrDefault(l => l.ImageKey != null)?.Id,
         shipByAt = o.ShipByAt, deliverByAt = o.DeliverByAt, late = IsLate(o, now), oversold = o.Oversold, cancelRequested = o.CancelRequested,
         returnOpen = ReturnOpen(o.Status), shippingSpeed = o.ShippingSpeed, version = o.Version, redacted = o.PiiRedactedAt != null,
-        needsAction = NeedsAction(o)
+        needsAction = NeedsAction(o), needsAttention = o.NeedsAttention, trackingStatus = TrackingSummary(o)
     };
+
+    /// <summary>One status for the list chip: a problem beats everything, delivered only when every shipment arrived.</summary>
+    public static string? TrackingSummary(SellerOrder o)
+    {
+        if (o.Shipments.Count == 0) return null;
+        var st = o.Shipments.Select(x => x.DeliveredAt != null ? "delivered" : x.TrackingStatus ?? "unknown").ToList();
+        if (o.NeedsAttention || st.Any(x => x is "failure" or "return_to_sender")) return "exception";
+        if (st.All(x => x == "delivered")) return "delivered";
+        return st.Where(x => x != "delivered").OrderByDescending(x => Solvelt.Api.Shipping.TrackingStatuses.Rank(x)).First();
+    }
 
     public static bool NeedsAction(SellerOrder o) => o.Status is OrderStatus.New or OrderStatus.Accepted or OrderStatus.PartiallyShipped or OrderStatus.ReturnRequested or OrderStatus.ReturnReceived
         || (o.CancelRequested && o.Status != OrderStatus.Cancelled);
@@ -55,6 +65,7 @@ public static class OrderViews
             decideCancellation = w && o.CancelRequested && o.Status != OrderStatus.Cancelled,
             decideReturn = w && o.Status == OrderStatus.ReturnRequested,
             receiveReturn = w && o.Status == OrderStatus.ReturnApproved,
+            buyLabel = w && OrderStateMachine.CanShip(o.Status) && !o.CancelRequested,
         };
     }
 
@@ -69,6 +80,9 @@ public static class OrderViews
         var events = await db.OrderEvents.AsNoTracking().Where(e => e.OrderId == id).OrderBy(e => e.At).ThenBy(e => e.Type).ToListAsync();
         var notes = await db.OrderNotes.AsNoTracking().Where(n => n.OrderId == id).OrderBy(n => n.CreatedAt).ToListAsync();
         var conv = await db.Conversations.AsNoTracking().Where(c => c.OrderId == id).Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
+        var labelCosts = await db.ShippingLabels.AsNoTracking().Where(l => l.OrderId == id && l.ShipmentId != null && (l.Status == Solvelt.Api.Domain.LabelStatus.Active || l.Status == Solvelt.Api.Domain.LabelStatus.Voiding || l.Status == Solvelt.Api.Domain.LabelStatus.RefundFailed))
+            .ToDictionaryAsync(l => l.ShipmentId!.Value, l => (Cost: l.CostCents, Currency: l.Currency));
+        var returnShipments = await db.ReturnShipments.AsNoTracking().Where(r => r.OrderId == id).OrderBy(r => r.CreatedAt).ToListAsync();
         var authors = notes.Select(n => n.AuthorId).Distinct().ToList();
         var names = await db.Users.AsNoTracking().Where(u => authors.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Email ?? "");
         return new
@@ -94,7 +108,9 @@ public static class OrderViews
             shipments = o.Shipments.OrderBy(s => s.ShippedAt).Select(s => new
             {
                 id = s.Id, carrier = s.Carrier, service = s.Service, trackingNumber = s.TrackingNumber, trackingUrl = Tracking.Url(s.Carrier, s.TrackingNumber), shippedAt = s.ShippedAt,
-                deliveredAt = s.DeliveredAt, method = s.Method, trackingStatus = s.TrackingStatus, eta = s.Eta, lines = s.Lines.Select(x => new { lineId = x.OrderLineId, quantity = x.Quantity })
+                deliveredAt = s.DeliveredAt, lines = s.Lines.Select(x => new { lineId = x.OrderLineId, quantity = x.Quantity }),
+                method = s.Method, trackingStatus = s.TrackingStatus, trackingStatusDetail = s.TrackingStatusDetail, eta = s.Eta, labelId = s.LabelId,
+                labelCostCents = labelCosts.TryGetValue(s.Id, out var lc) ? (long?)lc.Cost : null, labelCurrency = labelCosts.TryGetValue(s.Id, out var lc2) ? lc2.Currency : null
             }),
             cancellations = cancels.Select(c => new { id = c.Id, requestedBy = c.RequestedBy.ToString(), status = c.Status.ToString(), reason = c.Reason, note = c.Note, decisionNote = c.DecisionNote, createdAt = c.CreatedAt, resolvedAt = c.ResolvedAt }),
             returns = returns.Select(r => new
@@ -110,6 +126,8 @@ public static class OrderViews
             timeline = events.Select(e => new { id = e.Id, type = e.Type, actor = e.Actor.ToString(), text = e.Text, at = e.At }),
             notes = notes.Select(n => new { id = n.Id, text = n.Text, author = names.GetValueOrDefault(n.AuthorId, ""), createdAt = n.CreatedAt }),
             conversationId = conv,
+            needsAttention = o.NeedsAttention, attentionReason = o.AttentionReason?.Replace("tracking:", ""), attentionAt = o.AttentionAt,
+            returnShipments = returnShipments.Select(r => new { id = r.Id, returnId = r.ReturnId, carrier = r.Carrier, service = r.Service, trackingNumber = r.TrackingNumber, trackingUrl = Tracking.Url(r.Carrier, r.TrackingNumber), trackingStatus = r.TrackingStatus ?? "unknown", eta = r.Eta, deliveredAt = r.DeliveredAt, labelId = r.LabelId }),
             stockMismatch = events.Any(e => e.Type == "stock.mismatch"),
             actions = Actions(o, a, managerRefundLimit),
             reasons = new { cancel = OrderSupport.CancelReasons, refund = OrderSupport.RefundReasons, rejectReturn = OrderSupport.RejectReasons, carriers = Tracking.Carriers }

@@ -10,6 +10,7 @@ using Solvelt.Api.Bookings;
 using Solvelt.Api.Orders;
 using Solvelt.Api.Payments;
 using Solvelt.Api.Products;
+using Solvelt.Api.Shipping;
 using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Data;
@@ -124,6 +125,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<PaymentNotice> PaymentNotices => Set<PaymentNotice>();
     public DbSet<PaymentJobLease> PaymentJobLeases => Set<PaymentJobLease>();
 
+    // shipping & tracking (see Shipping/)
+    public DbSet<ShipFromAddress> ShipFromAddresses => Set<ShipFromAddress>();
+    public DbSet<PackagePreset> PackagePresets => Set<PackagePreset>();
+    public DbSet<SellerShippingSettings> SellerShippingSettings => Set<SellerShippingSettings>();
+    public DbSet<ShippingProfile> ShippingProfiles => Set<ShippingProfile>();
+    public DbSet<ShippingLabel> ShippingLabels => Set<ShippingLabel>();
+    public DbSet<ReturnShipment> ReturnShipments => Set<ReturnShipment>();
+    public DbSet<ShippingWebhookEvent> ShippingWebhookEvents => Set<ShippingWebhookEvent>();
+    public DbSet<ShippingQuote> ShippingQuotes => Set<ShippingQuote>();
+
     /// <summary>The ledger is append-only: an update or delete of a journal or entry through the change tracker is a programming error.</summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -176,6 +187,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
         b.ConfigureAdmin();
         b.ConfigurePayments();
         b.ConfigureLocalDelivery();
+        b.ConfigureShipping();
     }
 
     public static void Seed(AppDbContext db)

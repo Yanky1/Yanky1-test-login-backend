@@ -4,6 +4,7 @@ using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Products;
 using Solvelt.Api.Services;
+using Solvelt.Api.Shipping;
 
 namespace Solvelt.Api.Orders;
 
@@ -16,6 +17,8 @@ public record Res(bool Ok, int Status = 200, string Code = "ok", string Message 
 }
 
 public record QtyLine(Guid LineId, int Quantity);
+/// <summary>A carrier and tracking number that come from a purchased label: trusted, so the manual-entry format checks are skipped, and <see cref="Attach"/> links the label in the same transaction.</summary>
+public record ShipTrust(string Carrier, string TrackingNumber, string? Service, Action<Shipment> Attach);
 public record ShipRequest(int? Version, List<QtyLine>? Lines, string? Carrier, string? Service, string? TrackingNumber, DateTime? ShippedAt);
 public record CancelRequest(int? Version, string? Reason, string? Note, bool? Restock);
 public record RefundRequest(int? Version, List<QtyLine>? Lines, long? ShippingCents, bool? Full, string? Reason, string? Note, Guid? ReturnId);
@@ -27,7 +30,7 @@ public record ReturnDecision(int? Version, string? Reason, string? Note, bool? R
 /// An order is "claimed" with an atomic version bump first, so two concurrent actions on the same order can never both apply their side effects.
 /// </summary>
 public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox outbox, TimeProvider time,
-    IAuditLog audit, OrderNotifier notifier)
+    IAuditLog audit, OrderNotifier notifier, ShipmentTracker tracker)
 {
 
     public IQueryable<SellerOrder> Full(IQueryable<SellerOrder> q) => q.Include(o => o.Lines).Include(o => o.Shipments).ThenInclude(s => s.Lines);
@@ -74,6 +77,8 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         return Res.Success();
     }
 
+    public void LiveChanged(SellerOrder o) => notifier.Live("order.changed", o.SellerId, o.BrandId, new { orderId = o.Id });
+
     private Task Audit(string type, Guid actor, SellerOrder o, string? extra = null) =>
         audit.WriteAsync(type, actor, null, $"order={o.Number}" + (extra is null ? "" : " " + extra));
 
@@ -119,7 +124,8 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
 
     // ---- shipping --------------------------------------------------------------------------------------------------------
     /// <param name="localCode">Set only by local delivery (never reachable from the API): ships with carrier "Local", the delivery code as tracking number, method local.</param>
-    public async Task<Res> ShipAsync(SellerOrder o, Guid actor, ShipRequest req, string? localCode = null)
+    /// <param name="trust">Set only by label purchase: a carrier and tracking number from a purchased label (format checks skipped, the label is linked in the same transaction).</param>
+    public async Task<Res> ShipAsync(SellerOrder o, Guid actor, ShipRequest req, string? localCode = null, ShipTrust? trust = null)
     {
         if (o.Status == OrderStatus.New) return Res.Conflict("Accept this order before shipping it.");
         if (o.Status == OrderStatus.OnHold) return Res.Conflict("This order is on hold. Remove the hold before shipping.");
@@ -127,11 +133,11 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (o.CancelRequested) return Res.Conflict("The buyer asked to cancel this order. Approve or reject the request first.", "cancel_requested");
         if (localCode is null && await db.LocalDeliveries.AnyAsync(d => d.OrderId == o.Id && d.Status != LocalStatus.Cancelled && d.Status != LocalStatus.Returned))
             return Res.Conflict("This order is set up for local delivery. Remove it from the dispatch board before shipping it with a carrier.", "local_delivery");
-        var carrier = localCode is null ? Tracking.Carrier(req.Carrier) : "Local";
+        var carrier = localCode is null ? (trust?.Carrier ?? Tracking.Carrier(req.Carrier)) : "Local";
         if (carrier is null) return Res.Invalid("Choose a carrier: " + string.Join(", ", Tracking.Carriers) + ".", "carrier");
-        var tn = localCode ?? Tracking.Normalize(req.TrackingNumber);
-        if (localCode is null && !Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
-        if (req.Service is { Length: > 60 }) return Res.Invalid("The service name is too long.", "service");
+        var tn = localCode ?? trust?.TrackingNumber ?? Tracking.Normalize(req.TrackingNumber);
+        if (localCode is null && trust is null && !Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
+        if ((trust?.Service ?? req.Service) is { Length: > 60 }) return Res.Invalid("The service name is too long.", "service");
         var now = time.UtcNow();
         var shippedAt = req.ShippedAt is { } s ? OrderSupport.Utc(s) : now;
         if (shippedAt > now.AddMinutes(5)) return Res.Invalid("The ship date can't be in the future.", "shipped_at");
@@ -149,8 +155,9 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         }
         if (!await ClaimAsync(o, req.Version)) return Stale();
 
-        var ship = new Shipment { OrderId = o.Id, Carrier = carrier, Service = req.Service?.Trim(), TrackingNumber = tn, ShippedAt = shippedAt, CreatedAt = now };
+        var ship = new Shipment { OrderId = o.Id, Carrier = carrier, Service = (trust?.Service ?? req.Service)?.Trim(), TrackingNumber = tn, ShippedAt = shippedAt, CreatedAt = now };
         if (localCode is not null) { ship.Method = DeliveryMethod.Local; ship.TrackingStatus = Domain.TrackingStatus.InTransit; ship.TrackingStatusAt = now; }
+        trust?.Attach(ship);
         var mismatches = new List<string>();
         foreach (var w in wanted)
         {
@@ -189,7 +196,11 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             lines = wanted.Select(w => new { marketplaceLineId = o.Lines.First(l => l.Id == w.LineId).MarketplaceLineId, sku = o.Lines.First(l => l.Id == w.LineId).Sku, quantity = w.Quantity })
         });
         var r = await SaveAsync(o, "order.changed");
-        if (r.Ok) await Audit("order.ship", actor, o, $"carrier={carrier} partial={!all}" + (mismatches.Count > 0 ? " stock_mismatch=true" : ""));
+        if (r.Ok)
+        {
+            await Audit("order.ship", actor, o, $"carrier={carrier} partial={!all}" + (mismatches.Count > 0 ? " stock_mismatch=true" : ""));
+            await tracker.RegisterAsync(ship);   // best effort: manual, CSV and label shipments all get live tracking where the carrier is supported
+        }
         return r;
     }
 
@@ -203,10 +214,18 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         var tn = Tracking.Normalize(trackingIn ?? ship.TrackingNumber);
         if (!Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
         if (!await ClaimAsync(o, version)) return Stale();
+        var changed = ship.Carrier != carrier || ship.TrackingNumber != tn;
         ship.Carrier = carrier; ship.TrackingNumber = tn; if (service is not null) ship.Service = service.Trim();
+        if (changed) { ship.TrackingStatus = null; ship.TrackingStatusDetail = null; ship.Eta = null; ship.TrackingStatusAt = null; ship.TrackingRegisteredAt = null; ship.LastTrackingAt = null; }
         db.AddEvent(o.Id, "order.tracking_updated", Party.Seller, actor, $"{carrier} {tn}", time.UtcNow());
-        outbox.Enqueue("order.tracking_updated", o.SellerId, o.MarketplaceOrderId, new { order = Ref(o), shipmentId = ship.Id, carrier, trackingNumber = tn, trackingUrl = Tracking.Url(carrier, tn) });
-        return await SaveAsync(o, "order.changed");
+        outbox.Enqueue("order.tracking_updated", o.SellerId, o.MarketplaceOrderId, new
+        {
+            order = Ref(o), shipmentId = ship.Id, carrier, trackingNumber = tn, trackingUrl = Tracking.Url(carrier, tn),
+            status = ship.TrackingStatus, statusDetail = ship.TrackingStatusDetail, eta = ship.Eta, events = Array.Empty<object>()
+        });
+        var res = await SaveAsync(o, "order.changed");
+        if (res.Ok && changed) await tracker.RegisterAsync(ship);
+        return res;
     }
 
     public async Task<Res> MarkDeliveredAsync(SellerOrder o, Guid actor, int? version, Party by = Party.Seller, string? tracking = null, DateTime? at = null)
@@ -229,6 +248,61 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         foreach (var s in o.Shipments) s.DeliveredAt ??= when;
         db.AddEvent(o.Id, "order.delivered", by, by == Party.Seller ? actor : null, by == Party.Buyer ? "Delivery confirmed by the marketplace" : "Marked delivered", now);
         outbox.Enqueue("order.delivered", o.SellerId, o.MarketplaceOrderId, new { order = Ref(o), deliveredAt = when, by = by.ToString().ToLowerInvariant() });
+        return await SaveAsync(o, "order.changed");
+    }
+
+    // ---- tracking-driven changes (workstream K) --------------------------------------------------------------------------
+    /// <summary>
+    /// A carrier reported this shipment delivered. The caller has already staged the shipment's tracking fields and history in the context; this claims the order,
+    /// marks the shipment, moves the order to Delivered (through the state machine) when every shipment has arrived, queues the outbox events and saves it all at once.
+    /// Payments release timing keeps working: it reads Status + DeliveredAt, which are set exactly as for a manual "mark delivered".
+    /// </summary>
+    public async Task<Res> ShipmentDeliveredAsync(SellerOrder o, Shipment ship, DateTime when)
+    {
+        if (!await ClaimAsync(o, null)) return Stale();
+        var now = time.UtcNow();
+        ship.DeliveredAt ??= when;
+        ship.TrackingStoppedAt ??= now;
+        var orderDelivered = false;
+        if (o.Status == OrderStatus.Shipped && o.Shipments.All(s => s.DeliveredAt != null) && OrderStateMachine.Can(o.Status, OrderStatus.Delivered))
+        {
+            OrderStateMachine.Move(o, OrderStatus.Delivered);
+            o.DeliveredAt = when;
+            orderDelivered = true;
+            db.AddEvent(o.Id, "order.delivered", Party.System, null, "Delivered (carrier tracking)", now);
+            outbox.Enqueue("order.delivered", o.SellerId, o.MarketplaceOrderId, new { order = Ref(o), deliveredAt = when, by = "carrier" });
+        }
+        else db.AddEvent(o.Id, "shipment.delivered", Party.System, null, $"{ship.Carrier} {ship.TrackingNumber}", now);
+        outbox.Enqueue("shipment.delivered", o.SellerId, o.MarketplaceOrderId, new
+        {
+            order = Ref(o), shipmentId = ship.Id, carrier = ship.Carrier, trackingNumber = ship.TrackingNumber, deliveredAt = when, orderDelivered
+        });
+        return await SaveAsync(o, "order.changed");
+    }
+
+    /// <summary>
+    /// Undoes a shipment whose label was refunded: units go back on hand, the order returns to Accepted / Partially shipped and the shipment is removed.
+    /// The caller stages its own changes (label status, ledger credit) first; they commit together with this. Conflict when the order has moved on.
+    /// </summary>
+    public async Task<Res> ReopenShipmentAsync(SellerOrder o, Guid shipmentId, Guid? actor, string text)
+    {
+        var ship = o.Shipments.FirstOrDefault(s => s.Id == shipmentId);
+        if (ship is null) return Res.Fail(404, "not_found", "Shipment not found.");
+        if (o.Status is not (OrderStatus.Shipped or OrderStatus.PartiallyShipped) || ship.DeliveredAt is not null) return Res.Conflict("This order has moved on, so the shipment stays as it is.");
+        if (!await ClaimAsync(o, null)) return Stale();
+        var now = time.UtcNow();
+        foreach (var sl in ship.Lines)
+        {
+            var line = o.Lines.First(l => l.Id == sl.OrderLineId);
+            line.ShippedQty -= sl.Quantity;
+            await inventory.AdjustAsync(o.SellerId, line.ProductId, line.VariantId, sl.Quantity);   // back on hand (they left stock when the label shipped)
+        }
+        o.Shipments.Remove(ship);
+        db.Shipments.Remove(ship);
+        o.Status = o.Lines.Any(l => l.ShippedQty > 0) ? OrderStatus.PartiallyShipped : OrderStatus.Accepted;   // deliberate: a refunded label is not a state-machine move
+        o.ShippedAt = null;
+        db.AddEvent(o.Id, "shipment.voided", actor is null ? Party.System : Party.Seller, actor, text, now);
+        outbox.Enqueue("shipment.voided", o.SellerId, o.MarketplaceOrderId, new { order = Ref(o), shipmentId = ship.Id, carrier = ship.Carrier, trackingNumber = ship.TrackingNumber });
         return await SaveAsync(o, "order.changed");
     }
 

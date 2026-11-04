@@ -67,6 +67,10 @@ public class SellerOrder
     // flags
     public bool Oversold { get; set; }
     public bool CancelRequested { get; set; }
+    /// <summary>Set by a tracking exception (failure / return to sender); cleared when tracking recovers or the seller dismisses it.</summary>
+    public bool NeedsAttention { get; set; }
+    public string? AttentionReason { get; set; }
+    public DateTime? AttentionAt { get; set; }
 
     // timestamps
     public DateTime? AcceptedAt { get; set; }
@@ -126,8 +130,19 @@ public class Shipment
     public string Method { get; set; } = "carrier";
     /// <summary>Normalized tracking status (see <see cref="TrackingStatus"/>); null for shipments nobody tracks.</summary>
     public string? TrackingStatus { get; set; }
+    /// <summary>Provider/event time of the newest status applied (an older update never overwrites a newer one).</summary>
     public DateTime? TrackingStatusAt { get; set; }
     public DateTime? Eta { get; set; }
+    // ---- carrier tracking and labels (workstream K) ----
+    public string? TrackingStatusDetail { get; set; }
+    /// <summary>Last webhook or poll that touched this shipment (the reconciler polls when this is 24 h old).</summary>
+    public DateTime? LastTrackingAt { get; set; }
+    public DateTime? TrackingRegisteredAt { get; set; }
+    /// <summary>Set when tracking stopped (delivered, 60 days, voided).</summary>
+    public DateTime? TrackingStoppedAt { get; set; }
+    /// <summary>Per-shipment poll lease: only the instance that atomically set this polls the shipment.</summary>
+    public DateTime? PollLockedUntil { get; set; }
+    public Guid? LabelId { get; set; }
     public List<ShipmentLine> Lines { get; set; } = [];
 }
 
@@ -364,4 +379,6 @@ public class NotificationPreference
     public bool? OverdueReply { get; set; }
     /// <summary>Payment emails (payout failed, dispute, negative balance, onboarding). Owners always get them; null = Admin default off.</summary>
     public bool? PaymentEmails { get; set; }
+    /// <summary>Shipping exception emails. Owners always get them; others only when opted in (null = off).</summary>
+    public bool? ShippingEmails { get; set; }
 }

@@ -130,7 +130,8 @@ public enum StaffPermission
     SettingsView, SettingsEdit,
     StaffView, StaffManage,
     PaymentsView, PaymentsHold, PaymentsRetry, PaymentsAdjust,
-    DeliveryView
+    DeliveryView,
+    ShippingView, ShippingRetry
 }
 
 public static class StaffPermissions
@@ -139,7 +140,7 @@ public static class StaffPermissions
     [
         StaffPermission.DashboardView, StaffPermission.ApplicationsView, StaffPermission.SellersView, StaffPermission.UsersView,
         StaffPermission.ModerationView, StaffPermission.LookupsView, StaffPermission.IntegrationsView, StaffPermission.AuditView, StaffPermission.SettingsView,
-        StaffPermission.PaymentsView, StaffPermission.DeliveryView
+        StaffPermission.PaymentsView, StaffPermission.DeliveryView, StaffPermission.ShippingView
     ];
 
     public static readonly IReadOnlyDictionary<StaffRole, HashSet<StaffPermission>> Matrix = new Dictionary<StaffRole, HashSet<StaffPermission>>
@@ -148,7 +149,7 @@ public static class StaffPermissions
         [StaffRole.ReadOnly] = ReadOnly.ToHashSet(),
         // Support: look up and help sellers/users with non-destructive account actions, incl. break-glass PII reveal and retrying (not discarding) dead letters.
         [StaffRole.Support] = ReadOnly.Concat([StaffPermission.UsersAct, StaffPermission.SellersResendVerification,
-            StaffPermission.LookupsReveal, StaffPermission.IntegrationsAct, StaffPermission.PaymentsHold, StaffPermission.PaymentsRetry]).ToHashSet(),
+            StaffPermission.LookupsReveal, StaffPermission.IntegrationsAct, StaffPermission.PaymentsHold, StaffPermission.PaymentsRetry, StaffPermission.ShippingRetry]).ToHashSet(),
         // Moderator: reported content, listings, messages, seller applications (and escalating to suspension).
         [StaffRole.Moderator] = ReadOnly.Concat([StaffPermission.ModerationAct, StaffPermission.ApplicationsDecide,
             StaffPermission.ApplicationsAssign, StaffPermission.SellersSuspend]).ToHashSet()
