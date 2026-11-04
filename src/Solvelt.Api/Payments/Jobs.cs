@@ -367,6 +367,43 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
         foreach (var jid in unbalanced)
             if (!await db.ReconciliationFlags.AnyAsync(f => f.Kind == "unbalanced_journal" && f.Detail.Contains(jid.ToString()) && f.ResolvedAt == null, ct))
             { db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "unbalanced_journal", Detail = "Journal " + jid + " does not sum to zero", CreatedAt = now }); flagged++; }
+        // a multi-seller dispute that Stripe reports as won credits nobody by itself: the credit comes from the marketplace's per-seller-order "won" event. Flag it when that event is
+        // still missing after a day, so a seller's credit is never silently lost.
+        var wonBefore = now.AddHours(-24);
+        var wonRows = await db.PaymentDisputes.AsNoTracking().Where(d => d.Status == "won" && d.ClosedAt != null && d.ClosedAt <= wonBefore).ToListAsync(ct);
+        foreach (var d in wonRows)
+        {
+            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == d.ExternalId && j.OrderId == d.OrderId && j.BookingId == d.BookingId, ct)) continue;
+            var key = $"{d.ExternalId} ({(d.OrderId ?? d.BookingId)})";
+            if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == "dispute_won_credit_missing" && f.Detail.Contains(key) && f.ResolvedAt == null, ct)) continue;
+            db.ReconciliationFlags.Add(new ReconciliationFlag { SellerId = d.SellerId, Kind = "dispute_won_credit_missing", CreatedAt = now,
+                Detail = $"Stripe reports dispute {key} as won, but the credit of {d.AmountCents} {d.Currency} (minor units) was never posted: the marketplace has not sent its won event for this seller order." });
+            flagged++;
+        }
+        var wonItems = await db.UnallocatedDisputes.AsNoTracking().Where(u => u.Status == "won" && u.ResolvedAt == null && u.EventAt <= wonBefore).ToListAsync(ct);
+        foreach (var u in wonItems)
+        {
+            if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == "dispute_won_unallocated" && f.Detail.Contains(u.ExternalId) && f.ResolvedAt == null, ct)) continue;
+            db.ReconciliationFlags.Add(new ReconciliationFlag { Kind = "dispute_won_unallocated", CreatedAt = now,
+                Detail = $"Stripe reports dispute {u.ExternalId} as won, but the marketplace has still not allocated it to seller orders ({u.AllocatedCents} of {u.AmountCents} {u.Currency} minor units): no seller credit exists." });
+            flagged++;
+        }
+        // the flags clear themselves once the credit exists (or the unallocated item was allocated / closed)
+        foreach (var fl in await db.ReconciliationFlags.Where(f => f.Kind == "dispute_won_credit_missing" && f.ResolvedAt == null).ToListAsync(ct))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(fl.Detail, @"dispute (\S+) \(([0-9a-fA-F-]{36})\)");
+            if (!m.Success || !Guid.TryParse(m.Groups[2].Value, out var scope)) continue;
+            var dp = m.Groups[1].Value;
+            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == dp && (j.OrderId == scope || j.BookingId == scope), ct)) fl.ResolvedAt = now;
+        }
+        foreach (var fl in await db.ReconciliationFlags.Where(f => f.Kind == "dispute_won_unallocated" && f.ResolvedAt == null).ToListAsync(ct))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(fl.Detail, @"dispute (\S+) as won");
+            if (!m.Success) continue;
+            var dp = m.Groups[1].Value;
+            var item = await db.UnallocatedDisputes.AsNoTracking().FirstOrDefaultAsync(u => u.ExternalId == dp, ct);
+            if (item is null || item.ResolvedAt != null) fl.ResolvedAt = now;
+        }
         await db.SaveChangesAsync(ct);
         return new(checkedN, flagged);
     }
