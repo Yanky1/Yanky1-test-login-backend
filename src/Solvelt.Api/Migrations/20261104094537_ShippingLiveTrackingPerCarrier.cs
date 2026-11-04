@@ -19,9 +19,7 @@ namespace Solvelt.Api.Migrations
                 table: "order_shipments",
                 column: "TrackingNumber");
 
-            // existing live duplicates (the earlier check was not atomic) would make the unique index fail on PostgreSQL: stop tracking on all but the newest of each
-            migrationBuilder.Sql(Solvelt.Api.Shipping.ShippingMigrationSql.StopOlderLiveDuplicates(ActiveProvider.Contains("Npgsql")));
-
+            // no data step here: the number-scoped index of the previous migration already guarantees at most one live parcel per number, so the (carrier, number) index cannot collide
             migrationBuilder.CreateIndex(
                 name: "UX_order_shipments_live_tracking",
                 table: "order_shipments",
@@ -40,6 +38,9 @@ namespace Solvelt.Api.Migrations
             migrationBuilder.DropIndex(
                 name: "UX_order_shipments_live_tracking",
                 table: "order_shipments");
+
+            // FedEx and USPS parcels may now share a string: before the number-only unique index comes back, stop the older of each pair (it would fail with 23505 otherwise)
+            migrationBuilder.Sql(Solvelt.Api.Shipping.ShippingMigrationSql.StopOlderLiveDuplicates);
 
             migrationBuilder.CreateIndex(
                 name: "UX_order_shipments_live_tracking",

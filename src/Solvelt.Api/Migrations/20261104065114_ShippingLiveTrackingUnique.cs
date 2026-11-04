@@ -14,6 +14,10 @@ namespace Solvelt.Api.Migrations
                 name: "IX_order_shipments_TrackingNumber",
                 table: "order_shipments");
 
+            // two live parcels with one number (the earlier check was not atomic) would make the unique index fail (PostgreSQL 23505): stop tracking on all but the newest of each.
+            // Edited after the fact on purpose: nothing had been deployed, and this step must run BEFORE the first unique index exists.
+            migrationBuilder.Sql(Solvelt.Api.Shipping.ShippingMigrationSql.StopOlderLiveDuplicates);
+
             migrationBuilder.CreateIndex(
                 name: "UX_order_shipments_live_tracking",
                 table: "order_shipments",
