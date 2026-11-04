@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261104094603_PaymentsLeaseOwner")]
+    [Migration("20261104102140_PaymentsLeaseOwner")]
     partial class PaymentsLeaseOwner
     {
         /// <inheritdoc />
@@ -5038,7 +5038,9 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("OrderId");
 
-                    b.HasIndex("TrackingNumber")
+                    b.HasIndex("TrackingNumber");
+
+                    b.HasIndex("Carrier", "TrackingNumber")
                         .IsUnique()
                         .HasDatabaseName("UX_order_shipments_live_tracking")
                         .HasFilter("\"Method\" = 'carrier' AND \"DeliveredAt\" IS NULL AND \"TrackingStoppedAt\" IS NULL");
