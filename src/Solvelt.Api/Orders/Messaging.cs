@@ -83,9 +83,6 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         if (m.Kind is not ("order" or "product")) return new(422, "kind", "kind must be order or product.");
         if (string.IsNullOrWhiteSpace(m.BuyerName) || m.BuyerName.Length > 120) return new(422, "buyerName", "buyerName is required (max 120 characters).");
 
-        var dup = await db.Messages.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceMessageId == m.MessageId, ct);
-        if (dup is not null) return new(200, "duplicate", "", await db.Conversations.FirstAsync(c => c.Id == dup.ConversationId, ct), dup, true);
-
         var now = time.UtcNow();
         // 1. resolve WHO the message is for from the payload (never from the thread id alone)
         Guid sellerId, brandId; Guid? orderId = null, productId = null; string subject;
@@ -104,6 +101,9 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
             if (p is null) return new(404, "not_found", "Unknown or inactive product.");
             (sellerId, brandId, productId, subject) = (p.SellerId, p.BrandId, p.Id, p.Title);
         }
+        // idempotency INSIDE the resolved seller account: the unique index is (SellerId, MarketplaceMessageId), so the same messageId for another seller is another message
+        var dup = await db.Messages.AsNoTracking().FirstOrDefaultAsync(x => x.SellerId == sellerId && x.MarketplaceMessageId == m.MessageId, ct);
+        if (dup is not null) return new(200, "duplicate", "", await db.Conversations.FirstAsync(c => c.Id == dup.ConversationId, ct), dup, true);
         // 2. find the thread INSIDE that seller account: the same marketplace thread id used for two sellers is two conversations
         var conv = await db.Conversations.FirstOrDefaultAsync(c => c.SellerId == sellerId && c.MarketplaceConversationId == m.ConversationId, ct);
         if (conv is not null && (conv.OrderId != orderId || conv.ProductId != productId))
@@ -129,7 +129,7 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         catch (DbUpdateException)
         {
             db.ChangeTracker.Clear();
-            var again = await db.Messages.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceMessageId == m.MessageId, ct);
+            var again = await db.Messages.AsNoTracking().FirstOrDefaultAsync(x => x.SellerId == sellerId && x.MarketplaceMessageId == m.MessageId, ct);
             if (again is null) throw;
             return new(200, "duplicate", "", await db.Conversations.FirstAsync(c => c.Id == again.ConversationId, ct), again, true);
         }
@@ -139,7 +139,10 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
 
     public async Task<Outcome> ReportAsync(string marketplaceMessageId, string? reason)
     {
-        var msg = await db.Messages.FirstOrDefaultAsync(x => x.MarketplaceMessageId == marketplaceMessageId);
+        // the marketplace id is unique per SELLER only: it must name exactly one message, or the report could flag another seller's conversation
+        var found = await db.Messages.Where(x => x.MarketplaceMessageId == marketplaceMessageId).Take(2).ToListAsync();
+        if (found.Count > 1) return new(422, "ambiguous_message", "This message id exists for several sellers; the report cannot be matched to one message.");
+        var msg = found.FirstOrDefault();
         if (msg is null) return new(404, "not_found", "Unknown message.");
         var conv = await db.Conversations.FirstAsync(c => c.Id == msg.ConversationId);
         msg.Reported = true; msg.ReportReason = (reason ?? "reported").Length > 200 ? reason![..200] : reason ?? "reported";
@@ -153,7 +156,9 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         var state = status?.ToLowerInvariant() switch { "delivered" => DeliveryState.Delivered, "read" => DeliveryState.Read, "failed" => DeliveryState.Failed, _ => (DeliveryState?)null };
         if (state is null) return new(422, "status", "status must be delivered, read or failed.");
         var gid = Guid.TryParse(marketplaceMessageId, out var g0) ? g0 : Guid.Empty;
-        var msg = await db.Messages.FirstOrDefaultAsync(x => x.MarketplaceMessageId == marketplaceMessageId || x.Id == gid);
+        var found = await db.Messages.Where(x => x.MarketplaceMessageId == marketplaceMessageId || x.Id == gid).Take(2).ToListAsync();
+        if (found.Count > 1) return new(422, "ambiguous_message", "This message id matches several messages; the receipt cannot be matched to one.");
+        var msg = found.FirstOrDefault();
         if (msg is null || msg.Direction != MessageDirection.Seller) return new(404, "not_found", "Unknown message.");
         if (state > msg.Delivery || state == DeliveryState.Failed) msg.Delivery = state.Value;
         await db.SaveChangesAsync();

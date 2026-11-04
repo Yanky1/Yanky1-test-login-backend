@@ -35,6 +35,17 @@ public static class Signing
 
     /// <summary>Outbound webhook signature: HMAC over "{timestamp}.{body}" with the (separate) outbound secret.</summary>
     public static string SignOutbound(string secret, string timestamp, string body) => Sign(secret, timestamp + "." + body);
+
+    /// <summary>Purpose of the separate key that image downloads may be signed with (see <see cref="ImageKey"/>).</summary>
+    public const string ImagePurpose = "catalog-image";
+
+    /// <summary>
+    /// The key image requests may be signed with: <c>Orders:ImageKey</c> when configured, otherwise a SUBKEY derived from the inbound secret:
+    /// lower-case hex of HMAC-SHA256(key = the inbound secret as UTF-8, message = "solvelt.catalog-image.v1"). It is used exactly like the inbound secret (same canonical string).
+    /// It can sign image downloads only, so whoever holds it (an edge proxy, a CDN worker) cannot call any other internal endpoint.
+    /// </summary>
+    public static string ImageKey(OrderOptions o) => !string.IsNullOrEmpty(o.ImageKey) ? o.ImageKey
+        : Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(o.InboundSecret), Encoding.UTF8.GetBytes("solvelt.catalog-image.v1"))).ToLowerInvariant();
 }
 
 /// <summary>Verifies signed inbound requests: headers present, timestamp in window, signature valid, nonce unused. Returns the raw body on success.</summary>
@@ -45,9 +56,10 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
         public bool Ok => Body is not null;
     }
 
-    public async Task<Result> VerifyAsync(HttpRequest req, CancellationToken ct)
+    /// <param name="purpose">null: the request must be signed with the inbound secret. <see cref="Signing.ImagePurpose"/>: the image key is accepted as well (and the inbound secret too unless <c>Orders:ImageAcceptInboundKey</c> is false).</param>
+    public async Task<Result> VerifyAsync(HttpRequest req, CancellationToken ct, string? purpose = null)
     {
-        var res = await VerifyCoreAsync(req, ct);
+        var res = await VerifyCoreAsync(req, ct, purpose);
         // rejected signatures / stale timestamps / replays are counted for the staff integration-health page (no payload, no secrets)
         if (!res.Ok && res.Code is "bad_signature" or "stale" or "replayed" or "bad_timestamp" or "unsigned")
         {
@@ -61,7 +73,7 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
         return res;
     }
 
-    private async Task<Result> VerifyCoreAsync(HttpRequest req, CancellationToken ct)
+    private async Task<Result> VerifyCoreAsync(HttpRequest req, CancellationToken ct, string? purpose)
     {
         var o = opt.Value;
         if (string.IsNullOrEmpty(o.InboundSecret)) return new(null, 503, "inbound_not_configured", "The inbound API is not configured.");
@@ -85,7 +97,8 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
         }
         var body = ms.ToArray();
         var canonical = Signing.Canonical(ts, nonce, req.Method, Microsoft.AspNetCore.Http.Extensions.UriHelper.GetEncodedPathAndQuery(req), body);
-        if (!Signing.Verify(o.InboundSecret, canonical, sig)) return new(null, 401, "bad_signature", "Signature mismatch.");
+        var keys = purpose == Signing.ImagePurpose ? (o.ImageAcceptInboundKey ? [Signing.ImageKey(o), o.InboundSecret] : new[] { Signing.ImageKey(o) }) : [o.InboundSecret];
+        if (!keys.Any(k => Signing.Verify(k, canonical, sig))) return new(null, 401, "bad_signature", "Signature mismatch.");
 
         // replay protection: the nonce is only recorded for correctly signed requests, so strangers can't fill the table
         db.InboundNonces.Add(new InboundNonce { Nonce = nonce, ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime.AddSeconds(o.TimestampWindowSeconds * 2) });
