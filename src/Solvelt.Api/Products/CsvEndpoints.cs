@@ -167,7 +167,7 @@ public static class CsvEndpoints
                 ["price"] = "14.99", ["compare_at_price"] = "19.99", ["quantity"] = "40", ["barcode"] = "036000291452",
                 ["description"] = "Hand-glazed stoneware mug. Dishwasher and microwave safe.", ["bullet_1"] = "350 ml capacity", ["bullet_2"] = "Dishwasher safe",
                 ["weight_grams"] = "420", ["length_cm"] = "12", ["width_cm"] = "9", ["height_cm"] = "9", ["handling_days"] = "2", ["returns_days"] = "30", ["warranty_months"] = "12",
-                ["search_terms"] = "mug cup coffee tea ceramic"
+                ["search_terms"] = "mug, coffee cup, tea, ceramic"
             };
             sb.AppendLine(string.Join(',', CsvFormat.Columns.Select(col => CsvFormat.Cell(example.GetValueOrDefault(col)))));
             return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv; charset=utf-8", "solvelt-products-template.csv");
