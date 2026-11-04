@@ -20,6 +20,7 @@ Secrets: **dev** → `dotnet user-secrets set "Section:Key" "value"` in `src/Sol
 `Email:Provider` = `Smtp` | `Resend` | `Sink` (in-memory; Testing/dev only).
 * **SMTP (MailKit)**: `SmtpHost`, `SmtpPort`, `SmtpUseSsl` (STARTTLS), `SmtpUser`, `SmtpPassword`, `FromAddress`.
 * **Resend (HTTP API)**: create an API key with *Sending access*, set `Email:ResendApiKey`; verify the sending domain in Resend.
+* **Support address (required outside Development/Testing)**: set `Email:SupportAddress` to a real, monitored address (shown as "Enquiries" in every email footer and used as a `mailto:` link). Plain addresses only (letters, digits, `. _ + -`); `?`, `&`, `%`, quotes and spaces are refused. Falls back to `Phone:HelpContact` when that is a plain address. **The host refuses to start** if neither is set or the result is a placeholder (`example.*`, `.invalid`, `.localhost`).
 * **Sender domain**: publish **SPF** (`v=spf1 include:<provider> -all`), **DKIM** (CNAME/TXT records from the provider) and **DMARC** (`_dmarc` TXT `v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain`). Send from a subdomain such as `mail.example.com`.
 
 ## Cloudflare Turnstile

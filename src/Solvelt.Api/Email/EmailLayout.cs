@@ -23,9 +23,20 @@ public static class EmailLayout
         return DefaultSupport;
     }
 
-    private static bool IsPlainAddress(string? v) =>
-        !string.IsNullOrWhiteSpace(v) && v.Trim() is var a && a.Length <= 254 && a.IndexOfAny([' ', '"', '<', '>', '\r', '\n', '\t', ',', ';']) < 0
-        && System.Net.Mail.MailAddress.TryCreate(a, out var m) && m.Address == a && m.Host.Contains('.');
+    // Conservative on purpose: the address becomes a mailto: link, so '?' and '&' (mailto?bcc=...&cc=...), '%', '#', quotes, spaces and
+    // anything else that could add a header or break out of the attribute are refused, not escaped.
+    private static readonly System.Text.RegularExpressions.Regex PlainAddress =
+        new(@"^[A-Za-z0-9._+\-]{1,64}@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static bool IsPlainAddress(string? v) => !string.IsNullOrWhiteSpace(v) && v.Trim() is var a && a.Length <= 254 && PlainAddress.IsMatch(a);
+
+    /// <summary>True for reserved example domains (example.com/org/net, any *.example.* label, .example, .invalid, .localhost): a placeholder is never a real support address.</summary>
+    public static bool IsPlaceholderAddress(string address)
+    {
+        var host = address[(address.LastIndexOf('@') + 1)..].ToLowerInvariant();
+        var labels = host.Split('.');
+        return labels.Contains("example") || labels[^1] is "invalid" or "localhost";
+    }
 
     /// <summary>Fills the support token in both parts (HTML-encoded in the HTML part).</summary>
     public static EmailMessage Resolve(EmailMessage m, string support) =>
