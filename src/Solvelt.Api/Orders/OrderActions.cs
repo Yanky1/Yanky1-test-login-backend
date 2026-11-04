@@ -137,6 +137,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (carrier is null) return Res.Invalid("Choose a carrier: " + string.Join(", ", Tracking.Carriers) + ".", "carrier");
         var tn = localCode ?? trust?.TrackingNumber ?? Tracking.Normalize(req.TrackingNumber);
         if (localCode is null && trust is null && !Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
+        if (localCode is null && trust is null && await DuplicateTrackingAsync(carrier, tn, null) is { } inUse) return inUse;
         if ((trust?.Service ?? req.Service) is { Length: > 60 }) return Res.Invalid("The service name is too long.", "service");
         var now = time.UtcNow();
         var shippedAt = req.ShippedAt is { } s ? OrderSupport.Utc(s) : now;
@@ -204,6 +205,13 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         return r;
     }
 
+    /// <summary>A carrier tracking number typed in by hand may not already sit on another live shipment (any account): the carrier's updates for it would land on the wrong order.</summary>
+    private async Task<Res?> DuplicateTrackingAsync(string carrier, string tn, Guid? exceptShipment)
+    {
+        var taken = await db.Shipments.AnyAsync(s => s.TrackingNumber == tn && s.Method == "carrier" && s.Id != exceptShipment && s.DeliveredAt == null && (s.Carrier == carrier || s.Carrier == "Other" || carrier == "Other"));
+        return taken ? Res.Conflict("This tracking number is already used on another shipment. Check the number.", "tracking_in_use") : null;
+    }
+
     public async Task<Res> EditTrackingAsync(SellerOrder o, Guid shipmentId, Guid actor, int? version, string? carrierIn, string? trackingIn, string? service)
     {
         var ship = o.Shipments.FirstOrDefault(s => s.Id == shipmentId);
@@ -213,6 +221,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         if (carrier is null) return Res.Invalid("Choose a carrier.", "carrier");
         var tn = Tracking.Normalize(trackingIn ?? ship.TrackingNumber);
         if (!Tracking.Valid(carrier, tn)) return Res.Invalid($"That doesn't look like a {carrier} tracking number.", "tracking_format");
+        if (ship.LabelId is null && (ship.Carrier != carrier || ship.TrackingNumber != tn) && await DuplicateTrackingAsync(carrier, tn, ship.Id) is { } inUse) return inUse;
         if (!await ClaimAsync(o, version)) return Stale();
         var changed = ship.Carrier != carrier || ship.TrackingNumber != tn;
         ship.Carrier = carrier; ship.TrackingNumber = tn; if (service is not null) ship.Service = service.Trim();
@@ -261,6 +270,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     {
         if (!await ClaimAsync(o, null)) return Stale();
         var now = time.UtcNow();
+        when = when > now ? now : when < ship.ShippedAt ? ship.ShippedAt : when;   // like MarkDelivered: a carrier clock can't deliver before shipping (which would release the payout early) or in the future
         ship.DeliveredAt ??= when;
         ship.TrackingStoppedAt ??= now;
         var orderDelivered = false;
