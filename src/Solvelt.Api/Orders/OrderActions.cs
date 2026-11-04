@@ -30,7 +30,7 @@ public record ReturnDecision(int? Version, string? Reason, string? Note, bool? R
 /// An order is "claimed" with an atomic version bump first, so two concurrent actions on the same order can never both apply their side effects.
 /// </summary>
 public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox outbox, TimeProvider time,
-    IAuditLog audit, OrderNotifier notifier, ShipmentTracker tracker)
+    IAuditLog audit, OrderNotifier notifier, ShipmentTracker tracker, Shipping.ShippingTestHooks? hooks = null)
 {
 
     public IQueryable<SellerOrder> Full(IQueryable<SellerOrder> q) => q.Include(o => o.Lines).Include(o => o.Shipments).ThenInclude(s => s.Lines);
@@ -215,6 +215,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     {
         var taken = await db.Shipments.AnyAsync(s => s.TrackingNumber == tn && s.Method == "carrier" && s.Id != exceptShipment && s.DeliveredAt == null && s.TrackingStoppedAt == null && (s.Carrier == carrier || s.Carrier == "Other" || carrier == "Other"));
         // generic on purpose: the answer must not tell a seller that ANOTHER account is using the number
+        if (!taken && hooks?.AfterTrackingCheck is { } pause) await pause();
         return taken ? Res.Conflict("This tracking number can't be used. Check the number and try again.", "tracking_in_use") : null;
     }
 
