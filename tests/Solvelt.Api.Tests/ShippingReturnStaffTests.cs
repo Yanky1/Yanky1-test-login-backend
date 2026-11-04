@@ -122,6 +122,7 @@ public class ShippingReturnTests
         Assert.Equal("voided", (string)v["label"]!["status"]!);
         Assert.Single(Ship.Journals(f, s.Seller, "shipping_label_refund"));
         Assert.Equal("ReturnApproved", Orders.St(await Orders.Detail(s.Owner, id)));              // a return label refund never reopens the order
+        Assert.False(string.IsNullOrWhiteSpace((string?)(await Orders.Detail(s.Owner, id))["accountTimeZone"]));   // the zone the portal shows shipping dates in
         var rs1 = (await Orders.Detail(s.Owner, id))["returnShipments"]!.AsArray();
         Assert.True((bool)rs1.Single()!["voided"]!);                                               // the order page can offer a new label again
         var again = await s.Owner.Post($"{Base}/orders/{id}/returns/{rid}/label", new { package = Ship.Pkg(pkg) });
