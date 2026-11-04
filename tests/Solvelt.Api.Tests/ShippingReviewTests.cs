@@ -109,16 +109,21 @@ public class ShippingReviewTests
         var gate = new TaskCompletionSource();
         f.Provider.PurchaseGate = gate.Task;                                                                          // the winner stays "in flight" until we say so: no timing guesses
         var first = Ship.Buy(s.Owner, id, q, r0); var second = Ship.Buy(s.Owner, id, q, r1);
-        var loserTask = await Task.WhenAny(first, second);                                                            // only the rejected one can answer while the purchase is held
-        var loserResponse = await loserTask;
-        Assert.Equal(0, f.Provider.Purchases);                                                                         // and the provider was not called for it
-        gate.SetResult();
-        var winner = await (loserTask == first ? second : first);
-        var results = new[] { loserResponse, winner };
-        Assert.Equal(1, f.Provider.Purchases);
-        Assert.Single(Ship.Journals(f, s.Seller, "shipping_label")); Assert.Single(Ship.Shipments(f, id));
-        var loser = results.Single(r => r.StatusCode == HttpStatusCode.Conflict);
-        Assert.Equal("purchase_in_progress", await Orders.Code(loser));
+        try
+        {
+            // only the rejected one can answer while the purchase is held; without the in-progress guard BOTH would sit at the gate, so this wait is bounded: the test FAILS (it must never hang)
+            var loserTask = await Task.WhenAny(first, second).WaitAsync(TimeSpan.FromSeconds(30));
+            var loserResponse = await loserTask;
+            gate.SetResult();
+            var winner = await (loserTask == first ? second : first).WaitAsync(TimeSpan.FromSeconds(30));
+            var results = new[] { loserResponse, winner };
+            Assert.Equal(1, f.Provider.PurchaseCalls);                                                                // the provider was reached ONCE: the loser never got there
+            Assert.Equal(1, f.Provider.Purchases);
+            Assert.Single(Ship.Journals(f, s.Seller, "shipping_label")); Assert.Single(Ship.Shipments(f, id));
+            var loser = results.Single(r => r.StatusCode == HttpStatusCode.Conflict);
+            Assert.Equal("purchase_in_progress", await Orders.Code(loser));
+        }
+        finally { gate.TrySetResult(); f.Provider.PurchaseGate = null; }                                              // never leave a purchase blocked behind a failed assertion
     }
 
     // ---- 4: redaction covers the shipping data -----------------------------------------------------------------------------------------------
@@ -772,6 +777,22 @@ public class ShippingRound5Tests
             sa.TrackingStoppedAt = t0; db.SaveChanges(); return 0;                                                      // A was stopped NOW (long after B was created)
         });
         Assert.Equal("applied", await Ship.Track(f, f.WithDb(db => db.Shipments.AsNoTracking().First(x => x.OrderId == b).TrackingNumber), "delivered", t0.AddMinutes(-10)));
+        Assert.Equal(OrderStatus.Delivered, Ship.Order(f, b).Status);
+    }
+
+    [Fact]
+    public async Task An_earlier_parcel_of_another_carrier_with_the_same_string_does_not_block_a_real_delivery()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, a, _) = await Ship.Accepted(s); var (_, b, _) = await Ship.Accepted(s);
+        const string tn = "94001118992230000077";                                                                      // valid as FedEx AND as USPS
+        await Orders.Ok(Orders.Act(s.Owner, a, "ship", Orders.Ship(carrier: "FedEx", tracking: tn)));
+        var t0 = Now(f);
+        Assert.Equal("applied", await Ship.Track(f, tn, "delivered", t0, "fedex-1", carrier: "fedex"));                // the FedEx parcel is delivered
+        f.Time.Advance(TimeSpan.FromMinutes(3));
+        await Orders.Ok(Orders.Act(s.Owner, b, "ship", Orders.Ship(carrier: "USPS", tracking: tn)));                   // the same string, another carrier: a different parcel
+        Assert.Equal("applied", await Ship.Track(f, tn, "delivered", t0, "usps-1", carrier: "usps"));                  // the USPS parcel's real delivery (stamped before it was typed in, within the grace) still lands
         Assert.Equal(OrderStatus.Delivered, Ship.Order(f, b).Status);
     }
 

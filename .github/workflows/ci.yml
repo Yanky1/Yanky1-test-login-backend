@@ -5,6 +5,7 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 75   # a hung test must turn the job red, not hold it for the 6 h default
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

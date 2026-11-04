@@ -111,6 +111,8 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
     /// <summary>A poll of this tracking number blows up with an unexpected (non-provider) exception: proves one bad parcel never stops the reconciler.</summary>
     public string? ThrowForTracking { get; set; }
     public bool UnsupportedCarriers { get; set; }
+    /// <summary>Every call that REACHED the provider's purchase endpoint, counted before any delay or gate (Purchases counts only the ones that went through).</summary>
+    public int PurchaseCalls;
     public int Purchases, RateCalls, RefundRequests, Registrations, TrackingPolls;
     public List<string> Registered { get; } = [];
 
@@ -147,6 +149,7 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
 
     public async Task<PurchasedLabel> PurchaseAsync(PurchaseRequest r, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref PurchaseCalls);
         if (PurchaseDelayMs > 0) await Task.Delay(PurchaseDelayMs, ct);
         if (PurchaseGate is { } gate) await gate;
         if (FailPurchaseWith is { } f) throw new ShippingProviderException(f, "The provider could not buy this label.", f == "provider_error");
