@@ -77,7 +77,7 @@ public static class CatalogTracking
         nameof(Product.CatalogVersion), nameof(Product.CatalogListed), nameof(Product.CatalogEverListed), nameof(Product.CatalogUnlistReason), nameof(Product.CatalogStockState), nameof(Product.CatalogDeliveryState),
         nameof(Product.ModerationPrevStatus), nameof(Product.ModeratedBy), nameof(Product.CreatedBy), nameof(Product.CreatedAt), nameof(Product.PublishedAt),
         nameof(Product.MetaTitle), nameof(Product.MetaDescription), nameof(Product.DefaultPackageId), nameof(Product.ShippingJson),
-        nameof(Product.WeightGrams), nameof(Product.LengthMm), nameof(Product.WidthMm), nameof(Product.HeightMm), nameof(Product.MaxPerOrder)
+        nameof(Product.MaxPerOrder)
     ];
 
     internal sealed class Touch

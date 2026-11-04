@@ -101,11 +101,14 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                     sale = p.SaleCents is { } sale ? new { amountMinor = sale, startsAt = p.SaleStart, endsAt = p.SaleEnd, active = ProductRules.EffectiveSale(p, now) is not null } : null
                 },
                 availability = new { state, allowBackorder = p.AllowBackorder },
+                weightGrams = p.WeightGrams,
+                dimensionsMm = p.LengthMm is { } dl && p.WidthMm is { } dw && p.HeightMm is { } dh ? new { l = dl, w = dw, h = dh } : null,
                 options = options[p.Id].Select(o => new { name = o.Name, values = ProductJson.Values(o.ValuesJson) }).ToList(),
                 variants = vs.Select(v => new
                 {
                     variantId = v.Id, sku = v.Sku, barcode = v.Barcode, values = ProductJson.Values(v.ValuesJson),
                     price = new { amountMinor = v.PriceCents ?? baseCents, currency = Currency },
+                    weightGrams = p.WeightGrams,   // variants have no weight of their own: they ship at the product's weight
                     availability = new { state = CatalogRules.StockState(v.Stock, v.Reserved, p.AllowBackorder, p.LowStockAlert) },
                     imageIds = imgs.Where(i => i.VariantId == v.Id).Select(i => i.Id).ToList()
                 }).ToList(),
