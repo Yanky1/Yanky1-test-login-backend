@@ -39,6 +39,12 @@ builder.Services.Configure<LockoutSettings>(cfg.GetSection(LockoutSettings.Secti
 builder.Services.Configure<RateLimitOptions>(cfg.GetSection(RateLimitOptions.Section));
 builder.Services.Configure<TurnstileOptions>(cfg.GetSection(TurnstileOptions.Section));
 builder.Services.Configure<EmailOptions>(cfg.GetSection(EmailOptions.Section));
+{
+    // The footer of every email shows this address: a placeholder must never ship (same rule as the other secrets and keys).
+    var support = EmailLayout.ResolveSupport(cfg[$"{EmailOptions.Section}:SupportAddress"], cfg[$"{PhoneOptions.Section}:HelpContact"], out var supportIsDefault);
+    if (!env.IsDevelopment() && !env.IsEnvironment("Testing") && (supportIsDefault || EmailLayout.IsPlaceholderAddress(support)))
+        throw new InvalidOperationException("Email:SupportAddress must be set to a real address outside Development/Testing (it is shown in every email footer; the default and example.* addresses are placeholders).");
+}
 builder.Services.Configure<PasskeyConfig>(cfg.GetSection(PasskeyConfig.Section));
 builder.Services.Configure<StorageOptions>(cfg.GetSection(StorageOptions.Section));
 builder.Services.Configure<ExternalAuthOptions>(cfg.GetSection(ExternalAuthOptions.Section));

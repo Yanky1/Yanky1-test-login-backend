@@ -136,12 +136,68 @@ public class EmailStyleTests
     }
 
     [Theory]
-    [InlineData("a\"><script>@x.co")] [InlineData("a b@x.co")] [InlineData("<a@x.co>")] [InlineData("a@x")] [InlineData("a@x.co, b@x.co")] [InlineData("javascript:alert(1)")]
+    [InlineData("a\"><script>@x.co")] [InlineData("a?bcc=e@x.co")] [InlineData("a&amp;cc=e@x.co")] [InlineData("a&cc=e@x.co")] [InlineData("a%0Abcc:e@x.co")] [InlineData("a#b@x.co")] [InlineData("a b@x.co")] [InlineData("<a@x.co>")] [InlineData("a@x")] [InlineData("a@x.co, b@x.co")] [InlineData("javascript:alert(1)")]
     public async Task Unusable_support_addresses_never_reach_the_email(string bad)
     {
         var m = await ThroughMailer(Templates.PasswordChanged("a@b.co"), supportAddress: bad, helpContact: bad);
         Assert.Contains("mailto:support@example.com", m.Html);
         Assert.DoesNotContain("<script>", m.Html);
         Assert.DoesNotContain(bad, m.Html + m.Text);
+    }
+
+    [Fact]
+    public void The_banner_title_never_repeats_the_heading()
+    {
+        foreach (var m in All())
+        {
+            var banner = System.Text.RegularExpressions.Regex.Match(m.Html, @"color:#f8ebb8"">([^<]*)</p>").Groups[1].Value;
+            var heading = System.Text.RegularExpressions.Regex.Match(m.Html, @"letter-spacing:-0.5px;color:#0d231e;margin:0 0 16px"">([^<]*)</h1>").Groups[1].Value;
+            Assert.NotEqual(heading, banner);
+        }
+        Assert.Contains(">Seller portal</p>", Templates.SignupExisting("a@b.co", "https://x/l", "https://x/r").Html);
+    }
+
+    [Theory]
+    [InlineData("support@example.com", true)] [InlineData("a@mail.example.org", true)] [InlineData("a@example.net", true)] [InlineData("a@corp.example", true)]
+    [InlineData("a@x.invalid", true)] [InlineData("a@x.localhost", true)] [InlineData("help@solvelt.io", false)] [InlineData("help@examples-r-us.com", false)]
+    public void Placeholder_addresses_are_recognised(string address, bool placeholder) => Assert.Equal(placeholder, EmailLayout.IsPlaceholderAddress(address));
+}
+
+/// <summary>The support address is shown in every footer, so a real deployment must not start with the placeholder.</summary>
+public class SupportAddressStartupTests
+{
+    private sealed class WithSupport(string? address, string? helpContact = null) : ProductionFactory
+    {
+        protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder b)
+        {
+            base.ConfigureWebHost(b);
+            b.UseSetting("Email:SupportAddress", address ?? "");
+            if (helpContact is not null) b.UseSetting("Phone:HelpContact", helpContact);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData("support@example.com")] [InlineData("help@corp.example.org")] [InlineData("not an address")] [InlineData("a?bcc=e@x.co")]
+    public void Production_refuses_to_start_without_a_real_support_address(string? address)
+    {
+        using var f = new WithSupport(address);
+        var ex = Assert.ThrowsAny<Exception>(() => f.CreateClient());
+        Assert.Contains("Email:SupportAddress", ex.ToString());
+    }
+
+    [Fact]
+    public void Production_starts_with_a_real_Email_SupportAddress()
+    {
+        using var f = new WithSupport("help@solvelt.io");
+        using var c = f.CreateClient();
+        Assert.NotNull(c);
+    }
+
+    [Fact]
+    public void Phone_HelpContact_is_accepted_as_the_fallback_when_it_is_a_real_address()
+    {
+        using var f = new WithSupport(null, "care@solvelt.io");
+        using var c = f.CreateClient();
+        Assert.NotNull(c);
     }
 }
