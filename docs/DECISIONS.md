@@ -294,4 +294,8 @@
 | I20 | Release anchor | An order without a delivery mark releases from its completion, else its last return-received/refund time, using the same delay and window. | Review round 3 |
 | I21 | Lease and reconciliation | Lease renewed at every step; reconciliation limited to `ReconcileDays` (35); an expired lease is never revived. | Review round 3 |
 | I22 | Inquiries and labels | Inquiries move no money but are respondable with a due date and one email; `Negative` = owed < 0 so a label debit against a pending sale is not a negative balance. | Review round 3 |
+| I23 | Lease owner token | Every job run gets a random owner token stored in `payment_job_leases.Owner`. Renew and release are conditional on owner and an unexpired lease; a run that loses its lease aborts (`LeaseLostException`) instead of running beside the new owner. The lease is re-checked at the top of every loop iteration. Migration `PaymentsLeaseOwner`. |
+| I24 | 409 on handler and commit conflicts | Any PostgreSQL 40001/40P01 raised by a handler or by COMMIT answers `409 concurrent_update` (the sender retries). No rollback is attempted after a failed COMMIT (the transaction is already completed). In the release job a failed commit skips that order. |
+| I25 | Delivery time | `DeliveredAt` is never earlier than any shipment's `ShippedAt` or `DeliveredAt` (`OrderActions.LastOf`), so the release hold and return window start from the last event. |
+| I26 | `inquiry_review` | Stripe `warning_under_review` maps to `inquiry_review` (moves no money, counted as open, still respondable). Reconciliation covers transfers created or updated inside the window. The admin ledger accepts a `reference` filter like the seller ledger. |
 

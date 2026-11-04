@@ -116,10 +116,10 @@ public class PaymentTransferTests
     public async Task The_job_lease_lets_only_one_instance_in_and_expires()
     {
         using var f = new PayFactory();
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync("payments-transfers")));
-        Assert.False(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync("payments-transfers")));
+        Assert.NotNull(await Pay.Lease(f, "payments-transfers"));
+        Assert.Null(await Pay.Lease(f, "payments-transfers"));
         f.Time.Advance(TimeSpan.FromMinutes(10));
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync("payments-transfers")));
+        Assert.NotNull(await Pay.Lease(f, "payments-transfers"));
     }
 
     [Fact]
