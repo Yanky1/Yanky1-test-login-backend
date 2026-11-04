@@ -75,7 +75,7 @@ public static class CatalogTracking
         nameof(Product.CostCents), nameof(Product.QualityScore), nameof(Product.IsReady), nameof(Product.ImageSeq), nameof(Product.Version), nameof(Product.UpdatedAt),
         nameof(Product.CatalogVersion), nameof(Product.CatalogListed), nameof(Product.CatalogEverListed), nameof(Product.CatalogUnlistReason), nameof(Product.CatalogStockState),
         nameof(Product.ModerationPrevStatus), nameof(Product.ModeratedBy), nameof(Product.CreatedBy), nameof(Product.CreatedAt), nameof(Product.PublishedAt),
-        nameof(Product.SearchTerms), nameof(Product.MetaTitle), nameof(Product.MetaDescription), nameof(Product.DefaultPackageId), nameof(Product.ShippingJson),
+        nameof(Product.MetaTitle), nameof(Product.MetaDescription), nameof(Product.DefaultPackageId), nameof(Product.ShippingJson),
         nameof(Product.WeightGrams), nameof(Product.LengthMm), nameof(Product.WidthMm), nameof(Product.HeightMm), nameof(Product.MaxPerOrder)
     ];
 

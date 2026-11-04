@@ -58,7 +58,7 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
   "listingId": "0a5d2c1e-...", "version": 1840, "listed": true, "type": "product",
   "title": "Speckled stoneware coffee mug", "handle": "speckled-mug", "condition": "new", "conditionNote": null,
   "sku": "MUG-001", "barcode": null,
-  "bullets": ["Dishwasher safe"], "description": "Markdown source", "descriptionHtml": "<p>Markdown source</p>",
+  "bullets": ["Dishwasher safe"], "searchTerms": ["mug", "coffee cup"], "description": "Markdown source", "descriptionHtml": "<p>Markdown source</p>",
   "price": { "amountMinor": 1999, "currency": "USD", "compareAtMinor": 2499,
              "sale": { "amountMinor": 1799, "startsAt": null, "endsAt": "2026-12-01T00:00:00Z", "active": true } },
   "availability": { "state": "in_stock", "allowBackorder": false },
@@ -79,6 +79,7 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
   "publishedAt": "...", "updatedAt": "..."
 }
 ```
+* **`searchTerms`** is a `string[]` built from the seller's search keywords (one free-text field of the product form): split on commas, semicolons and line breaks, trimmed, blanks and case-insensitive duplicates removed, order kept; an empty array when there are none. Editing the keywords creates a new version.
 * **Money** is integer minor units plus `currency` (USD today). `variants[].price` is already resolved (the variant's own price, else the listing's). The sale window is sent
   raw (`startsAt`/`endsAt`); `active` is evaluated when the document is built, so evaluate the dates yourself if you cache the document. Sale start/end passing does not create a new version.
 * **Availability** is a *state*, never a quantity: `in_stock`, `low_stock` (at or below the seller's low-stock alert), `out_of_stock`, `backorder` (out of stock but backorders allowed);
