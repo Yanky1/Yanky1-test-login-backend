@@ -117,7 +117,7 @@ public static class MessageEndpoints
             var assignees = new List<object>();
             if (canAssign)
             {
-                var ms = await db.Memberships.AsNoTracking().Where(m => m.SellerId == a.SellerId && m.Status == MembershipStatus.Active && m.Role != AccountRole.Viewer && m.Role != AccountRole.Driver)   // Role is stored as text: compare for equality, never with < or >.ToListAsync();
+                var ms = await db.Memberships.AsNoTracking().Where(m => m.SellerId == a.SellerId && m.Status == MembershipStatus.Active && m.Role != AccountRole.Viewer && m.Role != AccountRole.Driver).ToListAsync();   // Role is stored as text: compare for equality, never with < or >
                 var scoped = await db.MembershipBrands.AsNoTracking().Where(b => b.BrandId == c.BrandId).Select(b => b.MembershipId).ToListAsync();
                 var ok = ms.Where(m => m.AllBrands || m.Role >= AccountRole.Admin || scoped.Contains(m.Id)).ToList();
                 var uids = ok.Select(m => m.UserId).ToList();
