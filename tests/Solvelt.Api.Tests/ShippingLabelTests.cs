@@ -425,6 +425,19 @@ public class ShippingLabelTests
         Assert.Equal(HttpStatusCode.UnprocessableEntity, (await s.Owner.Post($"{Base}/labels/bulk", new { orderIds = new Guid[0] })).StatusCode);
     }
 
+    [Fact]
+    public async Task Bulk_buy_can_carry_one_weight_for_products_that_have_none()
+    {
+        using var f = new ShipFactory();
+        var (s, _, pkg) = await Ship.NewShop(f, stock: 30);
+        var a = (await Ship.Accepted(s)).Id; var b = (await Ship.Accepted(s)).Id;
+        var without = await Orders.Node(await s.Owner.Post($"{Base}/labels/bulk", new { orderIds = new[] { a }, packageId = pkg, idempotencyKey = "no-weight" }));
+        Assert.Equal(0, (int)without["bought"]!); Assert.Equal("weight_required", (string)without["results"]![0]!["code"]!);
+        var with = await Orders.Node(await s.Owner.Post($"{Base}/labels/bulk", new { orderIds = new[] { a, b }, packageId = pkg, weightGrams = 450, idempotencyKey = "weight" }));
+        Assert.Equal(2, (int)with["bought"]!);
+        Assert.Equal(2, f.Provider.Purchases);
+    }
+
     // ---- permissions + IDOR -----------------------------------------------------------------------------------------------------------------------------
     [Fact]
     public async Task Viewer_can_look_but_never_buy_manager_only_for_their_brands_and_other_accounts_get_404_on_every_endpoint()

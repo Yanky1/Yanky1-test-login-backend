@@ -97,7 +97,10 @@ public class ReturnLabelService(AppDbContext db, IShippingProvider provider, IFi
 /// <summary>Housekeeping the webhooks can't do: register tracking that failed earlier, poll silent shipments (24 h), stop tracking (delivered / 60 days), confirm label refunds, void orphaned labels.</summary>
 public record MaintenanceSummary(int Registered, int Polled, int Stopped, int RefundsChecked, int RefundsConfirmed, int OrphansVoided);
 
-public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, TrackingService tracking, ShipmentTracker tracker, LabelService labels, IOptions<ShippingOptions> opt, TimeProvider time, ILogger<ShippingMaintenance> log)
+/// <summary>Test seam: lets a test hold two job instances between "selected the shipment" and "claimed it" so the lease is exercised deterministically.</summary>
+public class ShippingTestHooks { public Func<Guid, Task>? AfterPollCandidate { get; set; } }
+
+public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, TrackingService tracking, ShipmentTracker tracker, LabelService labels, IOptions<ShippingOptions> opt, TimeProvider time, ShippingTestHooks hooks, ILogger<ShippingMaintenance> log)
 {
     public async Task<MaintenanceSummary> RunAsync(CancellationToken ct = default)
     {
@@ -118,11 +121,14 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
         var ids = await db.Shipments.Where(s => s.Method == "carrier" && s.TrackingStoppedAt == null && s.DeliveredAt == null && (s.LastTrackingAt ?? s.ShippedAt) < due && (s.PollLockedUntil == null || s.PollLockedUntil < now))
             .OrderBy(s => s.LastTrackingAt ?? s.ShippedAt).Select(s => s.Id).Take(o.PollBatch).ToListAsync(ct);
         foreach (var id in ids)
-            if (await PollAsync(id, isReturn: false, ct)) polled++;
+        {
+            if (hooks.AfterPollCandidate is { } h) await h(id);
+            if (await PollAsync(id, false, due, ct)) polled++;
+        }
         var rids = await db.ReturnShipments.Where(s => s.TrackingStoppedAt == null && s.DeliveredAt == null && (s.LastTrackingAt ?? s.CreatedAt) < due && (s.PollLockedUntil == null || s.PollLockedUntil < now))
             .Select(s => s.Id).Take(o.PollBatch).ToListAsync(ct);
         foreach (var id in rids)
-            if (await PollAsync(id, isReturn: true, ct)) polled++;
+            if (await PollAsync(id, true, due, ct)) polled++;
 
         // 4. label refunds waiting for the provider
         var refundIds = await db.ShippingLabels.Where(l => l.Status == LabelStatus.Voiding && l.NextRefundCheckAt != null && l.NextRefundCheckAt <= now).Select(l => l.Id).Take(o.PollBatch).ToListAsync(ct);
@@ -156,12 +162,13 @@ public class ShippingMaintenance(AppDbContext db, IShippingProvider provider, Tr
         return new(registered, polled, stopped, checks, confirmed, orphans);
     }
 
-    private async Task<bool> PollAsync(Guid id, bool isReturn, CancellationToken ct)
+    /// <summary>Claims the parcel with ONE atomic UPDATE that re-checks both "not leased" and "still due": an instance that selected it before another one polled it (and released its lease) must not poll it again.</summary>
+    private async Task<bool> PollAsync(Guid id, bool isReturn, DateTime due, CancellationToken ct)
     {
         var now = time.UtcNow(); var until = now.AddMinutes(opt.Value.PollLeaseMinutes);
         var claimed = isReturn
-            ? await db.ReturnShipments.Where(s => s.Id == id && (s.PollLockedUntil == null || s.PollLockedUntil < now)).ExecuteUpdateAsync(u => u.SetProperty(s => s.PollLockedUntil, until), ct)
-            : await db.Shipments.Where(s => s.Id == id && (s.PollLockedUntil == null || s.PollLockedUntil < now)).ExecuteUpdateAsync(u => u.SetProperty(s => s.PollLockedUntil, until), ct);
+            ? await db.ReturnShipments.Where(s => s.Id == id && (s.PollLockedUntil == null || s.PollLockedUntil < now) && (s.LastTrackingAt ?? s.CreatedAt) < due).ExecuteUpdateAsync(u => u.SetProperty(s => s.PollLockedUntil, until), ct)
+            : await db.Shipments.Where(s => s.Id == id && (s.PollLockedUntil == null || s.PollLockedUntil < now) && (s.LastTrackingAt ?? s.ShippedAt) < due).ExecuteUpdateAsync(u => u.SetProperty(s => s.PollLockedUntil, until), ct);
         if (claimed != 1) return false;
         db.ChangeTracker.Clear();
         string carrier, number;

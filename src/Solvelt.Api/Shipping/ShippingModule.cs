@@ -27,6 +27,7 @@ public static class ShippingModule
         else if (dev) { builder.Services.AddSingleton<FakeShippingProvider>(); builder.Services.AddSingleton<IShippingProvider>(sp => sp.GetRequiredService<FakeShippingProvider>()); }
         else builder.Services.AddSingleton<IShippingProvider, UnconfiguredShippingProvider>();
 
+        builder.Services.AddSingleton<ShippingTestHooks>();
         builder.Services.AddScoped<LabelLinks>();
         builder.Services.AddScoped<ShipmentTracker>();
         builder.Services.AddScoped<ShippingNotifier>();
