@@ -1,17 +1,21 @@
-using System.Net;
-using System.Text;
-
 namespace Solvelt.Api.Email;
 
 public static class Templates
 {
-    private static string E(string s) => WebUtility.HtmlEncode(s);
+    /// <summary>Short title in the banner, by kind (security mails, application mails, everything else).</summary>
+    private static string BannerFor(string kind) => kind switch
+    {
+        "verify-code" or "change-email-code" or "email-changed" or "stepup-code" or "locked" or "reset-password" or "password-changed" => "Account security",
+        "signup-existing" => "Sign-up attempt",
+        "application-received" or "approved" or "needs-info" or "rejected" => "Seller application",
+        _ => "Seller portal"
+    };
 
     private static EmailMessage Build(string to, string kind, string subject, string heading, string[] paragraphs,
-        (string Label, string Url)? button = null, string? highlight = null)
+        (string Label, string Url)? button = null, string? highlight = null, (string Label, string Url)? secondary = null)
     {
-        var html = EmailLayout.Html(heading, heading, paragraphs, button, highlight, "You received this email because of activity on your Solvelt seller account.");
-        var text = EmailLayout.Text(heading, paragraphs, button, highlight);
+        var html = EmailLayout.Html(heading, heading, paragraphs, button, highlight, "You received this email because of activity on your Solvelt seller account.", BannerFor(kind), secondary);
+        var text = EmailLayout.Text(heading, paragraphs, button, highlight, secondary);
         return new EmailMessage(to, kind, subject, html, text);
     }
 
@@ -29,7 +33,7 @@ public static class Templates
 
     public static EmailMessage SignupExisting(string to, string signInLink, string resetLink) => Build(to, "signup-existing", "Someone tried to sign up with your email",
         "Sign-up attempt", ["Someone tried to create a Solvelt seller account with this email address, but you already have one. If it was you, sign in or reset your password with the links below. If not, you can ignore this email."],
-        ("Sign in", signInLink));
+        ("Sign in", signInLink), secondary: ("Reset your password", resetLink));
 
     public static EmailMessage ApplicationReceived(string to, string vendor) => Build(to, "application-received", "We received your application",
         "Application received", [$"Thanks, {vendor}. Your seller application is pending review. Management will reach out to you."]);
