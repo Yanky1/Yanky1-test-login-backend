@@ -57,3 +57,12 @@ Each item lists a short design note so it can be added later.
 * **Payments: PDF statements** - render the monthly statement (already computed by `statements/{month}`) with a server-side PDF library; CSV and on-screen exist.
 * **Payments: per-line release and partial release** - release only the delivered shipments of a partially shipped order (needs per-shipment ledger attribution).
 * **Payments: staff screens** - admin UI over the existing `/api/v1/admin/payments` endpoints (separate workstream).
+
+* **Shipping: carrier pickup scheduling** - Shippo `/pickups` behind `IShippingProvider.SchedulePickupAsync(labels, window)`; a `Pickup` row per carrier/day/address, cancelled when its labels are voided, shown on the dashboard.
+* **Shipping: insurance** - an `insured_value` on the quote request (Shippo `extra.insurance`) with the premium added to the label cost line in the ledger (`shipping_insurance` kind); claims stay in the carrier/Shippo dashboard.
+* **Shipping: multi-piece shipments** - `ShippingLabel` -> `ShippingParcel[]` (one label and tracking number per parcel under one `Shipment` group); rates are requested per parcel, the delivered rule becomes "all parcels delivered".
+* **Shipping: marketplace-paid return labels** - an order/product flag (`ReturnShippingPaidBy = marketplace`) that posts the label debit to a `Platform` expense journal instead of the seller; the `return.label_created` event already carries what the marketplace needs.
+* **Shipping rules engine** - conditions (weight, destination, value, SKU, brand) -> actions (preset, carrier/service, insurance, hold) evaluated at quote time; today only profiles, presets and the recommended rate exist.
+* **Shipping: batch manifests / SCAN forms** - Shippo `/manifests` per carrier/day/address, stored as a file, listed next to the labels; the pickup flow would attach to it.
+* **Shipping: other providers** - `EasyPostShippingProvider` / `ShipEngineShippingProvider` behind the same interface (rates, purchase, refund, tracking); provider ids on `ShippingLabel.Provider` already separate them, the webhook route is `/shipping/webhooks/{provider}`-shaped.
+* **Shipping: live Shippo verification** - run `tests/Solvelt.Api.ShippoTests` with a test token, then a live smoke test before launch (see the going-live checklist in `docs/SHIPPING.md`).

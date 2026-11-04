@@ -17,7 +17,7 @@ public record RatesRequest(Guid? FromAddressId, PackageInput? Package, List<QtyL
 public record ShipAnywayInput(string? Reason);
 public record BuyRequest(Guid? QuoteId, string? RateId, string? IdempotencyKey, ShipAnywayInput? ShipAnyway, int? Version);
 public record VoidRequest(string? Reason);
-public record BulkRequest(List<Guid>? OrderIds, Guid? PackageId, Guid? FromAddressId, string? Strategy, string? IdempotencyKey);
+public record BulkRequest(List<Guid>? OrderIds, Guid? PackageId, Guid? FromAddressId, string? Strategy, string? IdempotencyKey, int? WeightGrams = null);
 public record ReturnLabelRequest(PackageInput? Package, CustomsInput? Customs, string? Carrier, string? Service, string? IdempotencyKey);
 
 public record QuotedRate(string RateId, string Carrier, string Service, long AmountCents, string Currency, int? EstimatedDays, DateTime? EstimatedDelivery, bool MeetsDeliverBy, bool Recommended);
@@ -418,7 +418,7 @@ public class LabelService(AppDbContext db, IShippingProvider provider, IFileStor
             db.ChangeTracker.Clear();
             var o = await actions.Full(db.OrdersFor(a)).FirstOrDefaultAsync(x => x.Id == id);
             if (o is null || !a.CanWorkOnBrand(o.BrandId, true)) { results.Add(new { orderId = id, ok = false, code = "not_found", message = "Order not found." }); continue; }
-            var q = await QuoteAsync(o, a.UserId, new RatesRequest(req.FromAddressId, req.PackageId is { } p ? new PackageInput(p, null, null, null, null) : null, null, null));
+            var q = await QuoteAsync(o, a.UserId, new RatesRequest(req.FromAddressId, new PackageInput(req.PackageId, null, null, null, req.WeightGrams), null, null));
             if (!q.Ok) { results.Add(new { orderId = id, number = o.Number, ok = false, code = q.Code, message = q.Message }); continue; }
             var json = JsonSerializer.SerializeToElement(q.Data!, J);
             var rates = json.GetProperty("rates").EnumerateArray().ToList();

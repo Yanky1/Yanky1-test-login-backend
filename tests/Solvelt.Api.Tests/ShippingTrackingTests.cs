@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Shipping;
 using Solvelt.Api.Teams;
@@ -324,7 +325,15 @@ public class ShippingTrackingTests
         using var f = new ShipFactory();
         await Bought(f);
         f.Time.Advance(TimeSpan.FromHours(30));
+        // hold both instances between "found the shipment" and "claimed it": without the atomic claim both would poll
+        var arrived = 0; var gate = new TaskCompletionSource();
+        f.Services.GetRequiredService<ShippingTestHooks>().AfterPollCandidate = async _ =>
+        {
+            if (Interlocked.Increment(ref arrived) == 2) gate.TrySetResult();
+            await Task.WhenAny(gate.Task, Task.Delay(5000));
+        };
         var both = await Task.WhenAll(Ship.Maintenance(f), Ship.Maintenance(f));
+        Assert.Equal(2, arrived);                                                                // both really reached the claim together
         Assert.Equal(1, f.Provider.TrackingPolls);
         Assert.Equal(1, both.Sum(x => x.Polled));
     }
