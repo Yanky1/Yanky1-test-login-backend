@@ -13,7 +13,10 @@ public static partial class SearchTerms
 
     // anywhere inside a term: "write to me@example.com" and "call me 555-123-4567" are contact data just like the bare address or number
     [GeneratedRegex(@"[^@\s]+@[^@\s]+\.[^@\s]+")] private static partial Regex EmailAnywhere();
-    [GeneratedRegex(@"\+?\d[\d\s().\-]{5,}\d")] private static partial Regex PhoneRun();
+    [GeneratedRegex(@"\+\d[\d\s().\-]{5,}\d")] private static partial Regex InternationalPhone();                         // starts with +
+    [GeneratedRegex(@"(?<!\d)\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)")] private static partial Regex UsPhone();           // (555) 123-4567, 555-123-4567, 555 123 4567, 5551234567
+    [GeneratedRegex(@"(?<!\d)\d{10,}(?!\d)")] private static partial Regex LongDigits();                                          // a plain run of 10 or more digits (also a 12-digit UPC: rejected by documented intent)
+    [GeneratedRegex(@"(?:19|20)\d\d\s*[-\u2013]\s*(?:19|20)\d\d")] private static partial Regex YearRange();                   // "fits 2019-2023 models" is not a phone number
 
     /// <summary>The terms of the raw field, normalised; no caps and no content rules applied.</summary>
     public static List<string> Split(string? raw) =>
@@ -22,11 +25,16 @@ public static partial class SearchTerms
             .Where(t => t.Length > 0).DistinctBy(t => t.ToLowerInvariant()).ToList();
 
     /// <summary>
-    /// Contains an e-mail address or a phone number (a run of digits with spaces, dots, dashes or brackets holding at least 7 digits): personal contact data that does not belong in
-    /// public search keywords. A long plain number (a 7-digit part number) is treated the same way; short numbers such as "model 3000" are fine.
+    /// Contains an e-mail address or a phone number: personal contact data that does not belong in public search keywords. A phone is a run that starts with <c>+</c> (at least 7 digits),
+    /// a 10-digit US-style number (with or without brackets, spaces, dots or dashes), or a plain run of 10 or more digits (so a 12-digit UPC is rejected, by documented intent).
+    /// Year ranges ("fits 2019-2023 models"), lists of short numbers ("100 200 300 ml set", "2019 2020 2021") and decimals ("1.5 2.5 3.5 4.5 mm") are not phones.
     /// </summary>
-    public static bool IsContactData(string term) =>
-        EmailAnywhere().IsMatch(term) || PhoneRun().Matches(term).Any(m => m.Value.Count(char.IsDigit) >= 7);
+    public static bool IsContactData(string term)
+    {
+        if (EmailAnywhere().IsMatch(term)) return true;
+        var t = YearRange().Replace(term, " ");
+        return InternationalPhone().Matches(t).Any(m => m.Value.Count(char.IsDigit) >= 7) || UsPhone().IsMatch(t) || LongDigits().IsMatch(t);
+    }
 
     /// <summary>The error to show the seller, or null when the field is acceptable.</summary>
     public static string? Validate(string? raw)

@@ -67,7 +67,9 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
         {
             var e = await db.ContentReports.AsNoTracking().FirstOrDefaultAsync(x => x.ReportId == reportId);
             if (e is null) return null;
-            return e.Kind == kind && e.TargetRef == target && e.ReporterRef == reporter ? new(200, "ok", "", e, true)
+            // after retention the reporter reference is "[redacted]": a redelivery of the same report (same kind and target) is still the same report, not a conflict
+            var redacted = e.ReporterRef == Solvelt.Api.Orders.OrderMaintenance.Redacted;
+            return e.Kind == kind && e.TargetRef == target && (redacted || e.ReporterRef == reporter) ? new(200, "ok", "", e, true)
                 : new(409, "report_id_conflict", "This reportId was already used for a different report.");
         }
         if (await Existing() is { } dup) return dup;
@@ -279,6 +281,16 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
             // a report decided as "hidden" on a listing that staff already hid: the decision is recorded, the listing is not hidden a second time
             var change = !already || remove;
             var decision = remove ? DecisionRemoved : DecisionHidden;
+            var claimedAny = false;
+            // the report this decision is about is claimed FIRST, before the listing is touched: a concurrent dismiss (or another hide) that won it leaves this request with a 409 and no side effect
+            // (previously the listing was hidden, the seller e-mailed and the event said "dismissed")
+            if (reportId is { } rid)
+            {
+                if (!await ClaimAsync(rid, s, ReportStatus.Actioned, remove ? "removed" : "hidden", reason)) return AlreadyResolved();
+                var own = await db.ModerationReports.AsNoTracking().FirstAsync(x => x.Id == rid);
+                await DecideAsync(own, decision, shown);
+                claimedAny = true;
+            }
             if (change)
             {
                 if (!already) { p.ModerationPrevStatus = p.Status; p.ModeratedAt = time.UtcNow(); p.ModerationReason = reason; p.ModeratedBy = s.UserId; }
@@ -286,7 +298,6 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
                 else if (p.Status == ProductStatus.Active) p.Status = ProductStatus.Inactive;
                 p.Version++; p.UpdatedAt = time.UtcNow();
             }
-            var claimedAny = false;
             foreach (var r in await db.ModerationReports.AsNoTracking().Where(x => x.Kind == "listing" && x.TargetId == productId && x.Status == ReportStatus.Open).ToListAsync())
             {
                 if (!await ClaimAsync(r.Id, s, ReportStatus.Actioned, remove ? "removed" : "hidden", reason)) continue;   // another decider got this one
