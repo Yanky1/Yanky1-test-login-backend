@@ -96,6 +96,7 @@ public class ShippingSettingsTests
         Assert.Equal(HttpStatusCode.BadRequest, (await s.Owner.Put(Base + "/settings", new { handlingDays = 99 })).StatusCode);
         var all = await Orders.Node(await s.Owner.Get(Base + "/settings"));
         Assert.Equal(4, (int)all["settings"]![0]!["handlingDays"]!); Assert.True((bool)all["canManage"]!);
+        Assert.False(string.IsNullOrWhiteSpace((string?)all["accountTimeZone"]));   // the zone the portal shows shipping dates in
     }
 
     [Fact]
