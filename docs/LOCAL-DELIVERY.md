@@ -130,9 +130,9 @@ Driver is a team role (`AccountRole.Driver`, numerically below Viewer) invited t
 
 Driver endpoints (`/api/v1/driver`): `GET me`, `GET stops/{id}`, `POST routes/{id}/start`, `POST stops/{id}/proofs` (multipart `file`, `kind` photo|signature, `clientId`), `POST stops/{id}/events`, `POST consent`, `POST location`.
 
-* **Visibility:** address, buyer first name and phone are returned only while the route is planned/active **and** the stop is open (Assigned, InTransit, OutForDelivery, Failed). After the stop is delivered/returned or the route completes they are gone. The buyer's e-mail is never shown; contact is the first name plus the delivery phone the marketplace supplied (`tel:`/`sms:` links); "Navigate" is a maps URL.
+* **Visibility:** address, buyer first name and phone are returned only while the route is planned/active **and** the stop is open. **Known deviation (ROADMAP: needs a relay number):** the phone is the buyer's real delivery phone, there is no relay number (Assigned, InTransit, OutForDelivery, Failed). After the stop is delivered/returned or the route completes they are gone. The buyer's e-mail is never shown; contact is the first name plus the delivery phone the marketplace supplied (`tel:`/`sms:` links); "Navigate" is a maps URL.
 * **Events:** `out_for_delivery`, `delivered` (needs `placement` `left_at_door|handed_to` and at least one photo proof; recipient name and signature optional), `failed` (reason required; note and photo optional), `reattempt`, `return_to_store`.
-* **Offline queue:** the app stores uploads and events locally and replays them in order. `clientEventId` is unique: a replay (also in parallel) is applied once and answers `replayed: true`. An event older than the newest applied one for that stop (`clientAt`) is recorded as `ignored_stale` and changes nothing; an event for a finished stop is `ignored_state`. A client clock more than 5 minutes ahead is clamped. A rejected event (validation, wrong state) leaves no trace, so the corrected one can reuse its id. Route and stop rows use optimistic concurrency (`409 version_conflict`).
+* **Offline queue:** the app stores uploads and events locally and replays them in order. `clientAt` is clamped to `[max(route start, shipment ShippedAt), now + 5 min]`, so a forged or very old date cannot back-date a delivery. A client that gets 401/403 (session) pauses and keeps everything; a `409 version_conflict` is resent with the same id after a backoff; only validation-style refusals are final. `clientEventId` is unique: a replay (also in parallel) is applied once and answers `replayed: true`. An event older than the newest applied one for that stop (`clientAt`) is recorded as `ignored_stale` and changes nothing; an event for a finished stop is `ignored_state`. A client clock more than 5 minutes ahead is clamped. A rejected event (validation, wrong state) leaves no trace, so the corrected one can reuse its id. Route and stop rows use optimistic concurrency (`409 version_conflict`).
 * **Route lifecycle:** the route completes when no stop is Assigned/InTransit/OutForDelivery/Failed; the seller gets "route finished".
 
 ## 7. Live ETA and location privacy
@@ -140,12 +140,12 @@ Driver endpoints (`/api/v1/driver`): `GET me`, `GET stops/{id}`, `POST routes/{i
 * Sharing starts only after the driver **consents** in the app (`POST consent`), can be **paused** at any time, and is only accepted while the driver's route is **active**.
 * Positions are rounded to ~100 m (3 decimals) **before** storage, kept at most **24 hours** (`LocalDelivery:LocationRetentionHours`, deleted by the maintenance job), and deleted immediately when the driver pauses or withdraws consent.
 * The server computes a rough ETA per remaining stop (straight line at 30 km/h plus 4 minutes per earlier stop). The buyer-facing event carries the ETA, and a coarse position **only when the buyer's stop is next**.
-* Positions are never written to logs or audit trails; the seller dashboard shows the stop ETA, not a live map (ROADMAP).
+* Positions are never written to logs or audit trails; the copy inside stored `order.tracking_updated` outbox rows is blanked after the same retention period; the seller dashboard shows the stop ETA, not a live map (ROADMAP).
 * The only precise point stored is the delivery location the driver's device reports with the delivered event (4 decimals, ~10 m), as part of the proof of delivery.
 
 ## 8. Proof of delivery media
 
-Photos and signatures are accepted as JPEG/PNG only (magic bytes, not the client's content type), max 8 MB, and **EXIF/XMP/IPTC/text metadata is stripped** before they are stored through `IFileStorage`. They are served `nosniff`, `Cache-Control: private, no-store`, only through the authorised seller endpoint (brand scope; drivers get 403) or a short-lived signed URL. They are deleted when the order's buyer data is redacted (retention job).
+Photos and signatures are accepted as JPEG/PNG only (magic bytes, not the client's content type), max 8 MB, and **EXIF/XMP/IPTC/text metadata is stripped** before they are stored through `IFileStorage`. They are served `nosniff`, `Cache-Control: private, no-store`, only through the authorised seller endpoint (brand scope; drivers get 403) or a short-lived signed URL. They are deleted when the order's buyer data is redacted (retention job), which also nulls the order's and delivery's coordinates and the attempts' recipient name, note and coordinates.
 
 ## 9. Notifications
 
@@ -161,8 +161,9 @@ Seller in-app (SSE) event and e-mail (Owners/Admins by role default) for a faile
 2. Invite drivers (Team -> role **Driver**); each driver signs in on their phone, opens `/driver` and adds it to the home screen.
 3. The marketplace calls the eligibility endpoint at checkout and sends `deliveries[]` + `shippingAddress.lat/lng` on order ingest.
 4. The marketplace tracking page and notifications consume `order.tracking_updated` (with `method: "local"`), `shipment.delivered` (fetch the proof URLs within the hour), `delivery.attempt_failed`.
-5. Optional: a routing provider behind `IRouteOptimizer`; `LocalDelivery:*` options (`ProofUrlMinutes`, `LocationRetentionHours`, `EtaEventSeconds`).
-6. Production: `LocalDelivery` maintenance runs as a hosted worker every minute (retention, late alerts, cancelled orders, proof cleanup).
+5. **Set `LocalDelivery:ProofUrlKey`** (a long random secret, different from the Orders secrets): it signs the proof-of-delivery links and the app refuses to start in production without it.
+6. Optional: a routing provider behind `IRouteOptimizer`; `LocalDelivery:*` options (`ProofUrlMinutes`, `LocationRetentionHours`, `EtaEventSeconds`).
+7. Production: `LocalDelivery` maintenance runs as a hosted worker every minute (retention, late alerts, cancelled orders, proof cleanup).
 
 ## 12. Not verified / limits
 
