@@ -233,5 +233,148 @@ public class CatalogReviewFixTests(CatalogFactory f) : IClassFixture<CatalogFact
         Assert.False(bad.GetProperty("rows")[0].GetProperty("ok").GetBoolean());
         Assert.Contains(bad.GetProperty("rows")[0].GetProperty("errors").EnumerateArray(), e => e.GetProperty("field").GetString() == "searchTerms");
     }
+
+    // ---- 6 + 7. images: disabled variants, separate key ------------------------------------------------------------------------------------
+
+    private static string DerivedImageKey() => Solvelt.Api.Orders.Signing.ImageKey(new Solvelt.Api.Orders.OrderOptions { InboundSecret = OrdersFactory.InSecret });
+
+    private static async Task<Guid> ImageOf(ApiFactory fx, Guid product) => Guid.Parse((string)(await Listing(fx, product))!["images"]![0]!["imageId"]!);
+
+    [Fact]
+    public async Task The_image_key_is_a_derived_subkey_that_signs_image_downloads_only_and_the_inbound_key_still_works_for_them()
+    {
+        var s = await Orders.NewShop(f);
+        var image = await ImageOf(f, s.Product);
+        var path = $"{Base}/images/{image}";
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(f, path, secret: DerivedImageKey())).StatusCode);        // the subkey signs image downloads
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(f, path)).StatusCode);                                    // backward compatible: the inbound secret still does
+        Assert.NotEqual(OrdersFactory.InSecret, DerivedImageKey());
+        // ...and the subkey signs NOTHING else: whoever holds it (an edge proxy) cannot read the feed or write anything
+        foreach (var other in new[] { $"{Base}/listings", $"{Base}/listings/{s.Product}", $"{Base}/categories", $"{Base}/brands" })
+        {
+            var r = await SignedGet(f, other, secret: DerivedImageKey());
+            Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode); Assert.Equal("bad_signature", await Orders.Code(r));
+        }
+        var post = Orders.Signed(f, "POST", $"/api/internal/v1/products/{s.Product}/questions", new { questionId = "Q-" + Guid.NewGuid().ToString("N"), text = "x" }, secret: DerivedImageKey());
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.NewClient().SendAsync(post)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SignedGet(f, path, secret: "some-other-key-0123456789abcdef0123456")).StatusCode);   // any other key is still refused
+        // a request signed with the subkey is replay-protected like any other
+        var nonce = Guid.NewGuid().ToString("N");
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(f, path, nonce, secret: DerivedImageKey())).StatusCode);
+        Assert.Equal("replayed", await Orders.Code(await SignedGet(f, path, nonce, secret: DerivedImageKey())));
+    }
+
+    [Fact]
+    public async Task With_the_inbound_key_switched_off_for_images_only_the_image_key_downloads_them()
+    {
+        using var strict = new CatalogStrictImageKeyFactory();
+        var s = await Orders.NewShop(strict);
+        var path = $"{Base}/images/{await ImageOf(strict, s.Product)}";
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(strict, path, secret: DerivedImageKey())).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SignedGet(strict, path)).StatusCode);                    // the inbound secret no longer reads images
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(strict, $"{Base}/listings/{s.Product}")).StatusCode);     // and still reads everything else
+    }
+
+    [Fact]
+    public async Task A_configured_image_key_replaces_the_derived_one()
+    {
+        using var configured = new CatalogConfiguredImageKeyFactory();
+        var s = await Orders.NewShop(configured);
+        var path = $"{Base}/images/{await ImageOf(configured, s.Product)}";
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(configured, path, secret: CatalogConfiguredImageKeyFactory.Key)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SignedGet(configured, path, secret: DerivedImageKey())).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SignedGet(configured, path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await SignedGet(configured, $"{Base}/categories", secret: CatalogConfiguredImageKeyFactory.Key)).StatusCode);   // the configured key signs images only, too
+    }
+
+    [Fact]
+    public async Task An_image_of_a_disabled_variant_is_served_by_id_while_the_listing_still_does_not_list_it()
+    {
+        var s = await Orders.NewShop(f);
+        object Variants(bool secondEnabled) => new
+        {
+            hasVariants = true, options = new[] { new { name = "Size", values = new[] { "S", "M" } } },
+            variants = new[] { new { values = new[] { "S" }, sku = "VS-" + s.Sku, price = 18.5, quantity = 5, barcode = (string?)null, enabled = true },
+                               new { values = new[] { "M" }, sku = "VM-" + s.Sku, price = 19.5, quantity = 5, barcode = (string?)null, enabled = secondEnabled } }
+        };
+        var put = await s.Owner.Put($"/api/v1/seller/products/{s.Product}/variants", Variants(true));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var m = (await ProdApi.Node(put))["variants"]!.AsArray().First(v => (string)v!["sku"]! == "VM-" + s.Sku)!;
+        var upload = await ProdApi.Upload(s.Owner, s.Product, TestImages.Png(800, 800), "m.png", "Variant M", Guid.Parse((string)m["id"]!));
+        Assert.Equal(HttpStatusCode.Created, upload.StatusCode);
+        var imageId = f.WithDb(db => db.ProductImages.AsNoTracking().Single(i => i.ProductId == s.Product && i.VariantId != null).Id);
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(f, $"{Base}/images/{imageId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await s.Owner.Put($"/api/v1/seller/products/{s.Product}/variants", Variants(false))).StatusCode);   // variant M is disabled
+        Assert.Equal(HttpStatusCode.OK, (await SignedGet(f, $"{Base}/images/{imageId}")).StatusCode);                  // was 404 before: the filter is gone
+        Assert.DoesNotContain((await Listing(f, s.Product))!["images"]!.AsArray(), i => (string)i!["imageId"]! == imageId.ToString());   // the document still lists only enabled variants' images
+    }
+
+    // ---- 8. retention ---------------------------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Decided_reports_lose_the_reporters_reference_reason_and_note_after_the_retention_period_and_open_ones_are_kept()
+    {
+        using var fx = new CatalogFactory();                                                              // its own clock: this test moves time by months
+        async Task<string> Rep(string target, string reporter)
+        {
+            var rid = "R-" + Guid.NewGuid().ToString("N")[..14];
+            var r = await PostSigned(fx, "/api/internal/v1/content/reports", new { reportId = rid, kind = "review", targetId = target, reason = "Contains my neighbour's phone number", note = "see line 3", reporterRef = reporter });
+            Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+            return rid;
+        }
+        Guid QueueOf(string rid) => fx.WithDb(db => db.ContentReports.AsNoTracking().Where(c => c.ReportId == rid).Select(c => c.ModerationReportId).Single());
+        ContentReport Row(string rid) => fx.WithDb(db => db.ContentReports.AsNoTracking().Single(c => c.ReportId == rid));
+
+        var old = await Rep("rev-old", "buyer-ref-old"); var open = await Rep("rev-open", "buyer-ref-open");
+        var mod = await Staff(fx, StaffRole.Moderator);
+        Assert.Equal(HttpStatusCode.OK, (await mod.Post($"/api/v1/admin/moderation/{QueueOf(old)}/dismiss", new { reason = StaffKit.Why })).StatusCode);
+        fx.Time.Advance(TimeSpan.FromDays(50));
+        var recent = await Rep("rev-recent", "buyer-ref-recent");
+        var mod2 = await Staff(fx, StaffRole.Moderator);                                                  // (sessions are short: a fresh login after 50 days)
+        Assert.Equal(HttpStatusCode.OK, (await mod2.Post($"/api/v1/admin/moderation/{QueueOf(recent)}/dismiss", new { reason = StaffKit.Why })).StatusCode);
+        fx.Time.Advance(TimeSpan.FromDays(50));                                                           // old: decided 100 days ago, recent: 50, open: still open
+
+        var run = await Orders.Node(await fx.NewClient().PostAsync("/api/dev/maintenance/run", null));
+        Assert.Equal(1, (int)run["contentReportsRedacted"]!);
+        var o = Row(old);
+        Assert.Equal("[redacted]", o.ReporterRef); Assert.Equal("[redacted]", o.Reason); Assert.Null(o.Note);
+        Assert.Equal("dismissed", o.Decision); Assert.Equal("review", o.Kind); Assert.Equal("rev-old", o.TargetRef); Assert.Equal(old, o.ReportId);   // what carries no personal data stays
+        var oldQueue = QueueOf(old);
+        Assert.Equal("[redacted]", fx.WithDb(db => db.ModerationReports.AsNoTracking().Single(r => r.Id == oldQueue).Reason));              // the queue row's copy too
+        var r2 = Row(recent); Assert.Equal("buyer-ref-recent", r2.ReporterRef); Assert.Equal("see line 3", r2.Note);                        // inside the retention period
+        var r3 = Row(open); Assert.Equal("buyer-ref-open", r3.ReporterRef); Assert.Equal("see line 3", r3.Note); Assert.Null(r3.Decision);    // an open report is never redacted
+        Assert.Equal(0, (int)(await Orders.Node(await fx.NewClient().PostAsync("/api/dev/maintenance/run", null)))["contentReportsRedacted"]!);   // idempotent
+    }
+
+    // ---- 9. message ids are unique per seller only ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task The_same_marketplace_message_id_for_two_sellers_is_two_messages_and_a_report_naming_it_is_refused_as_ambiguous()
+    {
+        var a = await Orders.NewShop(f); var b = await Orders.NewShop(f);
+        var (midA, _, numA, _) = await Orders.Place(a); var (midB, _, numB, _) = await Orders.Place(b);
+        var shared = "shared-msg-" + Guid.NewGuid().ToString("N")[..8];
+        Task<HttpResponseMessage> Send(string mid, string number, string conversation) => Orders.Inbound(f, "/api/internal/v1/messages",
+            new { messageId = shared, conversationId = conversation, kind = "order", marketplaceOrderId = mid, sellerOrderNumber = number, buyerName = "Jane B.", text = "Hello, is it still available?" });
+        Assert.Equal(HttpStatusCode.Created, (await Send(midA, numA, "conv-" + shared + "-a")).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Send(midB, numB, "conv-" + shared + "-b")).StatusCode);   // was 200 "duplicate": seller B's message was silently dropped
+        Assert.Equal(HttpStatusCode.OK, (await Send(midA, numA, "conv-" + shared + "-a")).StatusCode);        // a real repeat for the same seller is still a duplicate
+        Assert.Equal(2, f.WithDb(db => db.Messages.Count(m => m.MarketplaceMessageId == shared)));
+        Assert.Equal(new[] { a.Seller, b.Seller }.OrderBy(x => x), f.WithDb(db => db.Messages.AsNoTracking().Where(m => m.MarketplaceMessageId == shared).Select(m => m.SellerId).ToList()).OrderBy(x => x));
+
+        // a report that names only the marketplace message id cannot be matched to ONE message: 422, nothing flagged, no queue row
+        var viaMessages = await Orders.Inbound(f, $"/api/internal/v1/messages/{shared}/reports", new { reason = "abusive" });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, viaMessages.StatusCode); Assert.Equal("ambiguous_message", await Orders.Code(viaMessages));
+        var rid = "R-" + Guid.NewGuid().ToString("N")[..14];
+        var viaReports = await PostSigned(f, "/api/internal/v1/content/reports", new { reportId = rid, kind = "message", targetId = shared, reason = "abusive", reporterRef = "u1" });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, viaReports.StatusCode); Assert.Equal("ambiguous_target", await Orders.Code(viaReports));
+        Assert.Equal(0, f.WithDb(db => db.ContentReports.Count(c => c.ReportId == rid)));
+        Assert.DoesNotContain(f.WithDb(db => db.Messages.AsNoTracking().Where(m => m.MarketplaceMessageId == shared).ToList()), m => m.Reported);
+
+        // an unambiguous id still works
+        var unique = "unique-msg-" + Guid.NewGuid().ToString("N")[..8];
+        Assert.Equal(HttpStatusCode.Created, (await Orders.Inbound(f, "/api/internal/v1/messages", new { messageId = unique, conversationId = "conv-" + unique, kind = "order", marketplaceOrderId = midA, sellerOrderNumber = numA, buyerName = "Jane B.", text = "Hi" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await PostSigned(f, "/api/internal/v1/content/reports", new { reportId = rid + "u", kind = "message", targetId = unique, reason = "abusive", reporterRef = "u1" })).StatusCode);
+    }
 }
 
