@@ -100,7 +100,7 @@ public record TrackingApplied(string Outcome, string? Status = null);
 /// Applies provider tracking (webhook or poll) to a parcel. Idempotent (history entries are de-duplicated by a hash of time+status+detail) and order-independent
 /// (a status only replaces the current one when it is newer; ties go to the later stage), so replays and out-of-order deliveries are harmless.
 /// </summary>
-public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbox, ShippingNotifier notifier, TimeProvider time)
+public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbox, ShippingNotifier notifier, TimeProvider time, IOptions<ShippingOptions> opt)
 {
     /// <summary>Per parcel: the same fact delivered twice (webhook + poll, or a replay) is one history entry; two parcels of one order never collide.</summary>
     public static string Key(Guid parcelId, TrackingEntry e) => ShippingSupport.Hash($"{parcelId:N}|{e.At.ToUniversalTime():O}|{e.Status}|{e.Detail}")[..32];
@@ -116,11 +116,14 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         var c = string.IsNullOrWhiteSpace(carrier) ? null : ShippingSupport.OrderCarrier(carrier);
         var ships = await db.Shipments.Where(x => x.TrackingNumber == tn && x.Method == "carrier").ToListAsync();
         if (c is not null && c != "Other") ships = ships.Where(x => x.Carrier == c || x.Carrier == "Other").ToList();
+        // a number can come back after its first parcel finished (delivered / tracking stopped): only the live parcels compete for the update
+        if (ships.Count > 1 && ships.Any(x => x.DeliveredAt == null && x.TrackingStoppedAt == null)) ships = ships.Where(x => x.DeliveredAt == null && x.TrackingStoppedAt == null).ToList();
         if (ships.Count > 1 && ships.Count(x => x.LabelId != null) == 1) ships = ships.Where(x => x.LabelId != null).ToList();
         if (ships.Count == 1) return (ships[0], null, false);
         if (ships.Count > 1) return (null, null, true);
         var rets = await db.ReturnShipments.Where(x => x.TrackingNumber == tn).ToListAsync();
         if (c is not null && c != "Other") rets = rets.Where(x => x.Carrier == c || x.Carrier == "Other").ToList();
+        if (rets.Count > 1 && rets.Any(x => x.DeliveredAt == null && x.TrackingStoppedAt == null)) rets = rets.Where(x => x.DeliveredAt == null && x.TrackingStoppedAt == null).ToList();
         return rets.Count == 1 ? (null, rets[0], false) : (null, null, rets.Count > 1);
     }
 
@@ -154,15 +157,22 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         }
     }
 
+    /// <summary>The earliest moment a carrier fact can belong to this parcel: a purchased label's purchase time, or a manual shipment's entry time minus the grace period.</summary>
+    private async Task<DateTime> ParcelFloorAsync(Shipment s)
+    {
+        if (s.LabelId is { } lid && await db.ShippingLabels.Where(l => l.Id == lid).Select(l => l.PurchasedAt).FirstOrDefaultAsync() is { } bought) return bought;
+        return s.ShippedAt.AddHours(-opt.Value.ManualDeliveryGraceHours);
+    }
+
     private async Task<TrackingApplied> ApplyToAsync(Parcel p, TrackingSnapshot snap, string source)
     {
         var now = time.UtcNow();
         var order = await actions.Full(db.Orders).FirstAsync(o => o.Id == p.OrderId);
         var have = (await db.TrackingEvents.Where(e => p.Ship != null ? e.ShipmentId == p.Id : e.ReturnShipmentId == p.Id).Select(e => e.SourceEventId).ToListAsync()).ToHashSet();
         var fresh = new List<TrackingEntry>();
-        foreach (var e in snap.History.Append(new TrackingEntry(snap.Status, snap.Detail, snap.Location, snap.StatusAt)).OrderBy(x => x.At))
+        foreach (var e in snap.History.Append(new TrackingEntry(snap.Status, snap.Detail, snap.Location, snap.StatusAt, snap.StatusAtEstimated)).OrderBy(x => x.At))
         {
-            var key = Key(p.Id, e);
+            var key = Key(p.Id, e.AtEstimated ? e with { At = DateTime.UnixEpoch } : e);   // no carrier date: dedupe on status+detail, not on the moment we heard it
             if (!have.Add(key)) continue;
             fresh.Add(e);
             db.TrackingEvents.Add(new TrackingEvent
@@ -177,8 +187,11 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
         // "delivered" is final: it replaces any earlier stage even when a skewed carrier clock stamped that stage later (nothing ever replaces delivered)
         var newer = p.DeliveredAt is null && (p.StatusAt is null || status == TrackingStatuses.Delivered && p.Status != TrackingStatuses.Delivered || at > p.StatusAt
             || (at == p.StatusAt && TrackingStatuses.Rank(status) > TrackingStatuses.Rank(p.Status)));
-        // a delivery stamped before this parcel even shipped belongs to some other parcel that reused the number: never deliver (or pay out) on it
-        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && at < p.Ship.ShippedAt) newer = false;
+        // the same status again with nothing new in the history is a replay, even when we stamped it a moment later (no carrier date)
+        if (newer && fresh.Count == 0 && status == p.Status) newer = false;
+        // a delivery stamped before this parcel existed belongs to some other parcel that reused the number: never deliver (or pay out) on it.
+        // Manual entries get a grace period (the seller often types the number in after drop-off); the clamp in ShipmentDeliveredAsync then bounds the time.
+        if (newer && status == TrackingStatuses.Delivered && p.Ship is not null && at < await ParcelFloorAsync(p.Ship)) newer = false;
         if (!newer)
         {
             await db.SaveChangesAsync();
@@ -214,7 +227,7 @@ public class TrackingService(AppDbContext db, OrderActions actions, Outbox outbo
             }
             else
             {
-                p.Ret!.DeliveredAt = at; p.Stopped = now;
+                p.Ret!.DeliveredAt = at > now ? now : at < p.Ret.CreatedAt ? p.Ret.CreatedAt : at; p.Stopped = now;   // like the outbound clamp: never before the parcel existed, never in the future
                 db.AddEvent(order.Id, "return.arrived", Party.System, null, "Return arrived. Inspect the items and mark the return received.", now);
                 await db.SaveChangesAsync();
                 await notifier.ReturnArrivedAsync(order);
@@ -278,7 +291,7 @@ public class ShippingWebhookService(AppDbContext db, IOptions<ShippingOptions> o
         }
         try
         {
-            var snap = ShippoPayload.Snapshot(data);
+            var snap = ShippoPayload.Snapshot(data, heardAt: now);
             if (snap is null) { row.Outcome = "bad_payload"; await db.SaveChangesAsync(); return (400, "bad_payload"); }
             var r = await tracking.ApplyAsync(tn, snap, "webhook");
             await SetOutcome(row.Id, r.Outcome, null);

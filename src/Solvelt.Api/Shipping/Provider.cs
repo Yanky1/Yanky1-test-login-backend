@@ -20,8 +20,9 @@ public record PurchaseRequest(string RateId, string ProviderShipmentId, string L
 public record PurchasedLabel(string TransactionId, string Carrier, string? Service, string TrackingNumber, byte[] Bytes, string ContentType, DateTime? EstimatedDelivery);
 /// <summary>Status: pending, success or error.</summary>
 public record RefundResult(string RefundId, string Status, string? Error);
-public record TrackingEntry(string Status, string? Detail, string? Location, DateTime At);
-public record TrackingSnapshot(string Carrier, string TrackingNumber, string Status, string? Detail, DateTime StatusAt, DateTime? Eta, string? Location, List<TrackingEntry> History);
+/// <summary><c>AtEstimated</c>: the carrier sent no date, so <c>At</c> is only "when we heard it" (history dedupes on a stable key instead of that time).</summary>
+public record TrackingEntry(string Status, string? Detail, string? Location, DateTime At, bool AtEstimated = false);
+public record TrackingSnapshot(string Carrier, string TrackingNumber, string Status, string? Detail, DateTime StatusAt, DateTime? Eta, string? Location, List<TrackingEntry> History, bool StatusAtEstimated = false);
 
 /// <summary>Provider failure with a stable code (rate_expired, invalid_address, provider_error, not_configured); Retryable means "try again later".</summary>
 public class ShippingProviderException(string code, string message, bool retryable = false) : Exception(message)
@@ -38,7 +39,7 @@ public interface IShippingProvider
     Task<RateSet> GetRatesAsync(RateRequest r, CancellationToken ct = default);
     Task<PurchasedLabel> PurchaseAsync(PurchaseRequest r, CancellationToken ct = default);
     /// <summary>Looks up a purchase this server may have started and lost track of (crash mid-purchase) by the idempotency key sent as its metadata. Null when the provider has none.</summary>
-    Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, CancellationToken ct = default);
+    Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, DateTime since, CancellationToken ct = default);
     Task<RefundResult> RequestRefundAsync(string transactionId, CancellationToken ct = default);
     Task<RefundResult> GetRefundAsync(string refundId, CancellationToken ct = default);
     /// <summary>Asks the provider to send webhooks for this parcel. False: the carrier is not supported (the reconciler still polls where it can).</summary>
@@ -70,7 +71,7 @@ public class UnconfiguredShippingProvider : IShippingProvider
     public Task<AddressCheck> ValidateAddressAsync(ShipAddress a, CancellationToken ct = default) => throw Off();
     public Task<RateSet> GetRatesAsync(RateRequest r, CancellationToken ct = default) => throw Off();
     public Task<PurchasedLabel> PurchaseAsync(PurchaseRequest r, CancellationToken ct = default) => throw Off();
-    public Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, CancellationToken ct = default) => throw Off();
+    public Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, DateTime since, CancellationToken ct = default) => throw Off();
     public Task<RefundResult> RequestRefundAsync(string transactionId, CancellationToken ct = default) => throw Off();
     public Task<RefundResult> GetRefundAsync(string refundId, CancellationToken ct = default) => throw Off();
     public Task<bool> RegisterTrackingAsync(string carrier, string trackingNumber, CancellationToken ct = default) => Task.FromResult(false);
@@ -171,7 +172,7 @@ public class FakeShippingProvider(TimeProvider time) : IShippingProvider
         return bought;
     }
 
-    public Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, CancellationToken ct = default)
+    public Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, DateTime since, CancellationToken ct = default)
     {
         lock (_gate) return Task.FromResult(_byKey.TryGetValue(idempotencyKey, out var p) ? p : null);
     }
@@ -322,15 +323,31 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
             days is { } d ? DateTime.UtcNow.Date.AddDays(d) : null);
     }
 
-    public async Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, CancellationToken ct = default)
+    /// <summary>Pages through the transactions (newest first) until it passes <paramref name="since"/> minus a margin: an older stuck purchase must still be found, and only a COMPLETE search may conclude "never bought".</summary>
+    public async Task<PurchasedLabel?> FindPurchaseAsync(string idempotencyKey, string labelFormat, DateTime since, CancellationToken ct = default)
     {
         var key = idempotencyKey.Length > 100 ? idempotencyKey[..100] : idempotencyKey;
-        var list = await Send(HttpMethod.Get, "/transactions/?results=100", null, ct);
-        var tx = (list["results"]?.AsArray() ?? []).FirstOrDefault(x => x?["metadata"]?.GetValue<string>() == key && x["status"]?.GetValue<string>() == "SUCCESS");
-        if (tx is null) return null;
+        var oldest = since.AddHours(-1);
+        var path = "/transactions/?results=100"; JsonNode? tx = null; var searched = false;
+        for (var page = 0; page < 50 && path is not null; page++)
+        {
+            var list = await Send(HttpMethod.Get, path, null, ct);
+            var rows = list["results"]?.AsArray() ?? [];
+            tx = rows.FirstOrDefault(x => x?["metadata"]?.GetValue<string>() == key && x["status"]?.GetValue<string>() == "SUCCESS");
+            if (tx is not null) break;
+            var next = list["next"]?.GetValue<string>();
+            DateTime? last = rows.Count > 0 && rows[^1]?["object_created"]?.GetValue<string>() is { } oc && DateTime.TryParse(oc, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null;
+            if (string.IsNullOrEmpty(next) || rows.Count == 0 || last is { } l && l < oldest) { searched = true; break; }
+            path = Uri.TryCreate(next, UriKind.Absolute, out var u) && u.Host == "api.goshippo.com" ? u.PathAndQuery : null;
+        }
+        if (tx is null)
+        {
+            if (!searched) throw new ShippingProviderException("provider_error", "The purchase could not be searched completely.", true);   // never conclude "not bought" from a partial search
+            return null;
+        }
         var url = tx["label_url"]?.GetValue<string>();
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || u.Scheme != Uri.UriSchemeHttps) throw new ShippingProviderException("provider_error", "The label address is not https.");
-        var bytes = await http.GetByteArrayAsync(u, ct);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var lu) || lu.Scheme != Uri.UriSchemeHttps) throw new ShippingProviderException("provider_error", "The label address is not https.");
+        var bytes = await http.GetByteArrayAsync(lu, ct);
         var rate = await Send(HttpMethod.Get, "/rates/" + tx["rate"]!.GetValue<string>(), null, ct);
         var days = rate["estimated_days"]?.GetValue<int>();
         return new PurchasedLabel(tx["object_id"]!.GetValue<string>(), CarrierName(rate["provider"]?.GetValue<string>()?.ToLowerInvariant().Replace(" ", "_")),
@@ -358,7 +375,7 @@ public class ShippoShippingProvider(HttpClient http, IOptions<ShippingOptions> o
     {
         if (!Tokens.TryGetValue(carrier, out var token)) return null;
         var n = await Send(HttpMethod.Get, $"/tracks/{token}/{Uri.EscapeDataString(trackingNumber)}", null, ct);
-        return ShippoPayload.Snapshot(n, carrier, trackingNumber);
+        return ShippoPayload.Snapshot(n, carrier, trackingNumber, heardAt: DateTime.UtcNow);
     }
 }
 
@@ -367,21 +384,22 @@ public static class ShippoPayload
 {
     private static DateTime? Date(JsonNode? n) => n?.GetValue<string>() is { } s && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var d) ? d : null;
 
-    private static TrackingEntry? Entry(JsonNode? e)
+    private static TrackingEntry? Entry(JsonNode? e, DateTime? heardAt = null)
     {
         if (e is null) return null;
-        var at = Date(e["status_date"]) ?? DateTime.UnixEpoch;   // no carrier time: treat it as the oldest fact, so a replay is never "newer" and adds no history
+        // no carrier time: the CURRENT status counts as heard now (so a real delivery without a date still delivers); a history row without a date is the oldest fact
+        var given = Date(e["status_date"]); var at = given ?? heardAt ?? DateTime.UnixEpoch;
         var loc = e["location"] is { } l ? string.Join(", ", new[] { l["city"], l["state"], l["country"] }.Select(x => x?.GetValue<string>()).Where(x => !string.IsNullOrWhiteSpace(x))) : null;
-        return new TrackingEntry(TrackingStatuses.FromShippo(e["status"]?.GetValue<string>(), e["substatus"]?["code"]?.GetValue<string>()), e["status_details"]?.GetValue<string>(), loc, at);
+        return new TrackingEntry(TrackingStatuses.FromShippo(e["status"]?.GetValue<string>(), e["substatus"]?["code"]?.GetValue<string>()), e["status_details"]?.GetValue<string>(), loc, at, given is null);
     }
 
-    public static TrackingSnapshot? Snapshot(JsonNode data, string? carrier = null, string? tracking = null)
+    public static TrackingSnapshot? Snapshot(JsonNode data, string? carrier = null, string? tracking = null, DateTime? heardAt = null)
     {
-        var cur = Entry(data["tracking_status"]);
+        var cur = Entry(data["tracking_status"], heardAt);
         if (cur is null) return null;
-        var hist = (data["tracking_history"]?.AsArray() ?? []).Select(Entry).Where(x => x != null).Select(x => x!).ToList();
+        var hist = (data["tracking_history"]?.AsArray() ?? []).Select(h => Entry(h)).Where(x => x != null).Select(x => x!).ToList();
         if (!hist.Any(h => h.At == cur.At && h.Status == cur.Status)) hist.Add(cur);
         return new TrackingSnapshot(carrier ?? ShippoShippingProvider.CarrierName(data["carrier"]?.GetValue<string>()), tracking ?? data["tracking_number"]?.GetValue<string>() ?? "",
-            cur.Status, cur.Detail, cur.At, Date(data["eta"]), cur.Location, hist);
+            cur.Status, cur.Detail, cur.At, Date(data["eta"]), cur.Location, hist, cur.AtEstimated);
     }
 }

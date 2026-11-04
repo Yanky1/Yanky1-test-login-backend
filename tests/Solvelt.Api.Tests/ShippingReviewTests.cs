@@ -57,32 +57,35 @@ public class ShippingReviewTests
     }
 
     [Fact]
-    public async Task A_delivered_webhook_goes_to_the_label_that_owns_the_number_never_to_another_sellers_order()
+    public async Task The_database_refuses_two_live_parcels_with_one_number_and_a_stopped_one_frees_it()
     {
         using var f = new ShipFactory();
         var (_, idA, _, label, _) = await Bought(f);
         var b = await Ship.NewShop(f);
         var (_, idB, _) = await Ship.Accepted(b.Shop);
         await Orders.Ok(Orders.Act(b.Shop.Owner, idB, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000001")));
-        f.WithDb(db => { db.Shipments.First(x => x.OrderId == idB).TrackingNumber = Ship.Tn(label); db.SaveChanges(); return 0; });   // a legacy duplicate that predates the guard
+        // a legacy/parallel duplicate of a LIVE parcel's number cannot be stored at all
+        Assert.ThrowsAny<Exception>(() => f.WithDb(db => { db.Shipments.First(x => x.OrderId == idB).TrackingNumber = Ship.Tn(label); db.SaveChanges(); return 0; }));
+        // once B's tracking has stopped (undelivered, 60 days) the number is free again, and the label's parcel still gets the carrier's updates
+        f.WithDb(db => { var s = db.Shipments.First(x => x.OrderId == idB); s.TrackingNumber = Ship.Tn(label); s.TrackingStoppedAt = f.Time.GetUtcNow().UtcDateTime; db.SaveChanges(); return 0; });
         f.Time.Advance(TimeSpan.FromHours(1));
         Assert.Equal("applied", await Ship.Track(f, Ship.Tn(label), "delivered", Now(f)));
         Assert.Equal(OrderStatus.Delivered, Ship.Order(f, idA).Status);
-        Assert.Equal(OrderStatus.Shipped, Ship.Order(f, idB).Status);
-        Assert.Null(Ship.Shipments(f, idB).Single().DeliveredAt);
+        Assert.Equal(OrderStatus.Shipped, Ship.Order(f, idB).Status); Assert.Null(Ship.Shipments(f, idB).Single().DeliveredAt);
     }
 
     [Fact]
-    public async Task When_two_unlabelled_shipments_share_a_number_the_update_is_applied_to_neither()
+    public async Task A_number_reused_after_its_first_parcel_was_delivered_still_tracks_the_new_parcel()
     {
         using var f = new ShipFactory();
-        var (s, _, _) = await Ship.NewShop(f);
+        var s = await Orders.NewShop(f);
         var (_, a, _) = await Ship.Accepted(s); var (_, b, _) = await Ship.Accepted(s);
-        await Orders.Ok(Orders.Act(s.Owner, a, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000002")));
-        await Orders.Ok(Orders.Act(s.Owner, b, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000003")));
-        f.WithDb(db => { db.Shipments.First(x => x.OrderId == b).TrackingNumber = "9400111899223000000002"; db.SaveChanges(); return 0; });
-        Assert.Equal("ambiguous_tracking_number", await Ship.Track(f, "9400111899223000000002", "delivered", Now(f).AddMinutes(1)));
-        Assert.Equal(OrderStatus.Shipped, Ship.Order(f, a).Status); Assert.Equal(OrderStatus.Shipped, Ship.Order(f, b).Status);
+        const string tn = "9400111899223000000002";
+        await Orders.Ok(Orders.Act(s.Owner, a, "ship", Orders.Ship(carrier: "USPS", tracking: tn)));
+        Assert.Equal("applied", await Ship.Track(f, tn, "delivered", Now(f).AddMinutes(1)));
+        await Orders.Ok(Orders.Act(s.Owner, b, "ship", Orders.Ship(carrier: "USPS", tracking: tn)));          // allowed: the first parcel finished
+        Assert.Equal("applied", await Ship.Track(f, tn, "in_transit", Now(f).AddMinutes(2)));                    // not "ambiguous"
+        Assert.Equal("in_transit", Ship.Shipments(f, b).Single().TrackingStatus); Assert.Equal("delivered", Ship.Shipments(f, a).Single().TrackingStatus);
     }
 
     [Fact]
@@ -125,7 +128,9 @@ public class ShippingReviewTests
         f.WithDb(db =>
         {
             var l = db.ShippingLabels.First(x => x.Id == lid); l.CustomsJson = "{\"contents\":\"gift\"}"; l.AddressOverrideReason = "buyer lives at 12 Elm St";
-            db.TrackingEvents.First(e => e.OrderId == id).Location = "Springfield, IL"; db.SaveChanges(); return 0;
+            db.TrackingEvents.First(e => e.OrderId == id).Location = "Springfield, IL";
+            db.ReturnShipments.Add(new ReturnShipment { SellerId = s.Seller, OrderId = id, ReturnId = Guid.NewGuid(), Carrier = "USPS", TrackingNumber = "9400111899223000000009", TrackingStatusDetail = "Left with the neighbour at 12 Elm St", CreatedAt = f.Time.GetUtcNow().UtcDateTime });
+            db.SaveChanges(); return 0;
         });
         Func<Task> run = () => Pay.Run(f, sp => sp.GetRequiredService<OrderMaintenance>().RunAsync());
         f.Time.Advance(TimeSpan.FromDays(32)); await run();       // completed
@@ -292,5 +297,196 @@ public class ShippingLinkKeyTests
     private sealed class NoLinkKeyFactory(string key) : ProductionFactory
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder b) { base.ConfigureWebHost(b); b.UseSetting("Shipping:LinkKey", key); }
+    }
+}
+
+public class ShippingRound3Tests
+{
+    private static DateTime Now(ShipFactory f) => f.Time.GetUtcNow().UtcDateTime;
+
+    [Fact]
+    public async Task A_manual_shipment_entered_after_drop_off_still_accepts_a_delivery_stamped_just_before_the_entry()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, id, _) = await Ship.Accepted(s);
+        await Orders.Ok(Orders.Act(s.Owner, id, "ship", Orders.Ship(carrier: "UPS", tracking: "1Z999AA10123456812")));
+        Assert.Equal("applied", await Ship.Track(f, "1Z999AA10123456812", "delivered", Now(f).AddMinutes(-5)));   // the carrier scanned it 5 minutes before the seller typed the number in
+        var o = Ship.Order(f, id);
+        Assert.Equal(OrderStatus.Delivered, o.Status); Assert.True(o.DeliveredAt >= Ship.Shipments(f, id).Single().ShippedAt);   // and the time is clamped, never before shipping
+    }
+
+    [Fact]
+    public async Task A_manual_shipment_still_ignores_a_delivery_far_older_than_the_grace_period()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, id, _) = await Ship.Accepted(s);
+        await Orders.Ok(Orders.Act(s.Owner, id, "ship", Orders.Ship(carrier: "UPS", tracking: "1Z999AA10123456813")));
+        Assert.NotEqual("applied", await Ship.Track(f, "1Z999AA10123456813", "delivered", Now(f).AddDays(-30)));
+        Assert.Equal(OrderStatus.Shipped, Ship.Order(f, id).Status);
+    }
+
+    [Fact]
+    public async Task A_delivered_webhook_without_a_status_date_delivers_and_a_replay_adds_nothing()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, id, _) = await Ship.Accepted(s);
+        await Orders.Ok(Orders.Act(s.Owner, id, "ship", Orders.Ship(carrier: "UPS", tracking: "1Z999AA10123456814")));
+        string Body(string ev) { var n = JsonNode.Parse(Ship.TrackBody("1Z999AA10123456814", "delivered", Now(f), ev, carrier: "ups"))!; n["data"]!["tracking_status"]!.AsObject().Remove("status_date"); return n.ToJsonString(); }
+        Assert.True((await Ship.Hook(f, Body("d1"))).IsSuccessStatusCode);
+        Assert.Equal(OrderStatus.Delivered, Ship.Order(f, id).Status);                                           // not dropped as "stale"
+        var events = f.WithDb(db => db.TrackingEvents.Count(e => e.OrderId == id));
+        f.Time.Advance(TimeSpan.FromMinutes(1));                                                                 // "heard" a minute later: still the same fact
+        Assert.True((await Ship.Hook(f, Body("d2"))).IsSuccessStatusCode);
+        Assert.Equal(events, f.WithDb(db => db.TrackingEvents.Count(e => e.OrderId == id)));
+    }
+
+    private static async Task<ReturnShipment> ReturnDelivered(bool noDate)
+    {
+        using var f = new ShipFactory();
+        var (s, _, pkg) = await Ship.NewShop(f);
+        var (mid, id, _) = await Ship.Accepted(s, qty: 2, lid: "RL1");
+        var label = await Ship.BuyCheapest(s.Owner, id, pkg);
+        await Ship.Track(f, Ship.Tn(label), "delivered");
+        Assert.Equal(HttpStatusCode.OK, (await Orders.Inbound(f, $"/api/internal/v1/orders/{mid}/return-requests", new { returnId = "R1", reason = "not_as_described", lines = new[] { new { marketplaceLineId = "RL1", quantity = 1 } } })).StatusCode);
+        var rid = (string)(await Orders.Detail(s.Owner, id))["returns"]![0]!["id"]!;
+        await Orders.Ok(Orders.Act(s.Owner, id, $"returns/{rid}/approve", new { note = "ok" }));
+        var rl = (await Orders.Node(await s.Owner.Post($"/api/v1/seller/shipping/orders/{id}/returns/{rid}/label", new { package = Ship.Pkg(pkg) })))["label"]!;
+        var n = JsonNode.Parse(Ship.TrackBody(Ship.Tn(rl), "delivered", Now(f).AddDays(-90)))!;
+        if (noDate) n["data"]!["tracking_status"]!.AsObject().Remove("status_date");
+        Assert.True((await Ship.Hook(f, n.ToJsonString())).IsSuccessStatusCode);
+        return f.WithDb(db => db.ReturnShipments.AsNoTracking().Single(r => r.OrderId == id));
+    }
+
+    [Fact]
+    public async Task A_return_delivered_without_a_date_is_not_stamped_1970()
+    {
+        var rs = await ReturnDelivered(noDate: true);
+        Assert.NotNull(rs.DeliveredAt); Assert.True(rs.DeliveredAt >= rs.CreatedAt);
+    }
+
+    [Fact]
+    public async Task A_return_delivery_dated_before_the_return_label_existed_is_clamped_to_it()
+    {
+        var rs = await ReturnDelivered(noDate: false);
+        Assert.NotNull(rs.DeliveredAt); Assert.True(rs.DeliveredAt >= rs.CreatedAt);
+    }
+
+    [Fact]
+    public async Task A_recovered_return_label_that_never_got_a_parcel_is_voided_by_the_sweep()
+    {
+        using var f = new ShipFactory();
+        var (s, _, pkg) = await Ship.NewShop(f);
+        var (_, id, _) = await Ship.Accepted(s);
+        var q = await Ship.Quote(s.Owner, id, pkg); var rate = Ship.Cheapest(q);
+        var l = new ShippingLabel
+        {
+            SellerId = s.Seller, BrandId = s.Brand, OrderId = id, Kind = LabelKind.Return, ReturnId = Guid.NewGuid(), Status = LabelStatus.Purchasing, Provider = "fake", ProviderRateId = rate,
+            IdempotencyKey = "k-ret", Carrier = "USPS", Service = "Ground", CostCents = 700, Currency = "USD", CreatedAt = Now(f), PurchasedBy = Guid.NewGuid()
+        };
+        f.WithDb(db => { db.ShippingLabels.Add(l); db.SaveChanges(); return 0; });
+        await f.Provider.PurchaseAsync(new PurchaseRequest(rate, "", "PDF_4x6", "k-ret"));
+        f.Time.Advance(TimeSpan.FromMinutes(11));
+        Assert.Equal(1, (await Ship.Maintenance(f)).PurchasesRecovered);
+        f.Time.Advance(TimeSpan.FromMinutes(6));
+        Assert.Equal(1, (await Ship.Maintenance(f)).OrphansVoided);
+        Assert.NotEqual(LabelStatus.Active, f.WithDb(db => db.ShippingLabels.AsNoTracking().Single(x => x.Id == l.Id).Status));
+    }
+
+    // ---- the duplicate-number guard -------------------------------------------------------------------------------------------------------------
+    [Fact]
+    public async Task The_409_never_says_whose_number_it_is_and_covers_edit_tracking_and_the_csv_import()
+    {
+        using var f = new ShipFactory();
+        var (_, _, _, label, _) = await Task.Run(async () => { var (s0, _, pkg0) = await Ship.NewShop(f); var (m0, i0, _) = await Ship.Accepted(s0); return (s0, i0, m0, await Ship.BuyCheapest(s0.Owner, i0, pkg0), pkg0); });
+        var other = await Ship.NewShop(f);
+        var (_, o1, _) = await Ship.Accepted(other.Shop); var (_, o2, _) = await Ship.Accepted(other.Shop);
+        var tn = Ship.Tn(label);
+        var manual = await Orders.Act(other.Shop.Owner, o1, "ship", Orders.Ship(carrier: "USPS", tracking: tn));
+        Assert.Equal(HttpStatusCode.Conflict, manual.StatusCode); Assert.Equal("tracking_in_use", await Orders.Code(manual));
+        Assert.DoesNotContain("another", (string)(await Orders.Node(manual))["title"]!, StringComparison.OrdinalIgnoreCase);   // the answer never says someone else holds the number
+        // edit tracking
+        await Orders.Ok(Orders.Act(other.Shop.Owner, o2, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000010")));
+        var sid = (string)(await Orders.Detail(other.Shop.Owner, o2))["shipments"]![0]!["id"]!;
+        var edit = await other.Shop.Owner.Put($"/api/v1/seller/orders/{o2}/shipments/{sid}", new { carrier = "USPS", trackingNumber = tn });
+        Assert.Equal(HttpStatusCode.Conflict, edit.StatusCode); Assert.Equal("tracking_in_use", await Orders.Code(edit));
+        // csv import (apply)
+        var number = (string)(await Orders.Detail(other.Shop.Owner, o1))["number"]!;
+        var form = new MultipartFormDataContent { { new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes($"order_number,carrier,tracking_number\n{number},USPS,{tn}\n")), "file", "tracking.csv" } };
+        var csv = await Orders.Node(await other.Shop.Owner.Send(new HttpRequestMessage(HttpMethod.Post, "/api/v1/seller/orders/import-tracking?apply=true") { Content = form }));
+        Assert.False((bool)csv["results"]![0]!["ok"]!); Assert.Equal("Accepted", Orders.St(await Orders.Detail(other.Shop.Owner, o1)));
+    }
+
+    [Fact]
+    public async Task Two_parallel_entries_of_one_number_store_only_one()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var ids = new List<Guid>(); for (var i = 0; i < 4; i++) ids.Add((await Ship.Accepted(s)).Id);
+        var results = await Task.WhenAll(ids.Select(i => Orders.Act(s.Owner, i, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000020"))));
+        Assert.Equal(1, results.Count(r => r.IsSuccessStatusCode));
+        Assert.All(results.Where(r => !r.IsSuccessStatusCode), r => Assert.Equal(HttpStatusCode.Conflict, r.StatusCode));
+        Assert.Equal(1, f.WithDb(db => db.Shipments.Count(x => x.TrackingNumber == "9400111899223000000020")));
+    }
+
+    [Fact]
+    public async Task The_index_catches_what_the_precheck_cannot_see_and_answers_409_instead_of_failing()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, a, _) = await Ship.Accepted(s); var (_, b, _) = await Ship.Accepted(s);
+        const string tn = "94001118992230000000";                                                                 // valid as FedEx AND as USPS, so the carrier-aware pre-check lets the second one through
+        await Orders.Ok(Orders.Act(s.Owner, a, "ship", Orders.Ship(carrier: "FedEx", tracking: tn)));
+        var r = await Orders.Act(s.Owner, b, "ship", Orders.Ship(carrier: "USPS", tracking: tn));
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode); Assert.Equal("tracking_in_use", await Orders.Code(r));
+        Assert.Equal(OrderStatus.Accepted, Ship.Order(f, b).Status);                                              // nothing half-saved
+    }
+
+    [Fact]
+    public async Task A_parcel_whose_tracking_stopped_undelivered_does_not_block_its_number()
+    {
+        using var f = new ShipFactory();
+        var s = await Orders.NewShop(f);
+        var (_, a, _) = await Ship.Accepted(s); var (_, b, _) = await Ship.Accepted(s);
+        await Orders.Ok(Orders.Act(s.Owner, a, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000030")));
+        f.WithDb(db => { db.Shipments.First(x => x.OrderId == a).TrackingStoppedAt = f.Time.GetUtcNow().UtcDateTime; db.SaveChanges(); return 0; });
+        Assert.Equal(HttpStatusCode.OK, (await Orders.Act(s.Owner, b, "ship", Orders.Ship(carrier: "USPS", tracking: "9400111899223000000030"))).StatusCode);
+    }
+}
+
+/// <summary>The Shippo stuck-purchase lookup pages through the history and never concludes "not bought" from a partial search.</summary>
+public class ShippoPurchaseLookupTests
+{
+    private sealed class Pages(Func<Uri, HttpResponseMessage> answer) : HttpMessageHandler
+    {
+        public List<Uri> Seen { get; } = [];
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) { Seen.Add(r.RequestUri!); return Task.FromResult(answer(r.RequestUri!)); }
+    }
+    private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+    private static ShippoShippingProvider Provider(Pages h) => new(new HttpClient(h), Microsoft.Extensions.Options.Options.Create(new ShippingOptions { ShippoApiKey = "shippo_test_x" }), Microsoft.Extensions.Logging.Abstractions.NullLogger<ShippoShippingProvider>.Instance);
+    private static string Row(string meta, string created) => $"{{\"object_id\":\"tx_{meta}\",\"metadata\":\"{meta}\",\"status\":\"SUCCESS\",\"object_created\":\"{created}\",\"label_url\":\"https://labels.test/{meta}.pdf\",\"tracking_number\":\"TN{meta}\",\"rate\":\"r1\"}}";
+
+    [Fact]
+    public async Task An_older_purchase_on_a_later_page_is_found()
+    {
+        var since = new DateTime(2026, 11, 4, 12, 0, 0, DateTimeKind.Utc);
+        var h = new Pages(u => u.AbsolutePath.StartsWith("/transactions") && !u.Query.Contains("page=2") ? Json($"{{\"next\":\"https://api.goshippo.com/transactions/?results=100&page=2\",\"results\":[{Row("other", "2026-11-04T13:00:00Z")}]}}")
+            : u.AbsolutePath.StartsWith("/transactions") ? Json($"{{\"next\":null,\"results\":[{Row("mine", "2026-11-04T12:00:05Z")}]}}")
+            : u.AbsolutePath.StartsWith("/rates") ? Json("{\"provider\":\"USPS\",\"servicelevel\":{\"name\":\"Ground\"},\"estimated_days\":3}") : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2, 3]) });
+        var found = await Provider(h).FindPurchaseAsync("mine", "PDF_4x6", since);
+        Assert.NotNull(found); Assert.Equal("tx_mine", found!.TransactionId);
+        Assert.Contains(h.Seen, u => u.Query.Contains("page=2"));
+    }
+
+    [Fact]
+    public async Task Not_found_after_a_complete_search_is_null_but_a_failed_page_is_an_error_never_null()
+    {
+        var since = new DateTime(2026, 11, 4, 12, 0, 0, DateTimeKind.Utc);
+        var done = new Pages(_ => Json($"{{\"next\":null,\"results\":[{Row("other", "2026-11-04T13:00:00Z")}]}}"));
+        Assert.Null(await Provider(done).FindPurchaseAsync("mine", "PDF_4x6", since));
+        var broken = new Pages(u => u.Query.Contains("page=2") ? new HttpResponseMessage(HttpStatusCode.InternalServerError) : Json($"{{\"next\":\"https://api.goshippo.com/transactions/?results=100&page=2\",\"results\":[{Row("other", "2026-11-04T13:00:00Z")}]}}"));
+        await Assert.ThrowsAsync<ShippingProviderException>(() => Provider(broken).FindPurchaseAsync("mine", "PDF_4x6", since));   // the search was cut short: the caller must retry, not mark the label failed
     }
 }

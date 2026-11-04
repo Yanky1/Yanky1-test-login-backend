@@ -4920,7 +4920,10 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("OrderId");
 
-                    b.HasIndex("TrackingNumber");
+                    b.HasIndex("TrackingNumber")
+                        .IsUnique()
+                        .HasDatabaseName("UX_order_shipments_live_tracking")
+                        .HasFilter("\"Method\" = 'carrier' AND \"DeliveredAt\" IS NULL AND \"TrackingStoppedAt\" IS NULL");
 
                     b.HasIndex("TrackingStoppedAt", "LastTrackingAt");
 
