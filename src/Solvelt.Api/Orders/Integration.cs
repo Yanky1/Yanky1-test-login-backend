@@ -205,8 +205,9 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
         var done = 0;
         foreach (var candidate in due)
         {
-            // per-aggregate ordering (listing events): never send version N while an older version of the same listing is still pending (retrying, leased or in backoff)
-            if (candidate.OrderKey is { } key)
+            // per-aggregate ordering (listing events ONLY: unscoped, latest version wins): never send version N while an older version of the same listing is still pending (retrying, leased or in backoff).
+            // Scoped events (a seller order, a booking) are ordered by their own scope below and are never dropped as superseded: their AggregateId (the marketplace order id) is shared by sibling seller orders.
+            if (candidate.SequenceScope is null && candidate.OrderKey is { } key)
             {
                 if (await db.Outbox.AnyAsync(x => x.AggregateId == candidate.AggregateId && x.OrderKey < key && x.Status == OutboxStatus.Pending, ct)) continue;
                 // a newer version of the listing already went out (this one was re-queued after it died): it is obsolete, never send it
