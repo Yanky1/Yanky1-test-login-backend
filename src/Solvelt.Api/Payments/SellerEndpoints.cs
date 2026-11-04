@@ -228,7 +228,9 @@ public static class SellerPaymentEndpoints
         var end = start.AddMonths(1);
         var before = await db.LedgerEntries.AsNoTracking().Where(e => e.SellerId == sellerId && e.CreatedAt < start && OwedAccounts.Contains(e.Account)).GroupBy(e => e.Currency).Select(g => new { c = g.Key, s = g.Sum(x => x.AmountCents) }).ToListAsync();
         var js = await db.LedgerJournals.AsNoTracking().Include(j => j.Entries).Where(j => j.SellerId == sellerId && j.CreatedAt >= start && j.CreatedAt < end).ToListAsync();
-        var currencies = js.Select(j => j.Currency).Concat(before.Select(b => b.c)).Distinct().OrderBy(c => c);
+        var currencies = js.Select(j => j.Currency).Concat(before.Select(b => b.c)).Distinct().OrderBy(c => c).ToList();
+        var shippingTaxBy = (await db.Orders.AsNoTracking().Where(o => o.SellerId == sellerId && o.PlacedAt >= start && o.PlacedAt < end && o.Status != OrderStatus.Cancelled && o.ShippingTaxCents > 0)
+            .GroupBy(o => o.Currency).Select(g => new { c = g.Key, t = g.Sum(x => x.ShippingTaxCents) }).ToListAsync()).ToDictionary(x => x.c, x => x.t);
         return new
         {
             month = start.ToString("yyyy-MM", CultureInfo.InvariantCulture),
@@ -240,8 +242,11 @@ public static class SellerPaymentEndpoints
                 var sales = mine.Where(j => j.Type is "sale" or "policy_fee" or "extra_charge").SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.Pending && e.Kind is "items" or "shipping").Sum(e => e.AmountCents);
                 var fees = mine.Where(j => j.Type is "sale" or "policy_fee" or "extra_charge").SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.Pending && e.Kind == "fee").Sum(e => e.AmountCents);
                 var closing = opening + mine.Sum(OwedDelta);
+                // information only: shipping tax the buyers paid on this month's orders. The marketplace remits it; it is never in the ledger or in any balance above.
+                var shippingTax = shippingTaxBy.GetValueOrDefault(c);
                 return new
                 {
+                    shippingTaxCents = shippingTax,
                     currency = c, openingCents = opening, salesCents = sales, feesCents = fees, refundsCents = Sum("refund"), disputesCents = Sum("dispute", "dispute_fee", "dispute_won"),
                     adjustmentsCents = Sum("adjustment"), shippingLabelsCents = Sum("shipping_label", "shipping_label_refund"), transfersCents = Sum("transfer", "transfer_failed", "transfer_reversed"), closingCents = closing,
                     paidOutCents = mine.Where(j => j.Type is "payout" or "payout_reversed").SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.PaidOut).Sum(e => e.AmountCents)

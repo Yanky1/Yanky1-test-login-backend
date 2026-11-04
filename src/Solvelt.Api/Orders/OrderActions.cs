@@ -361,7 +361,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
     {
         var now = time.UtcNow();
         var refund = new OrderRefund { OrderId = o.Id, Reason = "cancelled_remainder", Note = note?.Trim(), CreatedAt = now, CreatedBy = actor };
-        var priorPerLine = await db.RefundLines.Where(x => db.Refunds.Any(r => r.Id == x.RefundId && r.OrderId == o.Id)).GroupBy(x => x.OrderLineId).Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents) }).ToListAsync();
+        var priorPerLine = await db.RefundLines.Where(x => db.Refunds.Any(r => r.Id == x.RefundId && r.OrderId == o.Id)).GroupBy(x => x.OrderLineId).Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents), Tax = g.Sum(x => x.TaxCents) }).ToListAsync();
         foreach (var l in o.Lines)
         {
             var open = OrderSupport.Unshipped(l);
@@ -376,8 +376,10 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
             var done = priorPerLine.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
             var left = l.Quantity - l.RefundedQty - l.CancelledQty;
             var cents = open == left ? OrderSupport.LineNet(l) - done : OrderSupport.Prorate(OrderSupport.LineNet(l), open, l.Quantity);
+            var doneTax = priorPerLine.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0;
+            var tax = open == left ? l.TaxCents - doneTax : OrderSupport.Prorate(l.TaxCents, open, l.Quantity);
             l.CancelledQty += open;
-            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = l.Id, Quantity = open, AmountCents = Math.Max(0, cents) });
+            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = l.Id, Quantity = open, AmountCents = Math.Max(0, cents), TaxCents = Math.Max(0, tax) });
         }
         refund.AmountCents = refund.Lines.Sum(x => x.AmountCents);
         db.Refunds.Add(refund);
@@ -389,7 +391,8 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         outbox.Enqueue("order.cancelled", o.SellerId, o.MarketplaceOrderId, new
         {
             order = Ref(o), partial = true, reason, note, restocked = restock, cancelledBy = "seller", refundDueCents = refund.AmountCents,
-            lines = refund.Lines.Select(x => new { marketplaceLineId = o.Lines.First(l => l.Id == x.OrderLineId).MarketplaceLineId, quantity = x.Quantity, amountCents = x.AmountCents })
+            taxCents = refund.Lines.Sum(x => x.TaxCents), shippingTaxCents = 0L,       // a remainder cancel carries no shipping, so no shipping tax
+            lines = refund.Lines.Select(x => new { marketplaceLineId = o.Lines.First(l => l.Id == x.OrderLineId).MarketplaceLineId, quantity = x.Quantity, amountCents = x.AmountCents, taxCents = x.TaxCents })
         });
         var r = await SaveAsync(o, "order.changed");
         if (r.Ok) await Audit("order.cancel_remainder", actor, o, $"reason={reason} restock={restock} refund={refund.AmountCents}");
@@ -420,7 +423,8 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         db.AddEvent(o.Id, "order.cancelled", by == Party.Buyer ? Party.Buyer : Party.Seller, by == Party.Seller ? actor : null, $"{reason}" + (note is null ? "" : $": {note}"), now);
         outbox.Enqueue("order.cancelled", o.SellerId, o.MarketplaceOrderId, new
         {
-            order = Ref(o), reason, note, restocked = restock, cancelledBy = by.ToString().ToLowerInvariant(), refundDueCents = o.TotalCents - o.RefundedCents
+            order = Ref(o), reason, note, restocked = restock, cancelledBy = by.ToString().ToLowerInvariant(), refundDueCents = o.TotalCents - o.RefundedCents,
+            taxCents = o.TaxCents + o.ShippingTaxCents, shippingTaxCents = o.ShippingTaxCents       // the tax inside refundDueCents (nothing shipped, so nothing was refunded before)
         });
         var r = await SaveAsync(o, "order.changed");
         if (r.Ok) await Audit("order.cancel", actor, o, $"reason={reason} restock={restock}");
@@ -498,43 +502,49 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
 
     // ---- refunds ----------------------------------------------------------------------------------------------------------
     /// <summary>What would be refunded for the request (null when invalid), used both to validate and to enforce the Manager limit before committing.</summary>
-    public async Task<(Res? Error, long Amount, long Shipping, List<(OrderLine Line, int Qty, long Cents)> Lines)> PlanRefundAsync(SellerOrder o, RefundRequest req)
+    public async Task<(Res? Error, long Amount, long Shipping, long ShippingTax, List<(OrderLine Line, int Qty, long Cents, long Tax)> Lines)> PlanRefundAsync(SellerOrder o, RefundRequest req)
     {
         var prior = await db.RefundLines.Where(x => db.Refunds.Any(r => r.Id == x.RefundId && r.OrderId == o.Id)).GroupBy(x => x.OrderLineId)
-            .Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents) }).ToListAsync();
+            .Select(g => new { Id = g.Key, Cents = g.Sum(x => x.AmountCents), Tax = g.Sum(x => x.TaxCents) }).ToListAsync();
         var priorShip = await db.Refunds.Where(r => r.OrderId == o.Id).SumAsync(r => (long?)r.ShippingCents) ?? 0;
-        var plan = new List<(OrderLine, int, long)>();
+        var priorShipTax = await db.Refunds.Where(r => r.OrderId == o.Id).SumAsync(r => (long?)r.ShippingTaxCents) ?? 0;
+        var plan = new List<(OrderLine, int, long, long)>();
         var ids = new HashSet<Guid>();
         if (!o.Lines.Any(l => l.ShippedQty > 0))
-            return (Res.Conflict("Nothing has shipped yet. Cancel the order instead of refunding it.", "refund_before_ship"), 0, 0, plan);
+            return (Res.Conflict("Nothing has shipped yet. Cancel the order instead of refunding it.", "refund_before_ship"), 0, 0, 0, plan);
         // only units that actually shipped can be refunded; unshipped units are cancelled (stock + reservation are handled there)
         static int Refundable(OrderLine l) => l.ShippedQty - l.RefundedQty;
         long Cents(OrderLine l, int q, long done) => q == l.Quantity - l.RefundedQty - l.CancelledQty
             ? OrderSupport.LineNet(l) - done            // everything that is left of the line: takes the rounding remainder
             : OrderSupport.Prorate(OrderSupport.LineNet(l), q, l.Quantity);
+        long TaxOf(OrderLine l, int q, long doneTax) => q == l.Quantity - l.RefundedQty - l.CancelledQty
+            ? l.TaxCents - doneTax                         // the last refund of the line takes the remainder, so the shares add up to exactly the line's tax
+            : OrderSupport.Prorate(l.TaxCents, q, l.Quantity);
         if (req.Full == true)
         {
             foreach (var l in o.Lines)
             {
                 var q = Refundable(l);
-                if (q > 0) plan.Add((l, q, Math.Max(0, Cents(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0))));
+                if (q > 0) plan.Add((l, q, Math.Max(0, Cents(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0)), Math.Max(0, TaxOf(l, q, prior.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0))));
             }
             var ship = o.ShippingCents - priorShip;
-            var amt = plan.Sum(p => p.Item3) + ship;
-            return (null, amt, ship, plan);
+            var shipTax = OrderSupport.ShippingTaxShare(o, priorShip, priorShipTax, ship);
+            var amt = plan.Sum(p => p.Item3) + ship + shipTax;
+            return (null, amt, ship, shipTax, plan);
         }
         foreach (var w in req.Lines ?? [])
         {
             var l = o.Lines.FirstOrDefault(x => x.Id == w.LineId);
-            if (l is null || !ids.Add(l.Id)) return (Res.Invalid("An item doesn't belong to this order, or appears twice.", "lines"), 0, 0, plan);
+            if (l is null || !ids.Add(l.Id)) return (Res.Invalid("An item doesn't belong to this order, or appears twice.", "lines"), 0, 0, 0, plan);
             var avail = Refundable(l);
-            if (w.Quantity < 1 || w.Quantity > avail) return (Res.Invalid($"You can refund at most {Math.Max(0, avail)} shipped unit(s) of \"{l.Title}\".", "quantity"), 0, 0, plan);
+            if (w.Quantity < 1 || w.Quantity > avail) return (Res.Invalid($"You can refund at most {Math.Max(0, avail)} shipped unit(s) of \"{l.Title}\".", "quantity"), 0, 0, 0, plan);
             var done = prior.FirstOrDefault(p => p.Id == l.Id)?.Cents ?? 0;
-            plan.Add((l, w.Quantity, Math.Max(0, Cents(l, w.Quantity, done))));
+            plan.Add((l, w.Quantity, Math.Max(0, Cents(l, w.Quantity, done)), Math.Max(0, TaxOf(l, w.Quantity, prior.FirstOrDefault(p => p.Id == l.Id)?.Tax ?? 0))));
         }
         var shipping = req.ShippingCents ?? 0;
-        if (shipping < 0 || shipping > o.ShippingCents - priorShip) return (Res.Invalid("The shipping refund can't exceed the shipping that was charged.", "shipping"), 0, 0, plan);
-        return (null, plan.Sum(p => p.Item3) + shipping, shipping, plan);
+        if (shipping < 0 || shipping > o.ShippingCents - priorShip) return (Res.Invalid("The shipping refund can't exceed the shipping that was charged.", "shipping"), 0, 0, 0, plan);
+        var shippingTax = OrderSupport.ShippingTaxShare(o, priorShip, priorShipTax, shipping);
+        return (null, plan.Sum(p => p.Item3) + shipping + shippingTax, shipping, shippingTax, plan);
     }
 
     public async Task<Res> RefundAsync(SellerOrder o, Guid actor, RefundRequest req, Func<long, bool>? allowed = null)
@@ -543,7 +553,7 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         var reason = req.Reason?.Trim().ToLowerInvariant();
         if (reason is null || !OrderSupport.RefundReasons.Contains(reason)) return Res.Invalid("Choose a refund reason.", "reason");
         if (req.Note is { Length: > 1000 }) return Res.Invalid("The note is too long.", "note");
-        var (err, amount, shipping, lines) = await PlanRefundAsync(o, req);
+        var (err, amount, shipping, shippingTax, lines) = await PlanRefundAsync(o, req);
         if (err is not null) return err;
         if (amount <= 0) return Res.Invalid("Nothing to refund: choose items or shipping.", "amount");
         if (amount > o.TotalCents - o.RefundedCents) return Res.Invalid($"You can refund at most {(o.TotalCents - o.RefundedCents) / 100m:0.00} more on this order.", "amount_exceeds");
@@ -557,10 +567,10 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         }
         if (!await ClaimAsync(o, req.Version)) return Stale();
         var now = time.UtcNow();
-        var refund = new OrderRefund { OrderId = o.Id, ReturnId = ret?.Id, AmountCents = amount, ShippingCents = shipping, Reason = reason, Note = req.Note?.Trim(), CreatedAt = now, CreatedBy = actor };
-        foreach (var (line, qty, cents) in lines)
+        var refund = new OrderRefund { OrderId = o.Id, ReturnId = ret?.Id, AmountCents = amount, ShippingCents = shipping, ShippingTaxCents = shippingTax, Reason = reason, Note = req.Note?.Trim(), CreatedAt = now, CreatedBy = actor };
+        foreach (var (line, qty, cents, tax) in lines)
         {
-            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = line.Id, Quantity = qty, AmountCents = cents });
+            refund.Lines.Add(new RefundLine { RefundId = refund.Id, OrderLineId = line.Id, Quantity = qty, AmountCents = cents, TaxCents = tax });
             line.RefundedQty += qty;
         }
         db.Refunds.Add(refund);
@@ -571,9 +581,14 @@ public class OrderActions(AppDbContext db, IInventoryService inventory, Outbox o
         db.AddEvent(o.Id, "order.refunded", Party.Seller, actor, $"{amount / 100m:0.00} {o.Currency} ({(full ? "full" : "partial")}) - {reason}", now);
         outbox.Enqueue("refund.issued", o.SellerId, o.MarketplaceOrderId, new
         {
-            order = Ref(o), refundId = refund.Id, amountCents = amount, shippingCents = shipping, currency = o.Currency, reason, note = refund.Note, full,
+            order = Ref(o), refundId = refund.Id,
+            amountCents = amount,                                       // the TOTAL given back: lines (incl. their tax) + shippingCents + shippingTaxCents
+            shippingCents = shipping,                                   // net of tax
+            shippingTaxCents = shippingTax,
+            taxCents = lines.Sum(x => x.Tax) + shippingTax,             // all the tax inside amountCents
+            currency = o.Currency, reason, note = refund.Note, full,
             totalRefundedCents = o.RefundedCents, returnId = ret?.MarketplaceReturnId,
-            lines = lines.Select(x => new { marketplaceLineId = x.Line.MarketplaceLineId, sku = x.Line.Sku, quantity = x.Qty, amountCents = x.Cents })
+            lines = lines.Select(x => new { marketplaceLineId = x.Line.MarketplaceLineId, sku = x.Line.Sku, quantity = x.Qty, amountCents = x.Cents, taxCents = x.Tax })
         });
         var r = await SaveAsync(o, "order.changed");
         if (r.Ok) { await Audit("order.refund", actor, o, $"amount={amount} full={full}"); r = r with { Data = new { refundId = refund.Id, amountCents = amount } }; }

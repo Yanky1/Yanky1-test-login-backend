@@ -56,8 +56,11 @@ public class SellerOrder
     public long ItemsCents { get; set; }
     public long DiscountCents { get; set; }
     public long ShippingCents { get; set; }
+    /// <summary>Tax on the items (sum of the lines' tax).</summary>
     public long TaxCents { get; set; }
-    /// <summary>What the buyer paid: items - discounts + shipping + tax.</summary>
+    /// <summary>Tax the buyer paid on this group's shipping (C8). In the total, never in the fee base and never in the net (the marketplace remits it).</summary>
+    public long ShippingTaxCents { get; set; }
+    /// <summary>What the buyer paid: items - discounts + shipping + item tax + shipping tax.</summary>
     public long TotalCents { get; set; }
     public long FeeCents { get; set; }
     /// <summary>What the seller earns before refunds: items - discounts + shipping - marketplace fee (tax is remitted by the marketplace).</summary>
@@ -199,8 +202,12 @@ public class OrderRefund
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid OrderId { get; set; }
     public Guid? ReturnId { get; set; }
+    /// <summary>Everything handed back: line amounts (incl. line tax) + ShippingCents + ShippingTaxCents.</summary>
     public long AmountCents { get; set; }
+    /// <summary>The shipping refunded, net of tax.</summary>
     public long ShippingCents { get; set; }
+    /// <summary>The shipping tax refunded (prorated from the order's shipping tax; the group's last shipping refund takes the remainder).</summary>
+    public long ShippingTaxCents { get; set; }
     public string Reason { get; set; } = "";
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -213,7 +220,10 @@ public class RefundLine
     public Guid RefundId { get; set; }
     public Guid OrderLineId { get; set; }
     public int Quantity { get; set; }
+    /// <summary>Includes the line's tax share.</summary>
     public long AmountCents { get; set; }
+    /// <summary>The tax inside <see cref="AmountCents"/> (same proration as the amount: floor, the last refund of the line takes the remainder).</summary>
+    public long TaxCents { get; set; }
 }
 
 /// <summary>Internal note, visible to the seller team only.</summary>

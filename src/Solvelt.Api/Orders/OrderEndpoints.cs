@@ -283,9 +283,9 @@ public static class OrderEndpoints
             var a = ctx.GetAccess()!;
             var o = await Load(db, act, a, id, write: true);
             if (o is null) return Results.NotFound();
-            var (err, amount, shipping, lines) = await act.PlanRefundAsync(o, r);
+            var (err, amount, shipping, shippingTax, lines) = await act.PlanRefundAsync(o, r);
             if (err is not null) return Problem(err.Status, err.Code, err.Message);
-            return Results.Json(new { amountCents = amount, shippingCents = shipping, maxCents = o.TotalCents - o.RefundedCents, lines = lines.Select(l => new { lineId = l.Line.Id, quantity = l.Qty, amountCents = l.Cents }) }, OrderJson.Opts);
+            return Results.Json(new { amountCents = amount, shippingCents = shipping, shippingTaxCents = shippingTax, taxCents = lines.Sum(l => l.Tax) + shippingTax, maxCents = o.TotalCents - o.RefundedCents, lines = lines.Select(l => new { lineId = l.Line.Id, quantity = l.Qty, amountCents = l.Cents, taxCents = l.Tax }) }, OrderJson.Opts);
         }));
 
         // CSV tracking import: apply=false (default) validates only; apply=true ships the valid rows
@@ -379,6 +379,8 @@ public static class OrderEndpoints
             id = o.Id, number = o.Number, brandName = brands.GetValueOrDefault(o.BrandId, ""), placedAt = o.PlacedAt, shippingMethod = o.ShippingMethod,
             shipTo = new { name = o.ShipName, line1 = o.ShipLine1, line2 = o.ShipLine2, city = o.ShipCity, region = o.ShipRegion, postalCode = o.ShipPostalCode, country = o.ShipCountry, phone = o.BuyerPhone },
             giftMessage = o.GiftMessage, isGift = !string.IsNullOrEmpty(o.GiftMessage), showPrices = string.IsNullOrEmpty(o.GiftMessage), currency = o.Currency,
+            shippingSpeed = o.ShippingSpeed, deliverByAt = o.DeliverByAt,
+            shipping = string.IsNullOrEmpty(o.GiftMessage) ? new { shippingCents = o.ShippingCents, shippingTaxCents = o.ShippingTaxCents } : null,   // priced like the lines: hidden on a gift
             lines = o.Lines.Select(l => new { title = l.Title, sku = l.Sku, options = l.OptionsText, quantity = l.Quantity, unshipped = OrderSupport.Unshipped(l), unitPriceCents = l.UnitPriceCents })
         }).ToList();
     }

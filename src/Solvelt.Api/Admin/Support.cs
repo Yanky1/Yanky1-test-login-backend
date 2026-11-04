@@ -78,7 +78,7 @@ public static class SupportEndpoints
                 if (o is null) return Results.NotFound();
                 return Results.Ok(new
                 {
-                    revealed = reveal, o.Id, o.Number, o.SellerId, o.MarketplaceOrderId, status = o.Status.ToString(), o.PlacedAt, o.Currency, o.ItemsCents, o.ShippingCents, o.TaxCents, o.TotalCents, o.FeeCents, o.RefundedCents,
+                    revealed = reveal, o.Id, o.Number, o.SellerId, o.MarketplaceOrderId, status = o.Status.ToString(), o.PlacedAt, o.Currency, o.ItemsCents, o.ShippingCents, o.ShippingTaxCents, o.TaxCents, o.TotalCents, o.FeeCents, o.RefundedCents,
                     lines = await db.OrderLines.AsNoTracking().CountAsync(l => l.OrderId == id),
                     buyer = new { name = N(o.BuyerName), email = E(o.BuyerRelayEmail), phone = P(o.BuyerPhone) },
                     shipTo = new { name = N(o.ShipName), line1 = reveal ? o.ShipLine1 : null, line2 = reveal ? o.ShipLine2 : null, city = o.ShipCity, region = o.ShipRegion, postalCode = Z(o.ShipPostalCode), country = o.ShipCountry },

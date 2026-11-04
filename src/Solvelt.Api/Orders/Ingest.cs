@@ -13,7 +13,7 @@ public record IngestBuyer(string? DisplayName, string? RelayEmail, string? Phone
 public record IngestAddress(string? Name, string? Line1, string? Line2, string? City, string? Region, string? PostalCode, string? Country, double? Lat = null, double? Lng = null);
 public record IngestLine(string? MarketplaceLineId, Guid SellerId, Guid BrandId, Guid? ProductId, Guid? VariantId, string? Sku, int Quantity,
     long UnitPriceCents, long DiscountCents, long TaxCents);
-public record IngestShipping(Guid SellerId, Guid BrandId, long AmountCents);
+public record IngestShipping(Guid SellerId, Guid BrandId, long AmountCents, string? Speed = null, string? Method = null, long? TaxCents = null);
 /// <summary>Additive: the buyer chose local delivery from this seller (and brand) for this date and window (see docs/LOCAL-DELIVERY.md).</summary>
 public record IngestDelivery(Guid SellerId, Guid BrandId, string? Method, Guid? WindowId, DateOnly? Date);
 public record IngestOrder(string? MarketplaceOrderId, DateTime? PlacedAt, string? Currency, IngestBuyer? Buyer, IngestAddress? ShippingAddress,
@@ -32,6 +32,15 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
     /// <summary>Upper bound for any single money field (10,000,000.00): keeps every sum far inside <c>long</c> (100 lines x 10,000 units).</summary>
     public const long MaxCents = 1_000_000_000;
     public static readonly string[] Speeds = ["standard", "expedited", "overnight"];
+
+    private sealed record GroupShipping(long AmountCents, long TaxCents, string? Speed, string? Method);
+
+    /// <summary>A shipping method label: trimmed, control characters removed, 1 to 80 characters (null when empty or too long).</summary>
+    public static string? CleanMethod(string? s)
+    {
+        var t = new string((s ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        return t.Length is >= 1 and <= 80 ? t : null;
+    }
 
     private static bool Bad(string? s, int max, bool required = true) => string.IsNullOrWhiteSpace(s) ? required : s.Length > max;
 
@@ -63,8 +72,26 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
 
         var now = time.UtcNow();
         var placed = req.PlacedAt is { } p && p <= now.AddMinutes(5) && p > now.AddYears(-1) ? OrderSupport.Utc(p) : now;
-        var shippingBy = (req.Shipping ?? []).GroupBy(s => (s.SellerId, s.BrandId)).ToDictionary(g => g.Key, g => g.Sum(x => x.AmountCents));
-        foreach (var s in req.Shipping ?? []) if (s.AmountCents is < 0 or > MaxCents) Err(-1, "shipping", "Shipping amounts must be between 0 and 10,000,000.00.");
+        foreach (var s in req.Shipping ?? [])
+        {
+            if (s.AmountCents is < 0 or > MaxCents) Err(-1, "shipping", "Shipping amounts must be between 0 and 10,000,000.00.");
+            if (s.TaxCents is < 0 or > MaxCents) Err(-1, "shipping.taxCents", "shipping[].taxCents must be between 0 and 10,000,000.00.");
+            if (s.Speed is { } sp && !Speeds.Contains(sp.Trim().ToLowerInvariant())) Err(-1, "shipping.speed", "shipping[].speed must be standard, expedited or overnight.");
+            if (s.Method is { } m && CleanMethod(m) is null) Err(-1, "shipping.method", "shipping[].method must be 1 to 80 printable characters.");
+        }
+        // one entry per (seller, brand) group; if a group is repeated, amounts and tax add up and the entries must agree on speed and method
+        var shippingBy = new Dictionary<(Guid, Guid), GroupShipping>();
+        foreach (var s in req.Shipping ?? [])
+        {
+            if (s.AmountCents is < 0 or > MaxCents || s.TaxCents is < 0 or > MaxCents) continue;
+            var key = (s.SellerId, s.BrandId);
+            var speedOf = s.Speed?.Trim().ToLowerInvariant(); var methodOf = s.Method is null ? null : CleanMethod(s.Method);
+            if (!shippingBy.TryGetValue(key, out var gs)) { shippingBy[key] = new GroupShipping(s.AmountCents, s.TaxCents ?? 0, speedOf, methodOf); continue; }
+            if ((gs.Speed is not null && speedOf is not null && gs.Speed != speedOf) || (gs.Method is not null && methodOf is not null && gs.Method != methodOf))
+                Err(-1, "shipping", "The shipping entries of one seller/brand group disagree on speed or method.");
+            shippingBy[key] = new GroupShipping(gs.AmountCents + s.AmountCents, gs.TaxCents + (s.TaxCents ?? 0), gs.Speed ?? speedOf, gs.Method ?? methodOf);
+        }
+        foreach (var (_, gs) in shippingBy) if (gs.TaxCents > 0 && gs.AmountCents == 0) Err(-1, "shipping.taxCents", "shipping[].taxCents needs a shipping amount above zero.");
 
         // resolve + validate lines
         var resolved = new List<(IngestLine L, Product P, ProductVariant? V, int Index)>();
@@ -116,20 +143,22 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         {
             foreach (var g in resolved.GroupBy(r => (r.L.SellerId, r.L.BrandId)))
             {
+                var gShip = shippingBy.GetValueOrDefault(g.Key);
+                var gSpeed = gShip?.Speed ?? speed;                                         // a group's own speed/method wins over the order-level ones
                 var order = new SellerOrder
                 {
                     SellerId = g.Key.SellerId, BrandId = g.Key.BrandId, MarketplaceOrderId = mid, PlacedAt = placed, Currency = currency,
                     BuyerName = req.Buyer!.DisplayName!.Trim(), BuyerRelayEmail = req.Buyer.RelayEmail?.Trim(), BuyerPhone = req.Buyer.Phone?.Trim(),
                     ShipName = ad!.Name!.Trim(), ShipLine1 = ad.Line1!.Trim(), ShipLine2 = ad.Line2?.Trim(), ShipCity = ad.City!.Trim(),
                     ShipRegion = ad.Region?.Trim(), ShipPostalCode = ad.PostalCode!.Trim(), ShipCountry = ad.Country!.ToUpperInvariant(),
-                    ShippingMethod = (req.ShippingMethod ?? speed).Trim(), ShippingSpeed = speed, GiftMessage = req.GiftMessage?.Trim(),
-                    ShippingCents = shippingBy.GetValueOrDefault(g.Key), CreatedAt = now, UpdatedAt = now
+                    ShippingMethod = (gShip?.Method ?? req.ShippingMethod ?? gSpeed).Trim(), ShippingSpeed = gSpeed, GiftMessage = req.GiftMessage?.Trim(),
+                    ShippingCents = gShip?.AmountCents ?? 0, ShippingTaxCents = gShip?.TaxCents ?? 0, CreatedAt = now, UpdatedAt = now
                 };
                 var sellerHandling = await db.SellerShippingSettings.AsNoTracking().Where(x => x.SellerId == g.Key.SellerId && x.HandlingDays != null && (x.ScopeKey == g.Key.BrandId || x.ScopeKey == Guid.Empty))
                     .OrderByDescending(x => x.ScopeKey).Select(x => x.HandlingDays).FirstOrDefaultAsync();   // brand setting, else account setting (Settings > Shipping)
                 var handling = g.Max(r => r.P.HandlingDays ?? sellerHandling ?? o.DefaultHandlingDays);
                 order.ShipByAt = placed.AddDays(handling);
-                order.DeliverByAt = order.ShipByAt.AddDays(Transit[speed]);
+                order.DeliverByAt = order.ShipByAt.AddDays(Transit[gSpeed]);
                 foreach (var (l, prod, variant, _) in g)
                 {
                     var line = new OrderLine

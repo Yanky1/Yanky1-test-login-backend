@@ -98,7 +98,7 @@ public static class OrderViews
             shippingAddress = new { name = o.ShipName, line1 = o.ShipLine1, line2 = o.ShipLine2, city = o.ShipCity, region = o.ShipRegion, postalCode = o.ShipPostalCode, country = o.ShipCountry },
             money = new
             {
-                itemsCents = o.ItemsCents, discountCents = o.DiscountCents, shippingCents = o.ShippingCents, taxCents = o.TaxCents, totalCents = o.TotalCents,
+                itemsCents = o.ItemsCents, discountCents = o.DiscountCents, shippingCents = o.ShippingCents, shippingTaxCents = o.ShippingTaxCents, taxCents = o.TaxCents, totalCents = o.TotalCents,
                 feeCents = o.FeeCents, netCents = o.NetCents, refundedCents = o.RefundedCents, refundableCents = o.Status == OrderStatus.Cancelled ? 0 : o.TotalCents - o.RefundedCents
             },
             lines = o.Lines.Select(l => new

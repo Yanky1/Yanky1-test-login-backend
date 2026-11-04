@@ -2862,6 +2862,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<long>("ShippingCents")
                         .HasColumnType("bigint");
 
+                    b.Property<long>("ShippingTaxCents")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("OrderId");
@@ -4230,6 +4233,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("integer");
 
+                    b.Property<long>("TaxCents")
+                        .HasColumnType("bigint");
+
                     b.HasKey("RefundId", "OrderLineId");
 
                     b.ToTable("order_refund_lines", (string)null);
@@ -4718,6 +4724,9 @@ namespace Solvelt.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(24)
                         .HasColumnType("character varying(24)");
+
+                    b.Property<long>("ShippingTaxCents")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Status")
                         .IsRequired()
