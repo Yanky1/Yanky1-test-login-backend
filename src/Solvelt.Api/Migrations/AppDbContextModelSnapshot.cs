@@ -2930,7 +2930,9 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("AggregateId", "OrderKey");
 
-                    b.HasIndex("SequenceScope", "OrderKey");
+                    b.HasIndex("SequenceScope", "OrderKey")
+                        .IsUnique()
+                        .HasFilter("\"SequenceScope\" IS NOT NULL");
 
                     b.HasIndex("Status", "NextAttemptAt");
 
