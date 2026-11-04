@@ -30,7 +30,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
 
     public static long Prorate(long rateCentsPerHour, int minutes) => (long)Math.Round(rateCentsPerHour * (decimal)minutes / 60m, 0, MidpointRounding.AwayFromZero);
 
-    public static BookingPolicy PolicyOf(ServiceDetails d) => new(d.CancelFreeHours, d.CancelFeePercent, d.MaxReschedules, d.NoShowFeePercent, d.IncrementMinutes, d.ApprovalHours);
+    public static BookingPolicy PolicyOf(ServiceDetails d) => new(d.CancelFreeHours, d.CancelFeePercent, d.MaxReschedules, d.NoShowFeePercent, d.IncrementMinutes, d.BookingMode == BookingMode.Instant ? null : d.ApprovalHours);
 
     public static object Summary(Booking b, string? onlineInstructions = null) => new
     {
@@ -38,7 +38,8 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         location = b.Location.ToString().ToLowerInvariant(), startAt = BJson.Utc(b.StartUtc), endAt = BJson.Utc(b.EndUtc), durationMinutes = b.DurationMinutes,
         holdExpiresAt = b.HoldExpiresAt, approvalDeadline = b.ApprovalDeadline, priceCents = b.PriceCents, addOnsCents = b.AddOnsCents, travelFeeCents = b.TravelFeeCents,
         totalCents = b.TotalCents, cancellationFeeCents = b.CancellationFeeCents, additionalChargeCents = b.AdditionalChargeCents, proposedStartAt = b.ProposedStartUtc,
-        rescheduleCount = b.RescheduleCount, onlineInstructions = b.Location == LocationKind.Online && b.Status is BookingStatus.Confirmed or BookingStatus.Rescheduled or BookingStatus.InProgress ? onlineInstructions : null
+        rescheduleCount = b.RescheduleCount, onlineInstructions = b.Location == LocationKind.Online && b.Status is BookingStatus.Confirmed or BookingStatus.Rescheduled or BookingStatus.InProgress ? onlineInstructions : null,
+        policy = PolicyView.OfSnapshot(b.PolicyJson)       // the snapshot taken when the booking was made, never the service's current policy
     };
 
     private async Task<string?> InstructionsAsync(Booking b) =>
@@ -50,7 +51,8 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         {
             ["booking"] = new { bookingId = b.Id, number = b.Number, marketplaceBookingId = b.MarketplaceBookingId },
             ["status"] = b.Status.ToString(), ["serviceId"] = b.ProductId, ["providerId"] = b.ProviderId, ["location"] = b.Location.ToString().ToLowerInvariant(),
-            ["startAt"] = BJson.Utc(b.StartUtc), ["endAt"] = BJson.Utc(b.EndUtc), ["totalCents"] = b.TotalCents
+            ["startAt"] = BJson.Utc(b.StartUtc), ["endAt"] = BJson.Utc(b.EndUtc), ["totalCents"] = b.TotalCents,
+            ["policy"] = PolicyView.OfSnapshot(b.PolicyJson)
         };
         if (extra is not null) foreach (var p in extra.GetType().GetProperties()) d[char.ToLowerInvariant(p.Name[0]) + p.Name[1..]] = p.GetValue(extra);
         return d;
