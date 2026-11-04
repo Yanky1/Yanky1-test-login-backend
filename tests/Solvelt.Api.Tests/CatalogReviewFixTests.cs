@@ -408,5 +408,34 @@ public class CatalogReviewFixTests(CatalogFactory f) : IClassFixture<CatalogFact
         Assert.Equal(HttpStatusCode.OK, (await ProdApi.Put(s.Owner, s.Product, d => d["cost"] = 4.25)).StatusCode);     // a cost price is private
         Assert.DoesNotContain(fx.Log.All(), x => x.Contains("catalog_counter"));                                              // no lock, no version: drafts and private edits never serialize on it
     }
+
+    [Fact]
+    public async Task Deciders_that_both_listed_the_open_reports_before_either_claimed_still_emit_one_event_per_report()
+    {
+        // The row claim already lets one decider win; this pins the SECOND guard, the per-report claim (WHERE Decision IS NULL): a report added to a queue row while two
+        // overlapping decisions run is listed by both, and only the one that wins its claim may queue the event.
+        var rid = await Report("review", "rev-overlap-" + Guid.NewGuid().ToString("N")[..8]);
+        var queue = Queue(rid);
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
+        {
+            using var scope = f.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Data.AppDbContext>();
+            var svc = scope.ServiceProvider.GetRequiredService<ModerationService>();
+            var row = await db.ModerationReports.AsNoTracking().SingleAsync(r => r.Id == queue);
+            await Task.Yield();
+            await svc.DecideAsync(row, "dismissed", null);
+            await db.SaveChangesAsync();
+        }));
+        Assert.Single(Decided(rid));
+        Assert.Equal("dismissed", f.WithDb(db => db.ContentReports.AsNoTracking().Single(c => c.ReportId == rid).Decision));
+        // a report that joins the row afterwards is decided by the next decision, and only it
+        var late = await Report("review", f.WithDb(db => db.ContentReports.AsNoTracking().Single(c => c.ReportId == rid).TargetRef));
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<Solvelt.Api.Data.AppDbContext>();
+        await scope2.ServiceProvider.GetRequiredService<ModerationService>().DecideAsync(await db2.ModerationReports.AsNoTracking().SingleAsync(r => r.Id == queue), "hidden", null);
+        await db2.SaveChangesAsync();
+        Assert.Single(Decided(rid)); Assert.Equal("dismissed", (string)Decided(rid)[0]["data"]!["decision"]!);
+        Assert.Equal("hidden", (string)Assert.Single(Decided(late))["data"]!["decision"]!);
+    }
 }
 
