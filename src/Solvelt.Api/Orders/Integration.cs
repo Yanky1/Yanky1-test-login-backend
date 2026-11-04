@@ -48,8 +48,32 @@ public static class Signing
         : Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(o.InboundSecret), Encoding.UTF8.GetBytes("solvelt.catalog-image.v1"))).ToLowerInvariant();
 }
 
+/// <summary>
+/// Decides whether a rejected inbound request may write an <c>inbound.rejected</c> audit row: at most N per client IP per minute, counted in memory. Without it every forged request
+/// cost one database insert (nothing deleted them), so the per-IP failed-request bucket only turned the 401 into a 429 and bounded no server work.
+/// Auditing never decides whether a request is refused: signed requests that share an IP with garbage are not affected.
+/// </summary>
+public sealed class InboundRejectedSampler(TimeProvider time)
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Minute, int Count)> _seen = new();
+
+    public bool Allow(string ip, int perMinute)
+    {
+        var minute = time.GetUtcNow().ToUnixTimeSeconds() / 60;
+        if (_seen.Count > 10_000) foreach (var k in _seen.Where(x => x.Value.Minute < minute).Select(x => x.Key).ToList()) _seen.TryRemove(k, out _);   // bounded memory
+        var allowed = false;
+        _seen.AddOrUpdate(ip, _ => { allowed = perMinute > 0; return (minute, 1); }, (_, cur) =>
+        {
+            if (cur.Minute != minute) { allowed = perMinute > 0; return (minute, 1); }
+            allowed = cur.Count < perMinute;
+            return (minute, cur.Count + 1);
+        });
+        return allowed;
+    }
+}
+
 /// <summary>Verifies signed inbound requests: headers present, timestamp in window, signature valid, nonce unused. Returns the raw body on success.</summary>
-public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimeProvider time)
+public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimeProvider time, InboundRejectedSampler sampler)
 {
     public record Result(byte[]? Body, int Status, string Code, string Message)
     {
@@ -61,7 +85,8 @@ public class InboundVerifier(IOptions<OrderOptions> opt, AppDbContext db, TimePr
     {
         var res = await VerifyCoreAsync(req, ct, purpose);
         // rejected signatures / stale timestamps / replays are counted for the staff integration-health page (no payload, no secrets)
-        if (!res.Ok && res.Code is "bad_signature" or "stale" or "replayed" or "bad_timestamp" or "unsigned")
+        if (!res.Ok && res.Code is "bad_signature" or "stale" or "replayed" or "bad_timestamp" or "unsigned"
+            && sampler.Allow(req.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", opt.Value.InboundRejectedAuditPerIpPerMinute))   // sampled per IP: a flood writes a bounded number of rows
         {
             try
             {

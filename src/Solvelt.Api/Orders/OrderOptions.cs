@@ -25,6 +25,10 @@ public class OrderOptions
     public int RedactAfterDays { get; set; } = 90;
     /// <summary>Decided marketplace content reports lose the reporter's reference, reason and note this many days after the decision (open reports are kept).</summary>
     public int ContentReportRedactAfterDays { get; set; } = 90;
+    /// <summary>At most this many <c>inbound.rejected</c> audit rows are written per client IP per minute (a flood of unsigned requests costs one counter increment each beyond that, not a database insert).</summary>
+    public int InboundRejectedAuditPerIpPerMinute { get; set; } = 20;
+    /// <summary><c>inbound.rejected</c> audit rows are deleted by the maintenance job after this many days.</summary>
+    public int InboundRejectedRetentionDays { get; set; } = 30;
     public int OutboxMaxAttempts { get; set; } = 8;
     public int OutboxBackoffSeconds { get; set; } = 30;
     /// <summary>Managers may refund up to this many cents per order; 0 (default) means only Owners/Admins can refund.</summary>

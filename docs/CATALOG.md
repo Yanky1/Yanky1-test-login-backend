@@ -186,6 +186,7 @@ The marketplace is ONE caller for all shoppers, so a per-IP key would be a globa
 
 * The caller is `marketplace`: the holder of `Orders:InboundSecret` is the only verified identity this API has.
 * A request that fails verification is answered with its own status (`401 ...`) while the per-IP bucket has room and with `429 rate_limited` after that. Verified requests never touch that bucket, so a forged flood from any address (even the marketplace's own) cannot make signed requests fail.
+* **Audit rows of rejected requests are bounded.** Every rejected signature, stale timestamp, replay or unsigned request writes an `inbound.rejected` audit row for the staff integration-health page, but at most `Orders:InboundRejectedAuditPerIpPerMinute` (20) per client IP and minute, and the maintenance job deletes them after `Orders:InboundRejectedRetentionDays` (30): a flood of forged requests costs counter increments, not database rows. The count on the health page is therefore a sample during a flood. The bucket above still decides the `429`; auditing never refuses anything.
 * `429` bodies are `{code: "rate_limited", ...}` with `Retry-After: 60`. The old keys `RateLimit:InternalQuestionsPerMinute` and `RateLimit:InternalReportsPerMinute` are gone.
 
 ## 9. Delivery options (`delivery`)
