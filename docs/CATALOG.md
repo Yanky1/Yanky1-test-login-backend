@@ -19,7 +19,7 @@ Everything here lives under the signed internal API `/api/internal/v1` and is si
 A listing (a `Product`: type `product` or `service`) is **visible** only while ALL hold: status `Active`, not hidden by staff (`ModeratedAt` empty), seller account `Approved`
 (so not suspended), brand `Active`. Drafts, inactive, archived, hidden, moderated and suspended-seller listings are never served, whatever their content.
 When a visible listing stops being visible the contract says why (`reason`, first match wins): `moderated` (staff hid or removed it), `archived`, `seller_suspended`,
-`brand_removed` (brand archived), `not_active` (draft/inactive).
+`brand_removed` (brand archived), `not_active` (draft/inactive); and `deleted` (the seller deleted the listing: it is gone for good).
 
 ## 2. Versions and the cursor
 
@@ -46,7 +46,8 @@ GET /api/internal/v1/catalog/listings?since=1840&limit=2
 ```
 Start with `since` omitted (or `0`). `limit` defaults to 50; outside 1..200 is `400 invalid_limit`; a bad cursor is `400 invalid_cursor`.
 
-A **tombstone** tells a consumer that missed the `listing.unlisted` event that a listing it knew is gone. Only listings that were visible at least once appear, with no content:
+A **tombstone** tells a consumer that missed the `listing.unlisted` event that a listing it knew is gone. Only listings that were visible at least once appear, with no content. A DELETED listing keeps a tombstone of its own
+(a small `catalog_tombstones` row with a version from the same counter and `reason: "deleted"`, kept for good), written in the same transaction as the deletion, so a reader whose cursor is behind the deletion still gets it:
 ```json
 { "listingId": "7b0f...", "version": 1853, "listed": false, "reason": "moderated" }
 ```
@@ -80,13 +81,13 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
   "publishedAt": "...", "updatedAt": "..."
 }
 ```
-* **`searchTerms`** is a `string[]` built from the seller's search keywords (one free-text field of the product form): split on commas, semicolons and line breaks, trimmed, blanks and case-insensitive duplicates removed, order kept; an empty array when there are none. Editing the keywords creates a new version.
+* **`searchTerms`** is a `string[]` built from the seller's search keywords (one free-text field of the product form, 250 characters): terms are separated by **commas, semicolons or line breaks** (a space belongs to the term: `coffee cup` is one term); control characters are stripped, terms trimmed, blanks and case-insensitive duplicates removed, order kept; at most **20 terms of 50 characters**; a term containing an **e-mail address or a phone number** (7+ digits in a run) is refused when the seller saves it and is never published; an empty array when there are none. Editing the keywords creates a new version.
 * **`delivery`** says how the listing reaches the buyer, always present, always explicit: `{ships: bool, localDelivery: bool, serviceLocations: ("online"|"customer"|"seller")[]}`; see section 9 for how each value is derived.
 * **Money** is integer minor units plus `currency` (USD today). `variants[].price` is already resolved (the variant's own price, else the listing's). The sale window is sent
   raw (`startsAt`/`endsAt`); `active` is evaluated when the document is built, so evaluate the dates yourself if you cache the document. Sale start/end passing does not create a new version.
 * **Availability** is a *state*, never a quantity: `in_stock`, `low_stock` (at or below the seller's low-stock alert), `out_of_stock`, `backorder` (out of stock but backorders allowed);
   services are `available`. A listing with variants takes the best state of its enabled variants. Selling one unit of many does **not** create a version; crossing a state boundary does.
-* **Variants**: enabled variants only; images of disabled variants are not listed. **Questions**: only published answers; the asker's name is never included.
+* **Variants**: enabled variants only; images of disabled variants are not listed (the image endpoint still serves them by id while the listing is visible). **Questions**: only published answers; the asker's name is never included.
 * `service` (services only): `{pricingModel, priceMinor, minMinutes, maxMinutes, incrementMinutes, defaultDurationMinutes, online, atCustomer, atSeller, bookingMode, travelFeeMinor}`
   (no meeting links, no addresses, no intake forms).
 * **Never present**: cost prices, quality scores, reserved or exact stock, SKUs' internal notes, weights and box dimensions, seller contact name/phone/e-mail/address, brand contact e-mail,
@@ -101,7 +102,9 @@ only active brands that currently have a visible listing. The brand contact e-ma
 
 ### Images
 `GET /catalog/images/{imageId}` streams the stored original bytes (metadata already stripped at upload) with the stored `Content-Type`, `X-Content-Type-Options: nosniff` and
-`Content-Disposition: inline`. It is `404` for every image that is not an image of a currently visible listing (unknown id, draft, hidden, suspended, unlisted, or a disabled variant's image).
+`Content-Disposition: inline`. It is `404` for every image that is not an image of a currently visible listing (unknown id, draft, hidden, suspended, unlisted).
+
+**Image key.** Image downloads may be signed with their own key, so a component that only fetches images (an edge proxy, a CDN worker) never holds the key that can read the feed or write: `imageKey = lower-case hex of HMAC-SHA256(key = Orders:InboundSecret as UTF-8, message = "solvelt.catalog-image.v1")`, used exactly like the inbound secret (same headers and canonical string). `Orders:ImageKey` replaces the derived key when set. The image key is accepted ONLY by `GET /catalog/images/{imageId}` (everywhere else `401 bad_signature`); the inbound secret still works for images too (`Orders:ImageAcceptInboundKey`, default `true`; set it to `false` once the marketplace signs images with the image key).
 
 ## 4. Events (outbox, `docs/ORDERS.md` section 3.4)
 
@@ -110,7 +113,7 @@ Written in the **same transaction** as the change, through the existing outbox, 
 | Event | `data` |
 |---|---|
 | `listing.upserted` | `{listingId, version}`: fetch `GET /catalog/listings/{listingId}` (or take it from the feed). |
-| `listing.unlisted` | `{listingId, version, reason}` with `reason` in `not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`. |
+| `listing.unlisted` | `{listingId, version, reason}` with `reason` in `not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`, `deleted`. |
 
 **Trust the body, not the headers:** the webhook signature covers `<timestamp>.<raw body>` only, so take the event id and type from the signed body fields (`id`, `type`), not from `X-Solvelt-Event-Id` / `X-Solvelt-Event-Type` (those headers are not signed). The same applies to `content.report_decided`.
 
@@ -138,6 +141,8 @@ source of truth: if you missed events, resume the feed from your cursor.
 (the `messageId` you sent in `POST /messages`). `reportId` (≤100) is the idempotency key: `201 {reportId, status:"open", decision:null, duplicate:false}`, a repeat `200 ... duplicate:true`
 (with the decision once staff decided), the same id for a different report `409 report_id_conflict`. Validation errors `422 invalid_report`, unknown listing/message `404 not_found`.
 `reporterRef` is the marketplace's opaque reference for the reporter (stored for staff; never a name or e-mail).
+A message id is unique per seller only: when the same `messageId` exists for several sellers the report cannot be matched to one message and is refused with `422 ambiguous_target` (`POST /messages/{id}/reports` answers `422 ambiguous_message`); nothing is flagged.
+**Retention:** once a report is decided and `Orders:ContentReportRedactAfterDays` (90) have passed, its `reporterRef`, `reason` and `note` are replaced by `[redacted]` (the queue row's copy of the reason too); the report id, kind, target and decision stay. Open reports are never redacted.
 
 The report joins the staff moderation queue (`docs/ADMIN.md`) as one row per target: listing reports reuse the existing "report listing" row, message reports flag the message through the
 existing report-message path, review reports create a `review` row. A repeat report of a decided target reopens the row; each report keeps its own decision.
