@@ -90,8 +90,8 @@ A **tombstone** tells a consumer that missed the `listing.unlisted` event that a
 * **Availability** is a *state*, never a quantity: `in_stock`, `low_stock` (at or below the seller's low-stock alert), `out_of_stock`, `backorder` (out of stock but backorders allowed);
   services are `available`. A listing with variants takes the best state of its enabled variants. Selling one unit of many does **not** create a version; crossing a state boundary does.
 * **Variants**: enabled variants only; images of disabled variants are not listed (the image endpoint still serves them by id while the listing is visible). **Questions**: only published answers; the asker's name is never included.
-* `service` (services only): `{pricingModel, priceMinor, minMinutes, maxMinutes, incrementMinutes, defaultDurationMinutes, online, atCustomer, atSeller, bookingMode, travelFeeMinor}`
-  (no meeting links, no addresses, no intake forms).
+* `service` (services only): `{pricingModel, priceMinor, minMinutes, maxMinutes, incrementMinutes, defaultDurationMinutes, online, atCustomer, atSeller, bookingMode, travelFeeMinor, policy}`
+  (no meeting links, no addresses, no intake forms). `policy` is the service's **current** cancellation policy `{cancelFreeHours, cancelFeePercent, noShowFeePercent, maxReschedules, approvalHours}` (`approvalHours` null for instant booking); changing it gives the listing a new version and a `listing.upserted`. A booking carries its own snapshot, see `docs/SERVICES.md`. The booking options (add-ons, intake questions, providers) are NOT in the feed: `GET /api/internal/v1/services/{serviceId}/options`, `docs/SERVICES.md`.
 * **Never present**: cost prices, quality scores, reserved or exact stock, SKUs' internal notes, seller contact name/phone/e-mail/address, brand contact e-mail,
   buyer names, moderation reasons, draft data, or anything of a hidden, moderated or unlisted listing.
 
