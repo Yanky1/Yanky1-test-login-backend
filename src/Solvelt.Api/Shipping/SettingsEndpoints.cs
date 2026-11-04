@@ -88,7 +88,7 @@ public static class ShippingSettingsEndpoints
         return null;
     }
 
-    private static async Task<IResult> Full(AppDbContext db, AccountAccess a, IOptions<ShippingOptions> opt, LabelService labels, IShippingProvider provider, Bookings.CalendarService cal)
+    private static async Task<IResult> Full(AppDbContext db, AccountAccess a, IOptions<ShippingOptions> opt, LabelService labels, IShippingProvider provider)
     {
         var brandIds = await db.BrandsFor(a).Select(b => b.Id).ToListAsync();
         bool Vis(Guid? b) => b is null || brandIds.Contains(b.Value);
@@ -102,8 +102,7 @@ public static class ShippingSettingsEndpoints
             settings = settings.Select(s => new { brandId = s.BrandId, handlingDays = s.HandlingDays, labelFormat = s.LabelFormat, returnAddressId = s.ReturnAddressId }),
             labelFormats = LabelFormats.All, defaultLabelFormat = opt.Value.LabelFormat, speeds = ShippingSupport.Speeds, provider = provider.Name,
             spend = new { limitCents = opt.Value.SpendLimitCentsPerMonth, spentCents = await labels.SpentThisMonthAsync(a.SellerId) },
-            canManage = a.Has(Permission.ShippingManage),
-            accountTimeZone = await cal.AccountZoneIdAsync(a.SellerId)   // the zone shipping dates are shown in (same account zone as the calendar)
+            canManage = a.Has(Permission.ShippingManage)
         }, OrderJson.Opts);
     }
 
@@ -112,7 +111,7 @@ public static class ShippingSettingsEndpoints
         var grp = g.MapGroup("/seller/shipping").RequireAuthorization("Seller").RequireAuthorization("VerifiedEmail").RequireRateLimiting("shipping").RequirePermission(Permission.BrandWorkRead);
         var manage = (RouteHandlerBuilder b) => b.RequirePermission(Permission.ShippingManage);
 
-        grp.MapGet("/settings", async (HttpContext ctx, AppDbContext db, IOptions<ShippingOptions> opt, LabelService labels, IShippingProvider provider, Bookings.CalendarService cal) => await Full(db, ctx.GetAccess()!, opt, labels, provider, cal));
+        grp.MapGet("/settings", async (HttpContext ctx, AppDbContext db, IOptions<ShippingOptions> opt, LabelService labels, IShippingProvider provider) => await Full(db, ctx.GetAccess()!, opt, labels, provider));
 
         // ---- ship-from addresses -------------------------------------------------------------------------------------------------
         manage(grp.MapPost("/addresses", async (HttpContext ctx, AppDbContext db, IShippingProvider provider, TimeProvider time, IAuditLog audit, AddressInput body) =>
