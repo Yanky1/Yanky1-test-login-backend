@@ -44,8 +44,17 @@ public static class PaymentsModelConfig
         });
         b.Entity<PaymentDispute>(e =>
         {
-            e.ToTable("payment_disputes"); e.HasIndex(x => x.ExternalId).IsUnique(); e.HasIndex(x => x.SellerId);
+            e.ToTable("payment_disputes"); e.HasIndex(x => x.ExternalId); e.HasIndex(x => x.SellerId);
+            // one row per (dispute, seller order); a booking dispute is one row per (dispute, booking)
+            e.HasIndex(x => new { x.ExternalId, x.OrderId }).IsUnique().HasFilter("\"OrderId\" IS NOT NULL");
+            e.HasIndex(x => new { x.ExternalId, x.BookingId }).IsUnique().HasFilter("\"BookingId\" IS NOT NULL");
             e.Property(x => x.Status).HasMaxLength(16); e.Property(x => x.Currency).HasMaxLength(3);
+        });
+        b.Entity<UnallocatedDispute>(e =>
+        {
+            e.ToTable("payment_unallocated_disputes"); e.HasIndex(x => x.ExternalId).IsUnique(); e.HasIndex(x => x.ResolvedAt);
+            e.Property(x => x.ExternalId).HasMaxLength(100); e.Property(x => x.Currency).HasMaxLength(3); e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.MarketplaceOrderId).HasMaxLength(100); e.Property(x => x.ChargeRef).HasMaxLength(100); e.Property(x => x.Note).HasMaxLength(300);
         });
         b.Entity<PaymentReference>(e =>
         {

@@ -152,6 +152,17 @@ public static class PaymentAdminEndpoints
             return Results.Ok(new { total = await q.CountAsync(), page = pg, pageSize = size, items = rows });
         }, StaffPermission.PaymentsView);
 
+        // Stripe disputes on a charge that covers several seller orders and that the marketplace has not (fully) allocated yet: no seller was debited
+        p.AGet("/unallocated-disputes", async (bool? open, int? page, int? pageSize, AppDbContext db) =>
+        {
+            var (pg, size) = AdminHttp.Paging(page, pageSize);
+            var q = db.UnallocatedDisputes.AsNoTracking().AsQueryable();
+            if (open ?? true) q = q.Where(u => u.ResolvedAt == null);
+            var rows = await q.OrderByDescending(u => u.CreatedAt).Skip((pg - 1) * size).Take(size).ToListAsync();
+            return Results.Ok(new { total = await q.CountAsync(), page = pg, pageSize = size, items = rows.Select(u => new { u.Id, disputeId = u.ExternalId, u.MarketplaceOrderId, u.ChargeRef, u.Currency, stripeAmountCents = u.AmountCents, allocatedCents = u.AllocatedCents,
+                u.Status, u.Reason, u.EvidenceDueBy, u.FlagId, u.Note, u.CreatedAt, u.UpdatedAt, u.ResolvedAt }) });
+        }, StaffPermission.PaymentsView);
+
         p.APost("/reconciliation/run", async (HttpContext ctx, ReconciliationService svc, AdminAudit audit) =>
         {
             var r = await svc.RunAsync();
@@ -165,6 +176,7 @@ public static class PaymentAdminEndpoints
             var now = time.UtcNow(); var by = ctx.Staff().UserId;
             var n = await db.ReconciliationFlags.Where(f => f.Id == id && f.ResolvedAt == null).ExecuteUpdateAsync(u => u.SetProperty(f => f.ResolvedAt, now).SetProperty(f => f.ResolvedBy, by));
             if (n == 0) return Results.NotFound();
+            await db.UnallocatedDisputes.Where(u => u.FlagId == id && u.ResolvedAt == null).ExecuteUpdateAsync(u => u.SetProperty(x => x.ResolvedAt, now).SetProperty(x => x.Note, "staff: " + (reason.Length > 280 ? reason[..280] : reason)));
             await audit.WriteAsync(ctx.Staff(), "payments.reconciliation_resolved", "reconciliation", id, reason);
             return Results.Ok(new { resolved = true });
         }, StaffPermission.PaymentsRetry);
