@@ -147,10 +147,10 @@ public class ShippingTrackingTests
         var cap = await Pay.Capture(f, mid, null);
         Assert.Equal(HttpStatusCode.OK, cap.StatusCode);
         Assert.Equal(0, (await Pay.Release(f)).Released);                                   // not delivered yet
-        var when = f.Time.GetUtcNow().UtcDateTime.AddDays(1);
+        var when = f.Time.GetUtcNow().UtcDateTime.AddDays(1);                               // a carrier time in the future is clamped to now (see the review tests)
         Assert.Equal("applied", await Ship.Track(f, Ship.Tn(label), "delivered", when));
         var o = Ship.Order(f, id);
-        Assert.Equal(OrderStatus.Delivered, o.Status); Assert.Equal(when, o.DeliveredAt!.Value, TimeSpan.FromSeconds(1));
+        Assert.Equal(OrderStatus.Delivered, o.Status); Assert.Equal(f.Time.GetUtcNow().UtcDateTime, o.DeliveredAt!.Value, TimeSpan.FromSeconds(1));
         var sh = Ship.Shipments(f, id).Single();
         Assert.NotNull(sh.DeliveredAt); Assert.NotNull(sh.TrackingStoppedAt);
         var events = Ship.Outbox(f, mid);
