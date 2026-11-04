@@ -12,7 +12,7 @@ namespace Solvelt.Api.Orders;
 /// </summary>
 public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<OrderOptions> opt, TimeProvider time, IFileStorage storage, OrderNotifier notifier, ReservationDrift drift, InflightHolds inflight)
 {
-    public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved, int ReservationsRepaired = 0);
+    public record Summary(int AutoAccepted, int Completed, int Redacted, int ConversationsRedacted, int OverdueNotified, int NoncesRemoved, int ReservationsRepaired = 0, int ContentReportsRedacted = 0);
 
     /// <summary>Shipping data that carries buyer details goes with the order's PII: label files (they print the buyer's name and address), tracking location/detail text, customs and override notes, quotes.</summary>
     private async Task RedactShippingAsync(Guid orderId, CancellationToken ct)
@@ -112,7 +112,24 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
         await db.SaveChangesAsync(ct);
 
         var nonces = await db.InboundNonces.Where(n => n.ExpiresAt < now).ExecuteDeleteAsync(ct);
-        return new(accepted, completed, redacted, convRedacted, overdue, nonces, await ReconcileReservationsAsync(now, ct));
+        return new(accepted, completed, redacted, convRedacted, overdue, nonces, await ReconcileReservationsAsync(now, ct), await RedactContentReportsAsync(now, ct));
+    }
+
+    public const string Redacted = "[redacted]";
+
+    /// <summary>
+    /// Retention of marketplace content reports: while a report is open staff need it; once it is DECIDED and old, the reporter's reference, the free-text reason and the note are replaced
+    /// (the queue row keeps a copy of the reason: same rule). What stays: the report id, kind, target and decision, which the marketplace already holds and which hold no personal data.
+    /// Idempotent: redacted rows no longer match.
+    /// </summary>
+    private async Task<int> RedactContentReportsAsync(DateTime now, CancellationToken ct)
+    {
+        var cut = now.AddDays(-opt.Value.ContentReportRedactAfterDays);
+        var n = await db.ContentReports.Where(c => c.Decision != null && c.DecidedAt < cut && c.ReporterRef != Redacted)
+            .ExecuteUpdateAsync(u => u.SetProperty(c => c.Note, (string?)null).SetProperty(c => c.ReporterRef, Redacted).SetProperty(c => c.Reason, Redacted), ct);
+        await db.ModerationReports.Where(r => r.ReporterKind == "marketplace" && r.Status != Solvelt.Api.Admin.ReportStatus.Open && r.ResolvedAt < cut && r.Reason != Redacted)
+            .ExecuteUpdateAsync(u => u.SetProperty(r => r.Reason, Redacted), ct);
+        return n;
     }
 
     /// <summary>

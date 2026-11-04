@@ -23,6 +23,16 @@ public class CatalogFactory : OrdersFactory
     }
 }
 
+/// <summary>Image downloads accept ONLY the image key (the inbound secret no longer works for them).</summary>
+public class CatalogStrictImageKeyFactory : CatalogFactory { public CatalogStrictImageKeyFactory() { Extra["Orders:ImageAcceptInboundKey"] = "false"; } }
+
+/// <summary>An explicitly configured image key (not derived), inbound secret not accepted for images.</summary>
+public class CatalogConfiguredImageKeyFactory : CatalogFactory
+{
+    public const string Key = "explicit-image-key-0123456789abcdef0123";
+    public CatalogConfiguredImageKeyFactory() { Extra["Orders:ImageKey"] = Key; Extra["Orders:ImageAcceptInboundKey"] = "false"; }
+}
+
 /// <summary>Default marketplace write limits (nothing overridden): what production runs with.</summary>
 public class CatalogDefaultLimitsFactory : OrdersFactory { }
 
