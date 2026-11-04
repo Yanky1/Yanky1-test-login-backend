@@ -142,6 +142,21 @@ public class OrderShippingTaxTests(OrdersFactory f) : IClassFixture<OrdersFactor
     }
 
     [Fact]
+    public async Task Shipping_tax_shares_that_do_not_divide_evenly_still_add_up_to_exactly_the_tax_charged()
+    {
+        var s = await NewShop(f);
+        var (mid, id) = await PlaceTaxed(s, shipping: 300, shipTax: 10);        // 10 x 100 / 300 = 3.33: floor 3, 3, and the last refund takes 4
+        await Deliver(s, id);
+        for (var i = 0; i < 3; i++) await Ok(Act(s.Owner, id, "refunds", new { reason = "goodwill", shippingCents = 100 }));
+        var taxes = Enumerable.Range(0, 3).Select(i => (long)Event(f, mid, "refund.issued", i)["shippingTaxCents"]!).ToList();
+        Assert.Equal([3L, 3L, 4L], taxes);
+        Assert.Equal(10, taxes.Sum());
+        Assert.Equal(10, f.WithDb(db => db.Refunds.Where(r => r.OrderId == id).Sum(r => r.ShippingTaxCents)));
+        var money = (await Detail(s.Owner, id))["money"]!;
+        Assert.Equal(1310, (long)money["totalCents"]!); Assert.Equal(1310 - 1000, (long)money["refundedCents"]!);   // items (1000) were not refunded: only shipping 300 + tax 10
+    }
+
+    [Fact]
     public async Task A_full_refund_returns_the_items_and_all_of_the_shipping_tax_and_nothing_is_left_refundable()
     {
         var s = await NewShop(f);
