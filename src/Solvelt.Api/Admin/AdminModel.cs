@@ -55,7 +55,7 @@ public class ApplicationAssignment
 
 public enum ReportStatus { Open, Dismissed, Actioned }
 
-/// <summary>A reported / flagged item in the moderation queue. Kind: message | booking_message | listing | contact_warning.</summary>
+/// <summary>A reported / flagged item in the moderation queue. Kind: message | booking_message | listing | contact_warning | review (marketplace review; the portal stores only the report and its decision).</summary>
 public class ModerationReport
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -72,6 +72,27 @@ public class ModerationReport
     public Guid? ResolvedBy { get; set; }
     public string? Resolution { get; set; }
     public string? ResolutionNote { get; set; }
+}
+
+/// <summary>
+/// One marketplace content report (POST /api/internal/v1/content/reports), idempotent on <see cref="ReportId"/>. Several reports of the same target share one
+/// <see cref="ModerationReport"/> queue row; deciding that row emits <c>content.report_decided</c> once per undecided ContentReport.
+/// </summary>
+public class ContentReport
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string ReportId { get; set; } = "";
+    public string Kind { get; set; } = "";
+    /// <summary>The marketplace's id of the target exactly as sent (a review id, a listing id, a message id).</summary>
+    public string TargetRef { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public string? Note { get; set; }
+    public string ReporterRef { get; set; } = "";
+    public Guid ModerationReportId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    /// <summary>dismissed | hidden | removed; null while open.</summary>
+    public string? Decision { get; set; }
+    public DateTime? DecidedAt { get; set; }
 }
 
 public class PlatformSetting
@@ -110,6 +131,12 @@ public static class AdminModelConfig
         {
             e.ToTable("moderation_reports"); e.HasIndex(x => new { x.Kind, x.TargetId }).IsUnique(); e.HasIndex(x => new { x.Status, x.CreatedAt });
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16);
+        });
+        b.Entity<ContentReport>(e =>
+        {
+            e.ToTable("content_reports"); e.HasIndex(x => x.ReportId).IsUnique(); e.HasIndex(x => x.ModerationReportId);
+            e.Property(x => x.ReportId).HasMaxLength(100); e.Property(x => x.Kind).HasMaxLength(16); e.Property(x => x.TargetRef).HasMaxLength(200);
+            e.Property(x => x.Reason).HasMaxLength(300); e.Property(x => x.Note).HasMaxLength(1000); e.Property(x => x.ReporterRef).HasMaxLength(200); e.Property(x => x.Decision).HasMaxLength(16);
         });
         b.Entity<PlatformSetting>(e => { e.ToTable("platform_settings"); e.HasKey(x => x.Key); e.Property(x => x.Key).HasMaxLength(64); });
         b.Entity<JobRun>(e => { e.ToTable("job_runs"); e.HasKey(x => x.Name); e.Property(x => x.Name).HasMaxLength(64); });

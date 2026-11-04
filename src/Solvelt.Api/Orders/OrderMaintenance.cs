@@ -136,9 +136,12 @@ public class OrderMaintenance(AppDbContext db, OrderActions actions, IOptions<Or
             seen.Add(id);
             if (reserved <= expected) { drift.Forget(id); continue; }           // only leaks (more held than any order explains) are repaired
             if (!drift.Confirm(id, reserved, expected, now)) continue;
+            await using var tx = await db.Database.BeginTransactionAsync(ct);   // the repair and the catalog availability refresh commit together
             var n = isVariant
                 ? await db.Variants.Where(v => v.Id == id && v.Reserved == reserved).ExecuteUpdateAsync(u => u.SetProperty(v => v.Reserved, expected), ct)
                 : await db.Products.Where(p => p.Id == id && p.Reserved == reserved).ExecuteUpdateAsync(u => u.SetProperty(p => p.Reserved, expected), ct);
+            if (n == 1) await Solvelt.Api.Catalog.CatalogTracking.RefreshStockAsync(db, time, [productId], ct);
+            await tx.CommitAsync(ct);
             if (n == 1) { repaired++; drift.Forget(id); }
         }
         drift.Prune(seen);

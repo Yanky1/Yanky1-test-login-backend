@@ -22,7 +22,7 @@ One central table, `StaffPermissions.Matrix` (`Admin/AdminModel.cs`); every admi
 | User actions: sign out everywhere, clear lockout, send password reset, remove phone | ✔ | ✔ | | | |
 | Disable a user's 2FA (last resort) | ✔ | | | | ✔ |
 | View moderation queue / listings | ✔ | ✔ | ✔ | ✔ | |
-| Moderation actions: hide/unhide, dismiss, warn, escalate-suspend | ✔ | | ✔ | | |
+| Moderation actions: hide/unhide, dismiss, warn, escalate-suspend, hide-content, remove-content | ✔ | | ✔ | | |
 | Support lookups (orders, bookings, quotes, conversations; masked) | ✔ | ✔ | ✔ | ✔ | |
 | **Reveal** personal data (break-glass, reason, audited) | ✔ | ✔ | | | |
 | View integration health | ✔ | ✔ | ✔ | ✔ | |
@@ -88,20 +88,42 @@ Moderators and Super admins (roles that can act on reports) read the reported me
 | Applications | `applications` (status/country/minAgeDays/assigned/q), `applications/{id}` (business, kosher answers, certificate list, legal versions + timestamps, notes, status history), `applications/{id}/files/{fileId}` (certificate viewer: stored sniffed type only, `nosniff`, sandbox CSP), `approve`, `needs-info {message}`, `reject`, `assign`, `notes` |
 | Seller accounts | `sellers` (search by name/e-mail/id), `sellers/{id}` (members, brands, counts, status history, activity), `suspend`, `reactivate`, `close`, `resend-verification`, `transfer-ownership` |
 | Users | `users?q=` (e-mail, phone, id), `users/{id}` (memberships, sessions, 2FA/passkey status, lockout, recent security events), `sign-out-everywhere`, `clear-lockout`, `send-password-reset`, `remove-phone`, `disable-2fa` |
-| Moderation | `moderation` (queue), `moderation/{id}`, `dismiss`, `warn-seller`, `escalate-suspend`; `listings/{id}` (read-only), `listings/{id}/hide|unhide` |
+| Moderation | `moderation` (queue; `kind` = `message`, `booking_message`, `listing`, `contact_warning`, `review`), `moderation/{id}` (+ the marketplace `contentReports`), `dismiss`, `warn-seller`, `escalate-suspend`, `hide-content`, `remove-content`; `listings/{id}` (read-only), `listings/{id}/hide|unhide`. Every decision accepts an optional `reasonShownToUser` (≤500 chars, for the person who reported; never derived from the internal `reason`) |
 | Support lookups | `lookups/{kind}?q=`, `lookups/{kind}/{id}`, `lookups/{kind}/{id}/reveal` |
 | Local delivery (read-only; `DeliveryView`, proof access needs `LookupsReveal` + reason) | `sellers/{id}/local-delivery`, `local-delivery/deliveries/{id}/proof-access` (see `docs/LOCAL-DELIVERY.md`) |
 | Integration health | `integrations/outbox` (+ `/{id}`, `/retry`, `/discard`), `integrations/inbound`, `integrations/phone`, `integrations/jobs` |
 | Audit | `audit`, `audit/export` |
 | Settings | `settings`, `settings/fee`, `settings/legal`, `settings/seller-fields` (+ `/preview`) |
 | Payments (`docs/PAYMENTS.md`) | `payments/sellers/{id}` (+ `/ledger`, `/hold`, `/hold/release`, `/adjustments`), `payments/transfers` (+ `/{id}/retry`), `payments/payouts`, `payments/accounts/requirements-past-due`, `payments/reconciliation` (+ `/run`, `/{id}/resolve`) |
-| Marketplace (signed, `/api/internal/v1`) | `listings/{id}/reports`, `booking-messages/{id}/reports` |
+| Marketplace (signed, `/api/internal/v1`) | `listings/{id}/reports`, `booking-messages/{id}/reports`, `content/reports` (`docs/CATALOG.md`) |
 
 ### Moderation queue sources
 Buyer-reported order messages (`OrderMessage.Reported`) and contact-detail warnings (`ContactWarning`) are turned into queue rows on read (idempotent);
 the marketplace reports listings and booking messages through the signed internal endpoints above (a repeat report of a resolved item reopens it).
 Hiding a listing sets `Product.ModeratedAt/Reason`, moves an Active listing to Inactive, mails the owners with the reason, shows `moderation: {hidden, reason}`
 in the seller's product detail and blocks reactivation (`409 hidden_by_staff`) until staff unhide it (then an Active listing is restored if the account is still approved).
+
+### Marketplace content reports and the decision event
+`POST /api/internal/v1/content/reports {reportId, kind: review|listing|message, targetId, reason, note?, reporterRef}` (idempotent on `reportId`) puts the report into this queue: one row per
+target (listing reports reuse the "report listing" row, message reports flag the message first, review reports are rows of kind `review`; the portal stores only the report and its decision for
+reviews). A repeat report of a decided target reopens the row; every marketplace report keeps its own decision. When staff decide the row, ONE outbox event per undecided marketplace report is
+written in the same transaction as the decision and the audit entry:
+
+| Event | `data` |
+|---|---|
+| `content.report_decided` | `reportId`, `kind`, `targetId`, `decision` (`dismissed` / `hidden` / `removed`), `reasonShownToUser` (staff-written text for the reporter or `null`) |
+
+| Action | decision | Effect |
+|---|---|---|
+| `dismiss` | `dismissed` | row closed |
+| `hide-content` | `hidden` | listing: hidden like `listings/{id}/hide`; review/message: decision only (the marketplace acts on its content) |
+| `remove-content` | `removed` | listing: archived and kept unlisted (`moderated`); review/message: decision only |
+| `listings/{id}/hide` (existing) | `hidden` | decides every open marketplace report of that listing |
+| `warn-seller` | `dismissed` | the content stays; the seller is warned |
+| `escalate-suspend` | `removed` | the seller is suspended, so their listings are unlisted |
+
+`warn-seller` and `escalate-suspend` answer `409 no_seller` for review reports (no seller on this portal). All of these need `ModerationAct`, a reason, and are audited. Hiding, removing
+or suspending also unlists the listing from the catalog feed (`listing.unlisted`, `docs/CATALOG.md`).
 
 ### Integration health
 `InboundVerifier` records `inbound.rejected` (`bad_signature`, `stale`, `replayed`, `bad_timestamp`, `unsigned`; no payload) so the page can count causes;
