@@ -76,7 +76,7 @@ public static class SellerPaymentEndpoints
             var now = time.UtcNow();
             var min = opt.Value.MinTransferCents;
             var pausedWhy = why == "staff_hold" ? "under_review" : why;   // the staff reason is never shown to sellers
-            var openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == a.SellerId && (d.Status == "needs_response" || d.Status == "under_review" || d.Status == "inquiry"));
+            var openDisputes = await db.PaymentDisputes.CountAsync(d => d.SellerId == a.SellerId && (d.Status == "needs_response" || d.Status == "under_review" || d.Status == "inquiry" || d.Status == "inquiry_review"));
             return Results.Ok(new
             {
                 balances = balances.Select(b => new

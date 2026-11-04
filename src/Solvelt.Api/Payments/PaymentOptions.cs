@@ -51,6 +51,18 @@ public class PaymentTestHooks
     public Func<Task>? BeforeRetryTransaction { get; set; }
     /// <summary>Runs in the Stripe webhook just before its changes are saved (simulates a concurrent writer).</summary>
     public Func<Task>? BeforeWebhookSave { get; set; }
+    /// <summary>Runs just before a money-path transaction commits (a test makes the commit fail like PostgreSQL does: after rolling the transaction back, with a 40001).</summary>
+    public Func<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction, Task>? BeforeCommit { get; set; }
+    /// <summary>Runs inside the event handlers (refund/dispute/capture) before they do their work.</summary>
+    public Func<string, Task>? InHandler { get; set; }
+    /// <summary>Runs after a lease renewal succeeded (a test moves the clock or lets another runner try).</summary>
+    public Func<Task>? AfterLeaseRenew { get; set; }
+
+    public async Task CommitAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx, CancellationToken ct = default)
+    {
+        if (BeforeCommit is { } h) await h(tx);
+        await tx.CommitAsync(ct);
+    }
     /// <summary>Isolation levels of the explicit transactions the payment code opened (tests assert the money paths are Serializable).</summary>
     public System.Collections.Concurrent.ConcurrentQueue<System.Data.IsolationLevel> Transactions { get; } = new();
 

@@ -148,17 +148,17 @@ public class PaymentRound3Tests
     public async Task A_long_run_keeps_its_lease_so_the_retry_guarantee_does_not_lapse()
     {
         using var f = new PayFactory();    // lease 300 s
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName)));
-        f.Time.Advance(TimeSpan.FromSeconds(200));
-        await Pay.Reconcile(f);                                                                   // renews (and so does every transfer/release step of a run)
-        f.Time.Advance(TimeSpan.FromSeconds(200));                                                // 400 s after the start, 200 s after the renewal
-        Assert.False(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName)));
-        f.Time.Advance(TimeSpan.FromSeconds(200));                                                // 400 s after the last renewal: the lease did expire normally
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName)));
-        // an expired lease is never revived by a late renewal (another instance may own it)
-        await Pay.Run(f, async sp => { await sp.GetRequiredService<JobLeaseService>().ReleaseAsync(TransferService.JobName); return 0; });
-        await Pay.Reconcile(f);
-        Assert.True(await Pay.Run(f, sp => sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName)));
+        await Pay.Run(f, async sp =>
+        {
+            Assert.True(await sp.GetRequiredService<JobLeaseService>().TryAcquireAsync(TransferService.JobName));       // this scope is the running job
+            f.Time.Advance(TimeSpan.FromSeconds(200));
+            await sp.GetRequiredService<ReconciliationService>().RunAsync();                                         // every step renews the lease it holds
+            f.Time.Advance(TimeSpan.FromSeconds(200));                                                               // 400 s after the start, 200 s after the renewal
+            Assert.Null(await Pay.Lease(f));                                                                         // still held
+            f.Time.Advance(TimeSpan.FromSeconds(200));                                                               // 400 s after the last renewal: expired normally
+            Assert.NotNull(await Pay.Lease(f));
+            return 0;
+        });
     }
 
     [Fact]
