@@ -8,6 +8,10 @@ public class OrderOptions
     public string InboundSecret { get; set; } = "";
     /// <summary>Separate secret this portal signs outbound webhooks with. Never the same as the inbound secret.</summary>
     public string OutboundSecret { get; set; } = "";
+    /// <summary>Optional explicit key for image downloads (<c>GET /catalog/images/{id}</c>); empty: a subkey derived from <see cref="InboundSecret"/> (see <c>Signing.ImageKey</c>). Never accepted by any other endpoint.</summary>
+    public string ImageKey { get; set; } = "";
+    /// <summary>Whether image downloads signed with the inbound secret itself are still accepted (backward compatibility). Set false once the marketplace signs images with the image key.</summary>
+    public bool ImageAcceptInboundKey { get; set; } = true;
     /// <summary>Marketplace webhook URL. Empty: Development/Testing deliver to the in-memory dev sink; Production keeps events pending.</summary>
     public string WebhookUrl { get; set; } = "";
     public int TimestampWindowSeconds { get; set; } = 300;
@@ -19,6 +23,8 @@ public class OrderOptions
     public int DefaultHandlingDays { get; set; } = 2;
     public int ReturnWindowDays { get; set; } = 30;
     public int RedactAfterDays { get; set; } = 90;
+    /// <summary>Decided marketplace content reports lose the reporter's reference, reason and note this many days after the decision (open reports are kept).</summary>
+    public int ContentReportRedactAfterDays { get; set; } = 90;
     public int OutboxMaxAttempts { get; set; } = 8;
     public int OutboxBackoffSeconds { get; set; } = 30;
     /// <summary>Managers may refund up to this many cents per order; 0 (default) means only Owners/Admins can refund.</summary>
