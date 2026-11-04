@@ -122,7 +122,9 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     ShippingMethod = (req.ShippingMethod ?? speed).Trim(), ShippingSpeed = speed, GiftMessage = req.GiftMessage?.Trim(),
                     ShippingCents = shippingBy.GetValueOrDefault(g.Key), CreatedAt = now, UpdatedAt = now
                 };
-                var handling = g.Max(r => r.P.HandlingDays ?? o.DefaultHandlingDays);
+                var sellerHandling = await db.SellerShippingSettings.AsNoTracking().Where(x => x.SellerId == g.Key.SellerId && x.HandlingDays != null && (x.ScopeKey == g.Key.BrandId || x.ScopeKey == Guid.Empty))
+                    .OrderByDescending(x => x.ScopeKey).Select(x => x.HandlingDays).FirstOrDefaultAsync();   // brand setting, else account setting (Settings > Shipping)
+                var handling = g.Max(r => r.P.HandlingDays ?? sellerHandling ?? o.DefaultHandlingDays);
                 order.ShipByAt = placed.AddDays(handling);
                 order.DeliverByAt = order.ShipByAt.AddDays(Transit[speed]);
                 foreach (var (l, prod, variant, _) in g)

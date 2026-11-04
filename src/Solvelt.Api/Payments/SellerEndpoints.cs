@@ -237,7 +237,7 @@ public static class SellerPaymentEndpoints
                 return new
                 {
                     currency = c, openingCents = opening, salesCents = sales, feesCents = fees, refundsCents = Sum("refund"), disputesCents = Sum("dispute", "dispute_fee", "dispute_won"),
-                    adjustmentsCents = Sum("adjustment"), transfersCents = Sum("transfer", "transfer_failed", "transfer_reversed"), closingCents = closing,
+                    adjustmentsCents = Sum("adjustment"), shippingLabelsCents = Sum("shipping_label", "shipping_label_refund"), transfersCents = Sum("transfer", "transfer_failed", "transfer_reversed"), closingCents = closing,
                     paidOutCents = mine.Where(j => j.Type is "payout" or "payout_reversed").SelectMany(j => j.Entries).Where(e => e.Account == LedgerAccount.PaidOut).Sum(e => e.AmountCents)
                 };
             })

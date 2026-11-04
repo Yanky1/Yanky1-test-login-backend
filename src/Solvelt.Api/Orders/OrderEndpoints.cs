@@ -66,9 +66,20 @@ public static class OrderEndpoints
     };
 
     internal static (IQueryable<SellerOrder>? Q, IResult? Err) Filter(AppDbContext db, AccountAccess a, TimeProvider time, string? tab, string? status, Guid? brandId, DateTime? from,
-        DateTime? to, bool? late, bool? oversold, string? speed, string? q, string? sort)
+        DateTime? to, bool? late, bool? oversold, string? speed, string? q, string? sort, string? tracking = null)
     {
         var rows = Tab(db.OrdersFor(a), tab);
+        if (!string.IsNullOrEmpty(tracking))
+        {
+            // shipping chips: in transit / exception / delivered (docs/SHIPPING.md)
+            switch (tracking.ToLowerInvariant())
+            {
+                case "in_transit": rows = rows.Where(o => db.Shipments.Any(s => s.OrderId == o.Id && s.DeliveredAt == null && (s.TrackingStatus == "in_transit" || s.TrackingStatus == "out_for_delivery" || s.TrackingStatus == "pre_transit" || s.TrackingStatus == "available_for_pickup"))); break;
+                case "exception": rows = rows.Where(o => o.NeedsAttention || db.Shipments.Any(s => s.OrderId == o.Id && (s.TrackingStatus == "failure" || s.TrackingStatus == "return_to_sender"))); break;
+                case "delivered": rows = rows.Where(o => db.Shipments.Any(s => s.OrderId == o.Id) && !db.Shipments.Any(s => s.OrderId == o.Id && s.DeliveredAt == null)); break;
+                default: return (null, Validation.Invalid("tracking", "Use in_transit, exception or delivered."));
+            }
+        }
         if (!string.IsNullOrEmpty(status))
         {
             if (!Enum.TryParse<OrderStatus>(status, true, out var st)) return (null, Validation.Invalid("status", "Unknown status."));
@@ -109,14 +120,14 @@ public static class OrderEndpoints
         var write = (RouteHandlerBuilder b) => b.RequirePermission(Permission.BrandWorkWrite);
 
         grp.MapGet("", async (HttpContext ctx, AppDbContext db, TimeProvider time, string? tab, string? status, Guid? brandId, DateTime? from, DateTime? to, bool? late, bool? oversold,
-            string? speed, string? q, string? sort, int? page, int? pageSize) =>
+            string? speed, string? q, string? sort, int? page, int? pageSize, string? tracking) =>
         {
             var a = ctx.GetAccess()!;
-            var (rows, err) = Filter(db, a, time, tab, status, brandId, from, to, late, oversold, speed, q, sort);
+            var (rows, err) = Filter(db, a, time, tab, status, brandId, from, to, late, oversold, speed, q, sort, tracking);
             if (err is not null) return err;
             var total = await rows!.CountAsync();
             var size = Math.Clamp(pageSize ?? 25, 1, 100); var pg = Math.Max(page ?? 1, 1);
-            var items = await rows!.AsNoTracking().Include(o => o.Lines).AsSplitQuery().Skip((pg - 1) * size).Take(size).ToListAsync();
+            var items = await rows!.AsNoTracking().Include(o => o.Lines).Include(o => o.Shipments).AsSplitQuery().Skip((pg - 1) * size).Take(size).ToListAsync();
             var brands = await db.Brands.AsNoTracking().Where(b => b.SellerId == a.SellerId).ToDictionaryAsync(b => b.Id, b => b.Name);
             var now = time.UtcNow();
             return Results.Json(new { items = items.Select(o => OrderViews.ListItem(o, brands.GetValueOrDefault(o.BrandId, ""), now)), total, page = pg, pageSize = size }, OrderJson.Opts);
@@ -131,7 +142,7 @@ public static class OrderEndpoints
             {
                 needsAction = await Tab(all, "needs_action").CountAsync(), pending = await Tab(all, "pending").CountAsync(), shipped = await Tab(all, "shipped").CountAsync(),
                 delivered = await Tab(all, "delivered").CountAsync(), cancelled = await Tab(all, "cancelled").CountAsync(), returns = await Tab(all, "returns").CountAsync(),
-                late = await all.CountAsync(o => o.ShipByAt < now && Unshipped.Contains(o.Status)), all = await all.CountAsync()
+                late = await all.CountAsync(o => o.ShipByAt < now && Unshipped.Contains(o.Status)), all = await all.CountAsync(), exceptions = await all.CountAsync(o => o.NeedsAttention)
             }, OrderJson.Opts);
         });
 
@@ -162,6 +173,11 @@ public static class OrderEndpoints
             {
                 todayOrders = await q.CountAsync(o => o.PlacedAt >= today), toShip = await q.CountAsync(o => o.Status == OrderStatus.Accepted || o.Status == OrderStatus.PartiallyShipped || o.Status == OrderStatus.New),
                 late = await q.CountAsync(o => o.ShipByAt < now && Unshipped.Contains(o.Status)), returnsOpen = await q.CountAsync(o => o.Status == OrderStatus.ReturnRequested || o.Status == OrderStatus.ReturnApproved || o.Status == OrderStatus.ReturnReceived),
+                shipping = new
+                {
+                    labelsToPrint = await db.ShippingLabels.CountAsync(l => l.SellerId == a.SellerId && l.Status == LabelStatus.Active && l.PrintedAt == null && l.Kind == LabelKind.Outbound && (brandId == null || l.BrandId == brandId) && (a.AllBrands || a.Role >= AccountRole.Admin || a.BrandIds.Contains(l.BrandId))),
+                    exceptions = await q.CountAsync(o => o.NeedsAttention)
+                },
                 sales30Cents = daily.Sum(d => d.salesCents), orders30 = placed30, daily,
                 lateShipmentRate = shippedWindow.Count == 0 ? 0 : Math.Round(100.0 * shippedWindow.Count(x => x) / shippedWindow.Count, 1),
                 cancellationRate = placed30 == 0 ? 0 : Math.Round(100.0 * cancelled30 / placed30, 1),
