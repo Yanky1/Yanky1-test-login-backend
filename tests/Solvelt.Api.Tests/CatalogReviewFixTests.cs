@@ -376,5 +376,37 @@ public class CatalogReviewFixTests(CatalogFactory f) : IClassFixture<CatalogFact
         Assert.Equal(HttpStatusCode.Created, (await Orders.Inbound(f, "/api/internal/v1/messages", new { messageId = unique, conversationId = "conv-" + unique, kind = "order", marketplaceOrderId = midA, sellerOrderNumber = numA, buyerName = "Jane B.", text = "Hi" })).StatusCode);
         Assert.Equal(HttpStatusCode.Created, (await PostSigned(f, "/api/internal/v1/content/reports", new { reportId = rid + "u", kind = "message", targetId = unique, reason = "abusive", reporterRef = "u1" })).StatusCode);
     }
+
+    // ---- 11. the counter lock -------------------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_catalog_changing_save_takes_the_counter_row_lock_before_it_allocates_versions_and_before_it_writes_the_product()
+    {
+        // SQLite serializes writers by itself, so no test here can SHOW the race that the lock prevents on PostgreSQL (a later version becoming visible before an earlier one). What can be
+        // pinned is the mechanism: the counter row is locked first (UPDATE ... SET Value = Value), then versions are taken from it, and only then is the product row written, all in one transaction.
+        using var fx = new CatalogSqlLogFactory();
+        var s = await Orders.NewShop(fx);
+        fx.Log.Clear();
+        await SetPrice(s.Owner, s.Product, 55);
+        var sql = fx.Log.All();
+        int At(Func<string, bool> match) => sql.FindIndex(x => match(x));
+        var lockAt = At(x => x.Contains("UPDATE catalog_counter SET \"Value\" = \"Value\" WHERE \"Id\" = 1"));
+        var takeAt = At(x => x.Contains("UPDATE catalog_counter SET \"Value\" = \"Value\" +"));
+        var writeAt = At(x => x.Contains("UPDATE \"products\"") && x.Contains("\"CatalogVersion\""));
+        Assert.True(lockAt >= 0, "the counter row lock is not issued:\n" + string.Join("\n", sql));
+        Assert.True(takeAt > lockAt, "versions are taken before the lock:\n" + string.Join("\n", sql));
+        Assert.True(writeAt > takeAt, "the product row is written before its version was taken:\n" + string.Join("\n", sql));
+        Assert.Equal(1, sql.Count(x => x.Contains("UPDATE catalog_counter SET \"Value\" = \"Value\" WHERE")));   // locked once per save, not once per listing
+    }
+
+    [Fact]
+    public async Task A_save_that_cannot_change_what_the_marketplace_sees_does_not_touch_the_counter()
+    {
+        using var fx = new CatalogSqlLogFactory();
+        var s = await Orders.NewShop(fx);
+        fx.Log.Clear();
+        Assert.Equal(HttpStatusCode.OK, (await ProdApi.Put(s.Owner, s.Product, d => d["cost"] = 4.25)).StatusCode);     // a cost price is private
+        Assert.DoesNotContain(fx.Log.All(), x => x.Contains("catalog_counter"));                                              // no lock, no version: drafts and private edits never serialize on it
+    }
 }
 
