@@ -90,6 +90,13 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("GET", "/api/v1/admin/payments/reconciliation", StaffPermission.PaymentsView, null),
         ("POST", "/api/v1/admin/payments/reconciliation/run", StaffPermission.PaymentsRetry, null),
         ("POST", $"/api/v1/admin/payments/reconciliation/{G}/resolve", StaffPermission.PaymentsRetry, new { reason = StaffKit.Why }),
+        // shipping (docs/SHIPPING.md)
+        ("GET", $"/api/v1/admin/shipping/sellers/{G}/shipments", StaffPermission.ShippingView, null),
+        ("GET", $"/api/v1/admin/shipping/sellers/{G}/labels", StaffPermission.ShippingView, null),
+        ("GET", "/api/v1/admin/shipping/refunds", StaffPermission.ShippingView, null),
+        ("GET", "/api/v1/admin/shipping/exceptions", StaffPermission.ShippingView, null),
+        ("GET", "/api/v1/admin/shipping/webhooks/failures", StaffPermission.ShippingView, null),
+        ("POST", $"/api/v1/admin/shipping/labels/{G}/refund/retry", StaffPermission.ShippingRetry, new { reason = StaffKit.Why }),
     ];
 
     private static HttpRequestMessage Req((string Method, string Url, StaffPermission Perm, object? Body) e) =>

@@ -18,6 +18,7 @@ public enum Permission
     ProvidersManage,        // mark team members as service providers, edit anyone's working hours/time off (Owner/Admin); providers always manage their own
     OrderRefund,            // issue refunds without a limit (Owner/Admin; Managers only up to Orders:ManagerRefundLimitCents, default 0)
     PaymentsRead,           // balances, ledger, transfers, payouts, statements, disputes (Owner/Admin; never Manager/Viewer)
+    ShippingManage,         // shipping settings: ship-from addresses, packages, profiles, return address (Owner/Admin; Managers and Viewers read)
     PaymentsManage          // start/continue payout onboarding, open the Stripe Express dashboard (Owner only)
 }
 
