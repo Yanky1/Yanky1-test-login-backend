@@ -16,6 +16,11 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
     public const string Currency = "USD";
     private static readonly JsonSerializerOptions J = ProductJson.Opts;
 
+    /// <summary>Seller-written search keywords as a list: split on commas, semicolons and line breaks, trimmed, blanks dropped, duplicates (case-insensitive) removed, order kept.</summary>
+    public static List<string> SplitTerms(string? terms) =>
+        (terms ?? "").Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(t => t.Length > 0).DistinctBy(t => t.ToLowerInvariant()).ToList();
+
     public object Tombstone(Product p) => new { listingId = p.Id, version = p.CatalogVersion, listed = false, reason = p.CatalogUnlistReason };
 
     /// <summary>Documents for visible listings (in the order of <paramref name="products"/>). Callers pass only products with <c>CatalogListed</c>.</summary>
@@ -87,6 +92,7 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                 sku = p.Sku,
                 barcode = p.Barcode,
                 bullets = ProductJson.Bullets(p),
+                searchTerms = SplitTerms(p.SearchTerms),
                 description = p.Description,
                 descriptionHtml = SafeMarkdown.Render(p.Description),
                 price = new

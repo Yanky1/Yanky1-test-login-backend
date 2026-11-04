@@ -103,6 +103,20 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
     }
 
     [Fact]
+    public async Task Search_terms_are_a_string_array_in_the_feed_and_the_single_listing_empty_when_there_are_none()
+    {
+        var s = await Orders.NewShop(f);
+        Assert.Empty((await Listing(f, s.Product))!["searchTerms"]!.AsArray());                  // none set: an empty array, never null or absent
+        var v0 = Version(f, s.Product);
+        Assert.Equal(HttpStatusCode.OK, (await ProdApi.Put(s.Owner, s.Product, d => d["searchTerms"] = "mug, Coffee cup ; MUG\nceramic , ,")).StatusCode);
+        Assert.True(Version(f, s.Product) > v0);                                                  // a keyword edit is a catalog change
+        var expected = new[] { "mug", "Coffee cup", "ceramic" };                                  // split, trimmed, blanks and case-insensitive duplicates dropped
+        Assert.Equal(expected, (await Listing(f, s.Product))!["searchTerms"]!.AsArray().Select(x => (string)x!).ToArray());
+        var inFeed = (await ReadFeed(f)).Items.Last(i => (string)i["listingId"]! == s.Product.ToString());
+        Assert.Equal(expected, inFeed["searchTerms"]!.AsArray().Select(x => (string)x!).ToArray());
+    }
+
+    [Fact]
     public async Task Nothing_private_ever_appears_in_the_feed_no_costs_no_buyer_names_no_contact_data_no_moderation_text()
     {
         var s = await Orders.NewShop(f);
