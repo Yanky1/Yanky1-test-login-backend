@@ -10,26 +10,9 @@ public static class Templates
     private static EmailMessage Build(string to, string kind, string subject, string heading, string[] paragraphs,
         (string Label, string Url)? button = null, string? highlight = null)
     {
-        var html = new StringBuilder();
-        html.Append("<!doctype html><html><body style=\"margin:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1f2933\">");
-        html.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:24px\">");
-        html.Append("<table role=\"presentation\" width=\"560\" style=\"max-width:560px;background:#fff;border-radius:8px;padding:32px\"><tr><td>");
-        html.Append("<p style=\"margin:0 0 16px;font-weight:bold;color:#0b5fff\">Solvelt</p>");
-        html.Append($"<h1 style=\"font-size:20px;margin:0 0 16px\">{E(heading)}</h1>");
-        foreach (var p in paragraphs) html.Append($"<p style=\"line-height:1.5\">{E(p)}</p>");
-        if (highlight is not null)
-            html.Append($"<p style=\"font-size:32px;letter-spacing:6px;font-weight:bold;margin:24px 0\">{E(highlight)}</p>");
-        if (button is { } b)
-            html.Append($"<p style=\"margin:24px 0\"><a href=\"{E(b.Url)}\" style=\"background:#0b5fff;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none\">{E(b.Label)}</a></p>");
-        html.Append("<p style=\"color:#6b7280;font-size:12px;margin-top:32px\">You received this email because of activity on your Solvelt seller account.</p>");
-        html.Append("</td></tr></table></td></tr></table></body></html>");
-
-        var text = new StringBuilder();
-        text.AppendLine("Solvelt").AppendLine().AppendLine(heading).AppendLine();
-        foreach (var p in paragraphs) text.AppendLine(p).AppendLine();
-        if (highlight is not null) text.AppendLine(highlight).AppendLine();
-        if (button is { } bt) text.AppendLine($"{bt.Label}: {bt.Url}").AppendLine();
-        return new EmailMessage(to, kind, subject, html.ToString(), text.ToString());
+        var html = EmailLayout.Html(heading, heading, paragraphs, button, highlight, "You received this email because of activity on your Solvelt seller account.");
+        var text = EmailLayout.Text(heading, paragraphs, button, highlight);
+        return new EmailMessage(to, kind, subject, html, text);
     }
 
     public static EmailMessage VerifyCode(string to, string code) => Build(to, "verify-code", "Your Solvelt verification code",

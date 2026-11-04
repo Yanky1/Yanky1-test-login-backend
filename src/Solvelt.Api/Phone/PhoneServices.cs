@@ -214,18 +214,18 @@ public static class PhoneTemplates
 {
     private static EmailMessage M(string to, string kind, string subject, string line)
     {
-        var e = WebUtility.HtmlEncode(line);
-        return new EmailMessage(to, kind, subject,
-            $"<!doctype html><html><body style=\"font-family:Arial,sans-serif;color:#1f2933\"><p><b>Solvelt</b></p><p>{e}</p><p style=\"color:#6b7280;font-size:12px\">You received this email because of activity on your Solvelt seller account.</p></body></html>",
-            $"Solvelt\n\n{line}\n");
+        string[] paras = [line];
+        return new EmailMessage(to, kind, subject, EmailLayout.Html(subject, subject, paras, null, null, "You received this email because of activity on your Solvelt seller account."), EmailLayout.Text(subject, paras, null, null));
     }
     private const string Tail = " If this wasn't you, reset your password and contact support.";
     public static EmailMessage PhoneAdded(string to, string masked) => M(to, "phone-added", "A phone number was added to your account", $"The mobile number ending in {masked[^4..]} was added to your account.{Tail}");
     public static EmailMessage PhoneChanged(string to, string masked) => M(to, "phone-changed", "Your account's phone number was changed", $"The mobile number on your account was changed to one ending in {masked[^4..]}.{Tail}");
     public static EmailMessage PhoneRemoved(string to) => M(to, "phone-removed", "The phone number was removed from your account", "The mobile number and phone PIN were removed from your account." + Tail);
-    public static EmailMessage StepUpEmail(string to, string code) => new(to, "phone-stepup-code", "Confirm it's you",
-        $"<!doctype html><html><body style=\"font-family:Arial,sans-serif\"><p><b>Solvelt</b></p><p>Someone asked to add a phone number to your account. Enter this code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password.</p><p style=\"font-size:28px;letter-spacing:6px\"><b>{WebUtility.HtmlEncode(code)}</b></p></body></html>",
-        $"Solvelt\n\nSomeone asked to add a phone number to your account. Enter this code to continue (10 minutes). If this wasn't you, ignore this email and reset your password.\n\n{code}\n");
+    public static EmailMessage StepUpEmail(string to, string code)
+    {
+        string[] paras = ["Someone asked to add a phone number to your account. Enter this code to continue. It expires in 10 minutes. If this wasn't you, ignore this email and reset your password."];
+        return new EmailMessage(to, "phone-stepup-code", "Confirm it's you", EmailLayout.Html("Confirm it's you", "Confirm it's you", paras, null, code, "You received this email because of activity on your Solvelt seller account."), EmailLayout.Text("Confirm it's you", paras, null, code));
+    }
     public static EmailMessage PinChanged(string to) => M(to, "phone-pin-changed", "Your phone PIN was changed", "The PIN used to sign in by phone was set or changed." + Tail);
     public static EmailMessage SignedOutAll(string to) => M(to, "phone-signout-all", "You were signed out of all devices", "A phone session signed you out of all devices." + Tail);
     public static EmailMessage ResetByText(string to) => M(to, "phone-reset-link", "A password reset link was texted to you", "A password reset link was sent to the mobile number on your account." + Tail);
