@@ -427,6 +427,30 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         return await SaveAsync(b);
     }
 
+    /// <summary>
+    /// The start times a booking can be MOVED to (seller reschedule / propose): the booking's own duration (add-ons included), its own location, the provider's calendar
+    /// WITHOUT the booking itself (so it may overlap its current slot), and the notice/window rules only where the real move applies them (a proposal on a pending request).
+    /// </summary>
+    public async Task<BRes> MoveSlotsAsync(Booking b, DateTime from, DateTime to)
+    {
+        from = BJson.Utc(from); to = BJson.Utc(to);
+        if (to <= from) return BRes.Invalid("'to' must be after 'from'.", "range");
+        if ((to - from).TotalDays > opt.Value.MaxAvailabilityDays) return BRes.Invalid($"Ask for at most {opt.Value.MaxAvailabilityDays} days at a time.", "range");
+        var (d, pl) = await Reload(b);
+        if (d is null) return BRes.Fail(404, "service_not_found", "Service not found.");
+        var now = time.UtcNow();
+        var timing = Timing(d, pl!.Minutes);
+        if (b.Status != BookingStatus.Requested) timing = timing with { MinNoticeMinutes = 0, MaxAdvanceDays = 3650 };   // seller reschedules ignore notice and window
+        var c = await cal.LoadAsync(b.SellerId, b.ProviderId, from.AddDays(-2), to.AddDays(2), now, b.Id);
+        var starts = SlotEngine.Slots(c, timing, now, from, to, pl.Minutes, b.Location == LocationKind.Customer).Where(x => x > now).ToList();
+        return BRes.Success(new
+        {
+            serviceId = b.ProductId, durationMinutes = pl.Minutes, location = b.Location.ToString().ToLowerInvariant(), bookingId = b.Id,
+            providers = new[] { new { providerId = b.ProviderId, timeZone = c.Zone.Id } },
+            slots = starts.Select(x => new SlotOut(x, x.AddMinutes(pl.Minutes), [b.ProviderId]))
+        });
+    }
+
     private async Task<(ServiceDetails? D, Plan? Pl)> Reload(Booking b)
     {
         var d = await db.ServiceDetails.AsNoTracking().FirstOrDefaultAsync(x => x.ProductId == b.ProductId);
