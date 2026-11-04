@@ -11,7 +11,7 @@ namespace Solvelt.Api.Tests;
 /// <summary>Fixed fake clock: Wednesday 2026-11-04 09:00 UTC (set before any sign-in so token times are consistent).</summary>
 public class DeliveryFactory : PayFactory
 {
-    public DeliveryFactory() { Time.SetUtcNow(new DateTimeOffset(2026, 11, 4, 9, 0, 0, TimeSpan.Zero)); }
+    protected override DateTimeOffset StartTime => new(2026, 11, 4, 9, 0, 0, TimeSpan.Zero);   // the clock STARTS here; setting it after construction broke as soon as the real time passed 09:00 UTC on that day
 }
 
 public record DShop(Shop S, Guid WinA, Guid WinB);
