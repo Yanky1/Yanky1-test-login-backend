@@ -212,6 +212,21 @@ public class LabelService(AppDbContext db, IShippingProvider provider, IFileStor
         fileUrl = l.LabelKey != null ? $"/api/v1/seller/shipping/labels/{l.Id}/file" : null
     };
 
+    /// <summary>The provider issued the label: store the file, mark it Active and book the debit durably (the money is spent). Shared by a normal purchase and by recovery of a purchase that crashed midway.</summary>
+    public async Task RecordPurchaseAsync(ShippingLabel label, PurchasedLabel pl, string orderNumber)
+    {
+        var fileKey = ShippingSupport.StorageKey();
+        using (var ms = new MemoryStream(pl.Bytes)) await storage.SaveAsync(fileKey, ms);
+        var now = time.UtcNow();
+        label.Status = LabelStatus.Active; label.ProviderTransactionId = pl.TransactionId; label.Carrier = ShippingSupport.OrderCarrier(pl.Carrier); label.Service = pl.Service ?? label.Service;
+        label.TrackingNumber = Orders.Tracking.Normalize(pl.TrackingNumber); label.LabelKey = fileKey; label.LabelContentType = pl.ContentType; label.PurchasedAt = now;
+        label.EstimatedDelivery = pl.EstimatedDelivery ?? label.EstimatedDelivery;
+        // the debit is recorded NOW and durably, before the order flow runs (a failure there voids the label and credits it back)
+        await ledger.PostAsync(label.SellerId, label.Currency, "shipping_label", $"shipping_label:{label.Id}", $"Shipping label {label.Carrier} for {orderNumber}",
+            [new(LedgerAccount.Available, -label.CostCents, "shipping_label"), new(LedgerAccount.Platform, label.CostCents, "shipping_label")], orderId: label.OrderId, sourceRef: label.ProviderTransactionId, actor: label.PurchasedBy);
+        if (!await ledger.SaveAsync()) throw new InvalidOperationException("The label could not be recorded.");
+    }
+
     public async Task<Res> BuyAsync(SellerOrder o, Guid actor, BuyRequest req)
     {
         if (req.QuoteId is not { } qid || string.IsNullOrWhiteSpace(req.RateId)) return Res.Invalid("Choose a rate first.", "rate");
@@ -262,19 +277,10 @@ public class LabelService(AppDbContext db, IShippingProvider provider, IFileStor
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { await FailAsync(label, "unexpected"); log.LogError(ex, "Label purchase failed"); return Res.Fail(502, "provider_error", "The shipping provider could not complete the request. Try again in a moment."); }
 
-        var fileKey = ShippingSupport.StorageKey();
-        using (var ms = new MemoryStream(pl.Bytes)) await storage.SaveAsync(fileKey, ms);
-        var now = time.UtcNow();
-        label.Status = LabelStatus.Active; label.ProviderTransactionId = pl.TransactionId; label.Carrier = ShippingSupport.OrderCarrier(pl.Carrier); label.Service = pl.Service ?? label.Service;
-        label.TrackingNumber = Orders.Tracking.Normalize(pl.TrackingNumber); label.LabelKey = fileKey; label.LabelContentType = pl.ContentType; label.PurchasedAt = now;
-        label.EstimatedDelivery = pl.EstimatedDelivery ?? label.EstimatedDelivery;
-        // the money is spent: the debit is recorded NOW and durably, before the order flow runs (a failure there voids the label and credits it back)
-        await ledger.PostAsync(o.SellerId, label.Currency, "shipping_label", $"shipping_label:{label.Id}", $"Shipping label {label.Carrier} for {o.Number}",
-            [new(LedgerAccount.Available, -label.CostCents, "shipping_label"), new(LedgerAccount.Platform, label.CostCents, "shipping_label")], orderId: o.Id, sourceRef: label.ProviderTransactionId, actor: actor);
-        if (!await ledger.SaveAsync()) throw new InvalidOperationException("The label could not be recorded.");
+        await RecordPurchaseAsync(label, pl, o.Number);
 
         var ship = await actions.ShipAsync(o, actor, new ShipRequest(null, lines, null, null, null, null), trust:
-            new ShipTrust(label.Carrier, label.TrackingNumber, label.Service, s => { s.LabelId = label.Id; label.ShipmentId = s.Id; label.ActiveShipmentKey = s.Id; }));
+            new ShipTrust(label.Carrier, label.TrackingNumber!, label.Service, s => { s.LabelId = label.Id; label.ShipmentId = s.Id; label.ActiveShipmentKey = s.Id; }));
         if (!ship.Ok)
         {
             db.ChangeTracker.Clear();
@@ -314,6 +320,13 @@ public class LabelService(AppDbContext db, IShippingProvider provider, IFileStor
                         return (new(false, 422, "spend_limit", $"This label would take you over your monthly label limit ({Money(limit, label.Currency)}). {Money(Math.Max(limit - spent, 0), label.Currency)} left this month.",
                             new { limitCents = limit, spentCents = spent }), null);
                     }
+                }
+                // one purchase at a time per order: a second buy (another rate, another quote) must not reach the provider while the first is in flight or not yet shipped
+                if (label.Kind == LabelKind.Outbound && await db.ShippingLabels.AnyAsync(l => l.OrderId == label.OrderId && l.Kind == LabelKind.Outbound
+                        && (l.Status == LabelStatus.Purchasing || (l.Status == LabelStatus.Active && l.ShipmentId == null))))
+                {
+                    await tx.RollbackAsync();
+                    return (Res.Conflict("A label for this order is being purchased right now. Wait for it to finish.", "purchase_in_progress"), null);
                 }
                 db.ShippingLabels.Add(label);
                 await db.SaveChangesAsync();
