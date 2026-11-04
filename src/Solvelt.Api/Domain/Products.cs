@@ -71,6 +71,8 @@ public class Product
     public int? WidthMm { get; set; }
     public int? HeightMm { get; set; }
     public int? HandlingDays { get; set; }
+    /// <summary>Default package preset for labels (Shipping/PackagePreset).</summary>
+    public Guid? DefaultPackageId { get; set; }
     public string ShippingJson { get; set; } = "{}";
     public bool LocalPickup { get; set; }
     // policies

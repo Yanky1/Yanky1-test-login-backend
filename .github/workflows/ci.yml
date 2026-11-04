@@ -13,5 +13,6 @@ jobs:
       - run: dotnet build --no-restore -c Release
       - run: dotnet build tests/Solvelt.Api.Evals -c Release   # opt-in real-API evals: compile only, never run in CI
       - run: dotnet build tests/Solvelt.Api.StripeTests -c Release   # opt-in Stripe test-mode tests: compile only, never run in CI
+      - run: dotnet build tests/Solvelt.Api.ShippoTests -c Release   # opt-in Shippo test-mode tests: compile only, never run in CI
       - run: dotnet test --no-build -c Release --logger "trx;LogFileName=results.trx"
       - run: dotnet list package --vulnerable --include-transitive 2>&1 | tee vuln.txt; ! grep -q "has the following vulnerable packages" vuln.txt

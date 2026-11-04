@@ -12,7 +12,7 @@ public class LedgerJournal
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid SellerId { get; set; }
     public string Currency { get; set; } = "USD";
-    /// <summary>sale, policy_fee, extra_charge, refund, dispute, dispute_fee, dispute_won, release, reserve_release, adjustment, transfer, transfer_failed, transfer_reversed, payout, payout_reversed</summary>
+    /// <summary>sale, policy_fee, extra_charge, refund, dispute, dispute_fee, dispute_won, release, reserve_release, adjustment, shipping_label (debit), shipping_label_refund (credit), transfer, transfer_failed, transfer_reversed, payout, payout_reversed</summary>
     public string Type { get; set; } = "";
     public string IdempotencyKey { get; set; } = "";
     public Guid? OrderId { get; set; }
