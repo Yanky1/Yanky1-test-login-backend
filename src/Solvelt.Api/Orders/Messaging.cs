@@ -98,7 +98,15 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         {
             if (m.ProductId is null) return new(422, "productId", "productId is required for product questions.");
             var p = await db.Products.AsNoTracking().Where(x => x.Id == m.ProductId && x.Status == ProductStatus.Active).Select(x => new { x.Id, x.SellerId, x.BrandId, x.Title }).FirstOrDefaultAsync(ct);
-            if (p is null) return new(404, "not_found", "Unknown or inactive product.");
+            if (p is null)
+            {
+                // a retry of a question that was already stored must stay a duplicate after the product was deactivated: exactly one earlier message with this id, in a thread about THIS product
+                // (an id used for another product / seller is another message and is never taken for a duplicate)
+                var prior = await (from x in db.Messages.AsNoTracking() join c in db.Conversations.AsNoTracking() on x.ConversationId equals c.Id
+                                   where x.MarketplaceMessageId == m.MessageId && c.ProductId == m.ProductId select new { Msg = x, Conv = c }).Take(2).ToListAsync(ct);
+                if (prior.Count == 1) return new(200, "duplicate", "", prior[0].Conv, prior[0].Msg, true);
+                return new(404, "not_found", "Unknown or inactive product.");
+            }
             (sellerId, brandId, productId, subject) = (p.SellerId, p.BrandId, p.Id, p.Title);
         }
         // idempotency INSIDE the resolved seller account: the unique index is (SellerId, MarketplaceMessageId), so the same messageId for another seller is another message
