@@ -21,9 +21,10 @@ Code: `src/Solvelt.Api/Orders/**`, entities `Domain/Orders.cs`, one EF migration
 | `Conversation` / `OrderMessage` / `MessageAttachment` / `ConversationRead` / `ConversationNote` / `MessageTemplate` | Messaging (section 6). |
 | `NotificationPreference` | Per user + account email opt-ins (null = role default: Owner/Admin on, Manager/Viewer off). |
 
-**Money** is `long` cents everywhere; no floating point. `Total = items - discounts + shipping + tax` (what the buyer paid);
+**Money** is `long` cents everywhere; no floating point. `Total = items - discounts + shipping + tax + shippingTax` (what the buyer paid; `tax` is the sum of the lines' `taxCents`,
+`shippingTax` the group's `shipping[].taxCents`);
 `Fee = round-half-up((items - discounts) x Orders:FeeBasisPoints / 10000)` (default 10%); `Net = items - discounts + shipping - fee`
-(tax is remitted by the marketplace). Partial refunds prorate a line by quantity and the **last unit takes the rounding remainder**, so the sum of
+(neither kind of tax is in the fee base or in the net: the marketplace remits them; shipping tax is **not** in `net`, shipping is). Partial refunds prorate a line by quantity and the **last unit takes the rounding remainder**, so the sum of
 refunds never exceeds what was paid.
 
 ## 2. Status state machine
@@ -127,11 +128,14 @@ Content-Type: application/json
       "quantity": 2, "unitPriceCents": 1999, "discountCents": 0, "taxCents": 320 },
     { "marketplaceLineId": "L-2", "sellerId": "<account guid>", "brandId": "<other brand guid>", "sku": "MUG-BLUE-L", "quantity": 1, "unitPriceCents": 2500 }
   ],
-  "shipping": [ { "sellerId": "<account guid>", "brandId": "<brand guid>", "amountCents": 599 }, { "sellerId": "<account guid>", "brandId": "<other brand guid>", "amountCents": 300 } ]
+  "shipping": [ { "sellerId": "<account guid>", "brandId": "<brand guid>", "amountCents": 599, "taxCents": 45, "speed": "overnight", "method": "Next-day air" },
+                { "sellerId": "<account guid>", "brandId": "<other brand guid>", "amountCents": 300 } ]
 }
 ```
 * A line names its product by `productId` (+ `variantId` when the product has variants) **or** by `sku` (product or variant SKU of that account).
 * **Splitting:** one `SellerOrder` per distinct (sellerId, brandId); shipping charged is per group via `shipping[]`.
+* **Speed and method per group (C8a):** a `shipping[]` entry may carry `speed` (`standard`|`expedited`|`overnight`) and `method` (a label of 1 to 80 characters; control characters are removed). When present they replace the order-level `shippingSpeed` / `shippingMethod` **for that group's seller order only**: its `DeliverByAt` (handling days + 5 / 2 / 1 transit days), the packing slip (`shippingSpeed`, `shippingMethod`, `deliverByAt`) and the order detail. Without them the order-level fields apply, as before (in the example above the second group is standard / "Standard"). An unknown speed, or a method that is empty after cleaning or longer than 80 characters, is `422` (`shipping.speed` / `shipping.method`) and nothing is created. If the same group appears twice, the amounts and taxes add up and the entries must not disagree on speed or method (`422` otherwise).
+* **Tax on shipping (C8b):** `shipping[].taxCents` (integer >= 0, minor units of the order currency, optional, 0 when absent; `422` if negative or if the group's shipping amount is 0). It is part of the seller order's `Total` and `refundableCents`, it is **not** in the fee base or the net, and it is shown as `shippingTaxCents` in the order detail's `money`, on the packing slip (`shipping: {shippingCents, shippingTaxCents}`, hidden on gift orders like every price) and as an information-only `shippingTaxCents` per currency in the payments monthly statement (never in a balance: tax does not enter the ledger). A replay with the same `marketplaceOrderId` is a no-op even when these fields differ: the first order stands (`200 {created:false}`).
 * **Validation (all-or-nothing):** the seller must be Approved/active; the brand must belong to the account; the product/variant must belong to that account **and brand** and be **Active** (variants Enabled). Money fields are capped (unit price/shipping <= 1,000,000,000 cents; discount/tax proportionally). Any bad line -> `422 invalid_order` with `errors:[{index, code, message}]` (`product`, `brand`, `seller`, `sku`, `variant`, `product_inactive`, `not_a_product` (the listing is a service: "Services are booked, not ordered"), `variant_inactive`, `quantity`, `amount`, ...) and **nothing is created or reserved**.
 * **Response** `201 {created:true, orders:[{sellerOrderId, number, sellerId, brandId, status, oversold, totalCents, feeCents, netCents}]}`; the same `marketplaceOrderId` again -> `200 {created:false, ...}` with the original orders (also when two deliveries race).
 * Stock short -> still `201`, `oversold:true`.
@@ -174,15 +178,27 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 | `order.shipped` | `partial`, `shipmentId`, `carrier`, `service`, `trackingNumber`, `trackingUrl`, `shippedAt`, `lines:[{marketplaceLineId, sku, quantity}]` |
 | `order.tracking_updated` | `shipmentId`, `carrier`, `trackingNumber`, `trackingUrl` |
 | `order.delivered` | `deliveredAt`, `by` (`seller`/`buyer`) |
-| `order.cancelled` | `reason`, `note`, `restocked`, `cancelledBy`, `refundDueCents` (the marketplace refunds this), `partial` + `lines` when only the unshipped remainder was cancelled |
+| `order.cancelled` | `reason`, `note`, `restocked`, `cancelledBy`, `refundDueCents` (the marketplace refunds this), `taxCents` (the tax inside `refundDueCents`), `shippingTaxCents`, `partial` + `lines:[{marketplaceLineId, quantity, amountCents, taxCents}]` when only the unshipped remainder was cancelled (see "Money in events") |
 | `cancellation.decided` | `requestId`, `decision` (`rejected`), `note` (approval is `order.cancelled`) |
 | `return.decided` | `returnId`, `decision` (`approved`/`rejected`), `reason`, `note` |
 | `return.received` | `returnId`, `restocked` |
-| `refund.issued` | `refundId`, `amountCents`, `shippingCents`, `currency`, `reason`, `note`, `full`, `totalRefundedCents`, `returnId`, `lines:[{marketplaceLineId, sku, quantity, amountCents}]`. **The marketplace moves the money.** |
+| `refund.issued` | `refundId`, `amountCents`, `shippingCents`, `shippingTaxCents`, `taxCents`, `currency`, `reason`, `note`, `full`, `totalRefundedCents`, `returnId`, `lines:[{marketplaceLineId, sku, quantity, amountCents, taxCents}]` (see "Money in events"). **The marketplace moves the money.** |
 | `listing.upserted` | `listingId`, `version` (catalog feed; see `docs/CATALOG.md`; delivered in version order per listing) |
 | `listing.unlisted` | `listingId`, `version`, `reason` (`not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`, `deleted`) |
 | `content.report_decided` | `reportId`, `kind` (`review`/`listing`/`message`), `targetId`, `decision` (`dismissed`/`hidden`/`removed`), `reasonShownToUser` (nullable) (`docs/CATALOG.md`, `docs/ADMIN.md`) |
 | `message.sent` | `messageId`, `conversationId`, `marketplaceConversationId`, `kind`, `marketplaceOrderId`, `sellerOrderNumber`, `productId`, `text`, `sentAt`, `attachments:[{id, fileName, contentType, size, path}]` |
+
+#### Money in events
+
+Which amounts include tax (all `long` minor units of the order currency):
+
+* **`refund.issued.amountCents` = the TOTAL to give the buyer back** = the lines refunded **including their tax** + `shippingCents` + `shippingTaxCents`.
+  `shippingCents` is the shipping refund **net of tax**; `shippingTaxCents` is the shipping tax refunded; `taxCents` is **all the tax inside `amountCents`** = sum of `lines[].taxCents` + `shippingTaxCents`.
+  `lines[].amountCents` includes that line's tax; `lines[].taxCents` is the tax inside it.
+* **Proration** (same rule for amounts and tax, so the shares of all refunds add up to exactly what was charged): a line's tax share is `floor(lineTax x quantity / lineQuantity)` and the **last refund of the line takes the remainder**; the shipping tax of a shipping refund is `floor(shippingTax x shippingRefunded / shipping)` and the **refund that completes the group's shipping takes the remainder**.
+  Worked example (a test): shipping 500 with shipping tax 45, no lines. A 40 % shipping refund (200) gives `amountCents 218, shippingCents 200, shippingTaxCents 18, taxCents 18`; a second refund of the remaining 300 gives `amountCents 327, shippingCents 300, shippingTaxCents 27, taxCents 27` (18 + 27 = 45). A line of 3 units with tax 100 refunded one unit at a time carries tax 33, 33, 34.
+* **`order.cancelled.refundDueCents`**: for a full cancel `total - refunded` (items + line tax + shipping + shipping tax); `taxCents` = the line tax + `shippingTaxCents` inside it, and `shippingTaxCents` is the shipping tax. For a **partial** (unshipped remainder) cancel `refundDueCents` = the cancelled lines including their tax, **without shipping**: `shippingTaxCents` is 0, `taxCents` = the tax of those lines, and `lines[].taxCents` gives it per line.
+* **`refund.processed` (marketplace -> portal) is unchanged: tax never enters the ledger.** Its `amountCents` is the items **excluding tax**, `shippingCents` the shipping excluding tax. From a `refund.issued` the marketplace sends `amountCents - taxCents - shippingCents` (`taxCents` already contains `shippingTaxCents`) as the items and `shippingCents` as the shipping; summed over all refunds of a line this is exactly the line's price without tax, so the payments module never rejects it. See `docs/PAYMENTS.md`.
 
 ### 3.5 Simulator (Development / Testing only)
 Not mapped in any other environment (tested against a real Production-environment host). Signed-in seller, **write permission**, own products only:
