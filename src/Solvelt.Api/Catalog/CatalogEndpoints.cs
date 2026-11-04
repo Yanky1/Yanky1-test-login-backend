@@ -23,14 +23,16 @@ public static class CatalogEndpoints
         builder.Services.AddScoped<CatalogReader>();
         var cfg = builder.Configuration;
         var feed = cfg.GetValue("RateLimit:InternalCatalogPerMinute", 1200);
-        var questions = cfg.GetValue("RateLimit:InternalQuestionsPerMinute", 120);
-        var reports = cfg.GetValue("RateLimit:InternalReportsPerMinute", 120);
+        builder.Services.AddSingleton(new MarketplaceWriteLimits(
+            QuestionsPerListing: cfg.GetValue("RateLimit:InternalQuestionsPerListingPerMinute", 60),
+            QuestionsPerCaller: cfg.GetValue("RateLimit:InternalQuestionsPerCallerPerMinute", 2000),
+            ReportsPerTarget: cfg.GetValue("RateLimit:InternalReportsPerTargetPerMinute", 60),
+            ReportsPerCaller: cfg.GetValue("RateLimit:InternalReportsPerCallerPerMinute", 2000),
+            FailedPerIp: cfg.GetValue("RateLimit:InternalUnsignedPerMinute", 60)));
         builder.Services.Configure<RateLimiterOptions>(r =>
         {
             static string Ip(HttpContext c) => c.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             r.AddPolicy("internal-catalog", c => RateLimitPartition.GetFixedWindowLimiter("icat:" + Ip(c), _ => new FixedWindowRateLimiterOptions { PermitLimit = feed, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-            r.AddPolicy("internal-reports", c => RateLimitPartition.GetFixedWindowLimiter("irep:" + Ip(c), _ => new FixedWindowRateLimiterOptions { PermitLimit = reports, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
-            r.AddPolicy("internal-questions", c => RateLimitPartition.GetFixedWindowLimiter("iq:" + Ip(c), _ => new FixedWindowRateLimiterOptions { PermitLimit = questions, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
         return builder;
     }
@@ -124,12 +126,19 @@ public static class CatalogEndpoints
         });
 
         // ---- buyer questions ----------------------------------------------------------------------------------------------------------
-        app.MapGroup("/api/internal/v1/products").RequireRateLimiting("internal-questions").AllowAnonymous()
-            .MapPost("/{id:guid}/questions", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, TimeProvider time, Guid id) =>
+        // limits (docs/CATALOG.md section 8): verified requests are charged to (caller, listing) and to the caller's ceiling; a failed verification only ever
+        // touches the small per-IP bucket, so forged floods cannot make the marketplace's own signed requests 429
+        app.MapGroup("/api/internal/v1/products").AllowAnonymous()
+            .MapPost("/{id:guid}/questions", async (HttpContext ctx, InboundVerifier verifier, MarketplaceWriteLimits limits, AppDbContext db, TimeProvider time, Guid id) =>
             {
-                var (req, err) = await InternalEndpoints.Signed<IngestQuestion>(ctx, verifier);
-                if (err is not null) return err;
-                var qid = req!.QuestionId?.Trim() ?? "";
+                var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
+                if (!v.Ok) return limits.Rejected(ctx, v.Status, v.Code, v.Message);
+                if (!limits.TryQuestion(id)) return limits.Limited(ctx, "Too many questions for this listing or from this caller.");
+                IngestQuestion? req;
+                try { req = System.Text.Json.JsonSerializer.Deserialize<IngestQuestion>(v.Body!, OrderJson.Opts); }
+                catch (System.Text.Json.JsonException) { req = null; }
+                if (req is null) return InternalEndpoints.Err(400, "invalid_json", "The request body is not valid JSON of the expected shape.");
+                var qid = req.QuestionId?.Trim() ?? "";
                 var text = req.Text?.Trim() ?? "";
                 var name = string.IsNullOrWhiteSpace(req.BuyerDisplayName) ? "A shopper" : req.BuyerDisplayName.Trim();
                 var errors = new Dictionary<string, string>();
@@ -156,4 +165,36 @@ public static class CatalogEndpoints
                 return Results.Json(new { duplicate = false, questionId = qid, id = row.Id }, OrderJson.Opts, statusCode: 201);
             });
     }
+}
+
+/// <summary>
+/// Rate limits of the marketplace write endpoints (questions, content reports). The marketplace is ONE caller for all shoppers, so a per-IP key would be a global cap.
+/// Signature-verified requests are charged to (verified caller, subject) and to a generous per-caller ceiling; requests that FAIL verification are charged only to a tight
+/// per-IP bucket (same pattern as availability, docs/SERVICES.md), so a flood of forged requests can never drain the signed buckets.
+/// The caller is "marketplace": the holder of <c>Orders:InboundSecret</c> is the only verified identity this API knows.
+/// </summary>
+public sealed class MarketplaceWriteLimits(int QuestionsPerListing, int QuestionsPerCaller, int ReportsPerTarget, int ReportsPerCaller, int FailedPerIp)
+{
+    public const string Caller = "marketplace";
+    private static PartitionedRateLimiter<string> Make(int permits) => PartitionedRateLimiter.Create<string, string>(key =>
+        RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions { PermitLimit = Math.Max(1, permits), Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+
+    private readonly PartitionedRateLimiter<string> _qSubject = Make(QuestionsPerListing), _qCaller = Make(QuestionsPerCaller),
+        _rSubject = Make(ReportsPerTarget), _rCaller = Make(ReportsPerCaller), _failed = Make(FailedPerIp);
+
+    private static bool Take(PartitionedRateLimiter<string> l, string key) { using var lease = l.AttemptAcquire(key); return lease.IsAcquired; }
+
+    public bool TryQuestion(Guid listingId) => Take(_qSubject, Caller + "|" + listingId) && Take(_qCaller, Caller);
+    public bool TryReport(string? targetId) => Take(_rSubject, Caller + "|" + (targetId ?? "").Trim().ToLowerInvariant()) && Take(_rCaller, Caller);
+    public bool TryFailed(string ip) => Take(_failed, ip);
+
+    public IResult Limited(HttpContext ctx, string message)
+    {
+        ctx.Response.Headers["Retry-After"] = "60";
+        return InternalEndpoints.Err(429, "rate_limited", message);
+    }
+
+    /// <summary>A request that failed verification: its own status while the per-IP bucket has room, 429 once it is spent.</summary>
+    public IResult Rejected(HttpContext ctx, int status, string code, string message) =>
+        TryFailed(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown") ? InternalEndpoints.Err(status, code, message) : Limited(ctx, "Too many failed requests.");
 }

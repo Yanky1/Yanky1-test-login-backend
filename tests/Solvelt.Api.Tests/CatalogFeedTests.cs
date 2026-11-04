@@ -578,20 +578,78 @@ public class CatalogFeedTests(CatalogFactory f) : IClassFixture<CatalogFactory>
     }
 }
 
-public class CatalogRateLimitTests(CatalogLimitedFactory f) : IClassFixture<CatalogLimitedFactory>
+/// <summary>The marketplace is ONE caller for all shoppers: limits are keyed on (verified caller, subject), never on the IP alone (docs/CATALOG.md section 8).</summary>
+public class MarketplaceWriteLimitTests
 {
+    private static Task<HttpResponseMessage> Ask(ApiFactory f, Guid listing, string? id = null) =>
+        PostSigned(f, $"/api/internal/v1/products/{listing}/questions", new { questionId = id ?? "RL-" + Guid.NewGuid().ToString("N"), text = "How big is it?" });
+
+    private static Task<HttpResponseMessage> Rep(ApiFactory f, string target) =>
+        PostSigned(f, "/api/internal/v1/content/reports", new { reportId = "RL-" + Guid.NewGuid().ToString("N"), kind = "review", targetId = target, reason = "spam", reporterRef = "u1" });
+
+    private static Task<HttpResponseMessage> Unsigned(ApiFactory f, string path) =>
+        f.NewClient().SendAsync(Orders.Signed(f, "POST", path, new { questionId = "x", text = "y" }, sign: false));
+
     [Fact]
-    public async Task Questions_and_reports_are_rate_limited_per_caller()
+    public async Task Many_questions_and_reports_across_different_targets_from_the_signed_caller_are_not_throttled_at_120()
     {
+        using var f = new CatalogDefaultLimitsFactory();
+        // 150 questions for 150 different listings (unknown ids answer 404, but each one was admitted by the limiter first): the old per-IP key stopped at 120
+        var q = new List<HttpStatusCode>();
+        for (var i = 0; i < 150; i++) q.Add((await Ask(f, Guid.NewGuid())).StatusCode);
+        Assert.DoesNotContain(HttpStatusCode.TooManyRequests, q);
+        Assert.All(q, c => Assert.Equal(HttpStatusCode.NotFound, c));
+        var r = new List<HttpStatusCode>();
+        for (var i = 0; i < 130; i++) r.Add((await Rep(f, "review-" + i)).StatusCode);
+        Assert.DoesNotContain(HttpStatusCode.TooManyRequests, r);
+        Assert.All(r, c => Assert.Equal(HttpStatusCode.Created, c));
+    }
+
+    [Fact]
+    public async Task One_listing_or_one_target_is_throttled_at_its_own_limit_while_others_are_not()
+    {
+        using var f = new CatalogTightLimitsFactory();
+        var s = await Orders.NewShop(f); var s2 = await Orders.NewShop(f);
+        var codes = new List<HttpStatusCode>();
+        for (var i = 0; i < 8; i++) codes.Add((await Ask(f, s.Product)).StatusCode);
+        Assert.Equal(5, codes.Count(c => c == HttpStatusCode.Created));                          // the per-listing limit
+        Assert.Equal(3, codes.Count(c => c == HttpStatusCode.TooManyRequests));
+        var limited = await Ask(f, s.Product);
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode); Assert.Equal("rate_limited", await Orders.Code(limited)); Assert.True(limited.Headers.Contains("Retry-After"));
+        Assert.Equal(HttpStatusCode.Created, (await Ask(f, s2.Product)).StatusCode);              // another listing is not affected
+        // the same for reports, keyed on the target
+        var rep = new List<HttpStatusCode>();
+        for (var i = 0; i < 5; i++) rep.Add((await Rep(f, "rev-hot")).StatusCode);
+        Assert.Equal(3, rep.Count(c => c == HttpStatusCode.Created)); Assert.Equal(2, rep.Count(c => c == HttpStatusCode.TooManyRequests));
+        Assert.Equal(HttpStatusCode.Created, (await Rep(f, "rev-other")).StatusCode);
+    }
+
+    [Fact]
+    public async Task The_per_caller_ceiling_caps_the_whole_marketplace_even_across_many_listings()
+    {
+        using var f = new CatalogTightLimitsFactory();
+        var codes = new List<HttpStatusCode>();
+        for (var i = 0; i < 45; i++) codes.Add((await Ask(f, Guid.NewGuid())).StatusCode);       // 40 per caller per minute
+        Assert.Equal(40, codes.Count(c => c == HttpStatusCode.NotFound));
+        Assert.Equal(5, codes.Count(c => c == HttpStatusCode.TooManyRequests));
+    }
+
+    [Fact]
+    public async Task Unsigned_and_forged_floods_are_throttled_per_IP_and_never_touch_the_signed_bucket()
+    {
+        using var f = new CatalogTightLimitsFactory();
         var s = await Orders.NewShop(f);
         var path = $"/api/internal/v1/products/{s.Product}/questions";
-        var codes = new List<HttpStatusCode>();
-        for (var i = 0; i < 6; i++) codes.Add((await PostSigned(f, path, new { questionId = "RL-" + i + Guid.NewGuid().ToString("N"), text = "Question " + i })).StatusCode);
-        Assert.Equal(3, codes.Count(c => c == HttpStatusCode.Created));
-        Assert.Equal(3, codes.Count(c => c == HttpStatusCode.TooManyRequests));
-        var rep = new List<HttpStatusCode>();
-        for (var i = 0; i < 6; i++) rep.Add((await PostSigned(f, "/api/internal/v1/content/reports", new { reportId = "RL-" + i + Guid.NewGuid().ToString("N"), kind = "review", targetId = "rev-" + i, reason = "spam", reporterRef = "u1" })).StatusCode);
-        Assert.Equal(3, rep.Count(c => c == HttpStatusCode.Created));
-        Assert.Equal(3, rep.Count(c => c == HttpStatusCode.TooManyRequests));
+        var flood = new List<HttpStatusCode>();
+        for (var i = 0; i < 8; i++) flood.Add((await Unsigned(f, path)).StatusCode);
+        Assert.Equal(4, flood.Count(c => c == HttpStatusCode.Unauthorized));                     // the small per-IP bucket, then 429
+        Assert.Equal(4, flood.Count(c => c == HttpStatusCode.TooManyRequests));
+        // forged signatures and stale timestamps draw from the same per-IP bucket; reports share it
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.NewClient().SendAsync(Orders.Signed(f, "POST", "/api/internal/v1/content/reports", new { reportId = "x" }, secret: "forged-secret-0123456789abcdef0123456"))).StatusCode);
+        // ...and from the very same address the signed caller is NOT affected: all of its requests are still admitted
+        var signed = new List<HttpStatusCode>();
+        for (var i = 0; i < 3; i++) signed.Add((await Ask(f, s.Product)).StatusCode);
+        Assert.All(signed, c => Assert.Equal(HttpStatusCode.Created, c));
+        Assert.Equal(HttpStatusCode.Created, (await Rep(f, "rev-after-flood")).StatusCode);
     }
 }
