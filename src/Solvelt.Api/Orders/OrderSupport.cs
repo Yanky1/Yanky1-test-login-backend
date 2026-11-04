@@ -44,9 +44,19 @@ public static class OrderSupport
         o.ItemsCents = o.Lines.Sum(l => l.UnitPriceCents * l.Quantity);
         o.DiscountCents = o.Lines.Sum(l => l.DiscountCents);
         o.TaxCents = o.Lines.Sum(l => l.TaxCents);
-        o.TotalCents = o.ItemsCents - o.DiscountCents + o.ShippingCents + o.TaxCents;
+        o.TotalCents = o.ItemsCents - o.DiscountCents + o.ShippingCents + o.TaxCents + o.ShippingTaxCents;   // shipping tax is in what the buyer paid, but not in the fee base or the net below
         o.FeeCents = Fee(o.ItemsCents - o.DiscountCents, feeBasisPoints);
         o.NetCents = o.ItemsCents - o.DiscountCents + o.ShippingCents - o.FeeCents;
+    }
+
+    /// <summary>
+    /// The shipping tax that goes back with a shipping refund of <paramref name="shipping"/>: floor(shippingTax x shipping / shippingCents), and the refund that completes the
+    /// order's shipping takes the remainder, so the shares of all refunds add up to exactly the shipping tax that was charged.
+    /// </summary>
+    public static long ShippingTaxShare(SellerOrder o, long priorShipping, long priorShippingTax, long shipping)
+    {
+        if (o.ShippingTaxCents <= 0 || o.ShippingCents <= 0 || shipping <= 0) return 0;
+        return priorShipping + shipping >= o.ShippingCents ? Math.Max(0, o.ShippingTaxCents - priorShippingTax) : o.ShippingTaxCents * shipping / o.ShippingCents;
     }
 
     /// <summary>Share of a line's discount/tax for a partial quantity (integer, rounds down; the remainder stays on the last unit).</summary>
