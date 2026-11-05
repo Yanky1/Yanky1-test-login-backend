@@ -152,6 +152,7 @@ Content-Type: application/json
 | `POST /messages/{messageId}/reports` | `{reason?}` | Buyer reported a message: conversation flagged for admin review. |
 | `POST /messages/{messageId}/receipts` | `{status:"delivered"\|"read"\|"failed"}` | `messageId` = the id from the `message.sent` event; status only moves forward. |
 | `GET /attachments/{id}` | - | Signed GET (empty body) to download a seller attachment listed in a `message.sent` event. |
+| `POST /reviews`, `POST /reviews/{reviewId}/state` | see `docs/REVIEWS.md` | **Reviews (C17):** buyer reviews and their moderation state, same signing and replay rules, one per-caller limit. |
 | `GET /orders/{marketplaceOrderId}` | - | **Order read (C16)**, signed GET with an empty body (same signing, freshness and one-time nonce as the other calls), own per-caller limit `RateLimit:InternalOrderReadPerMinute` (default 600/min, `429` over it). `404 order_not_found` for an unknown order. Returns every seller order of the marketplace order, see below. |
 
 ### 3.4 Outbound webhook (portal -> marketplace)
@@ -210,6 +211,7 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 | `listing.upserted` | `listingId`, `version` (catalog feed; see `docs/CATALOG.md`; delivered in version order per listing) |
 | `listing.unlisted` | `listingId`, `version`, `reason` (`not_active`, `archived`, `seller_suspended`, `moderated`, `brand_removed`, `deleted`) |
 | `content.report_decided` | `reportId`, `kind` (`review`/`listing`/`message`), `targetId`, `decision` (`dismissed`/`hidden`/`removed`), `reasonShownToUser` (nullable) (`docs/CATALOG.md`, `docs/ADMIN.md`) |
+| `review.reply_posted` / `review.reply_removed` | seller replies to marketplace reviews, ordered per review in the scope `review:{reviewId}` (C17, `docs/REVIEWS.md`) |
 | `message.sent` | `messageId`, `conversationId`, `marketplaceConversationId`, `kind`, `marketplaceOrderId`, `sellerOrderNumber`, `productId`, `text`, `sentAt`, `attachments:[{id, fileName, contentType, size, path}]` |
 
 #### Money in events

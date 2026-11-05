@@ -12,6 +12,7 @@ Everything here lives under the signed internal API `/api/internal/v1` and is si
 | `GET /catalog/categories`, `GET /catalog/brands` | taxonomy and brands | same |
 | `GET /catalog/images/{imageId}` | original image bytes of a visible listing | same |
 | `POST /products/{id}/questions` | a buyer question for the seller's Q&A inbox | per (caller, listing) + per-caller ceiling, section 8 |
+| `POST /reviews`, `POST /reviews/{reviewId}/state` | buyer reviews and their state (C17, `docs/REVIEWS.md`) | per-caller ceiling `RateLimit:InternalReviewsPerCallerPerMinute` (2000) |
 | `POST /content/reports` | a content report for staff moderation | per (caller, target) + per-caller ceiling, section 8 |
 
 ## 1. Which listings are visible
@@ -139,7 +140,7 @@ source of truth: if you missed events, resume the feed from your cursor.
 ```
 { "reportId": "R-9001", "kind": "review", "targetId": "review-4711", "reason": "Contains personal data", "note": "optional", "reporterRef": "buyer-ref-77" }
 ```
-`kind`: `review` | `listing` | `message`. `targetId` is the marketplace's id for a review, the listing id for a listing, the **marketplace message id** for a message
+`kind`: `review` | `review_reply` | `listing` | `message`. `review_reply` (C17, `docs/REVIEWS.md`): `targetId` is the `replyId` of a seller reply; staff can dismiss it or remove it (`review.reply_removed`, reason `staff_removed`). `targetId` is the marketplace's id for a review, the listing id for a listing, the **marketplace message id** for a message
 (the `messageId` you sent in `POST /messages`). `reportId` (≤100) is the idempotency key: `201 {reportId, status:"open", decision:null, duplicate:false}`, a repeat `200 ... duplicate:true`
 (with the decision once staff decided), the same id for a different report `409 report_id_conflict`. Validation errors `422 invalid_report`, unknown listing/message `404 not_found`.
 `reporterRef` is the marketplace's opaque reference for the reporter (stored for staff; never a name or e-mail).
