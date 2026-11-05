@@ -1,4 +1,6 @@
 using System.Net;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Nodes;
 using Solvelt.Api.Domain;
 
@@ -247,5 +249,59 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/bookings/maintenance/run", null)).StatusCode);
         var late = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 });
         Assert.Equal(HttpStatusCode.Conflict, late.StatusCode); Assert.Equal("quote_expired", await late.ErrCode());
+    }
+
+    [Fact]
+    public async Task Accepting_between_the_lapse_of_a_quote_hold_and_the_expiry_job_expires_it_inline_and_makes_a_new_hold()
+    {
+        var b = await QuoteBiz();
+        var (qid, id) = await Request(b);
+        var s1 = Svc.Local(b.Tz, Svc.Next(_f, DayOfWeek.Wednesday), 10);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", Quote(b, [s1]))).StatusCode);
+        var mid1 = Svc.BookingId(); var mid2 = Svc.BookingId();
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid1, start = s1 })).StatusCode);
+        _f.Time.Advance(TimeSpan.FromMinutes(30));                                             // the hold lapsed; the job has NOT run
+        var again = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid2, start = s1 });
+        Assert.Equal(HttpStatusCode.Created, again.StatusCode);                                // used to be 409 quote_not_open
+        Assert.Equal("Hold", (string)(await Orders.Node(again))["booking"]!["status"]!);
+        Assert.Equal(BookingStatus.Expired, _f.WithDb(db => db.Bookings.Single(x => x.MarketplaceBookingId == mid1)).Status);
+        Assert.Single(Svc.Events(_f, b.Seller, "booking.hold_expired").Where(e => (string)e.Data["booking"]!["marketplaceBookingId"]! == mid1));
+        Assert.Empty(Svc.Events(_f, b.Seller, "booking.cancelled"));
+    }
+
+    [Fact]
+    public async Task Accepting_after_both_the_hold_and_the_quote_lapsed_before_the_job_ran_is_409_quote_expired_and_the_hold_is_expired()
+    {
+        var b = await QuoteBiz();
+        var (qid, id) = await Request(b);
+        var s1 = Svc.Local(b.Tz, Svc.Next(_f, DayOfWeek.Wednesday), 10);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", Quote(b, [s1], expiresInHours: 1))).StatusCode);
+        var mid1 = Svc.BookingId();
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid1, start = s1 })).StatusCode);
+        _f.Time.Advance(TimeSpan.FromHours(2));
+        var late = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 });
+        Assert.Equal(HttpStatusCode.Conflict, late.StatusCode); Assert.Equal("quote_expired", await late.ErrCode());
+        Assert.Equal(BookingStatus.Expired, _f.WithDb(db => db.Bookings.Single(x => x.MarketplaceBookingId == mid1)).Status);   // the slot is free again
+    }
+
+    [Fact]
+    public async Task A_failed_save_when_a_quote_hold_expires_does_not_reopen_the_quote()
+    {
+        var b = await QuoteBiz();
+        var (qid, id) = await Request(b);
+        var s1 = Svc.Local(b.Tz, Svc.Next(_f, DayOfWeek.Wednesday), 10);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", Quote(b, [s1]))).StatusCode);
+        var mid = Svc.BookingId();
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid, start = s1 })).StatusCode);
+        using var scope = _f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Data.AppDbContext>();
+        var svc = scope.ServiceProvider.GetRequiredService<Solvelt.Api.Bookings.BookingService>();
+        var held = await db.Bookings.FirstAsync(x => x.MarketplaceBookingId == mid);
+        _f.WithDb(d2 => d2.Bookings.Where(x => x.Id == held.Id).ExecuteUpdate(u => u.SetProperty(x => x.Version, x => x.Version + 1)));   // somebody else changed the booking meanwhile
+        var res = await svc.ExpireHoldAsync(held);
+        Assert.False(res.Ok); Assert.Equal("version_conflict", res.Code);
+        var q = _f.WithDb(d2 => d2.QuoteRequests.Single(x => x.Id == id));
+        Assert.Equal(QuoteStatus.Accepted, q.Status); Assert.NotNull(q.BookingId);                    // the quote was not given back
+        Assert.Equal(BookingStatus.Hold, _f.WithDb(d2 => d2.Bookings.Single(x => x.MarketplaceBookingId == mid)).Status);
     }
 }

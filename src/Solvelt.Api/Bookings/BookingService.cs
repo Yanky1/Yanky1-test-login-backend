@@ -424,6 +424,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
     public async Task<BRes> ExpireHoldAsync(Booking b)
     {
         if (!BookingStateMachine.Can(b.Status, BookingStateMachine.Act.ExpireHold)) return Illegal(b, BookingStateMachine.Act.ExpireHold);
+        await using var tx = await db.Database.BeginTransactionAsync();   // the booking and the quote it gives back change together or not at all
         b.Status = BookingStatus.Expired;
         Event(b, "booking.hold_expired", Actor.System);
         outbox.Enqueue("booking.hold_expired", b.SellerId, b.Id.ToString(), Data(b));
@@ -434,7 +435,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
                 .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QuoteStatus.Quoted).SetProperty(q => q.BookingId, (Guid?)null).SetProperty(q => q.Version, q => q.Version + 1).SetProperty(q => q.UpdatedAt, time.UtcNow()));
             b.QuoteId = null;   // the unique index allows one booking per quote: the lapsed hold lets go so the quote can be accepted again
         }
-        return await SaveAsync(b);
+        return await SaveAsync(b, tx);
     }
 
     /// <summary>

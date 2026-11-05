@@ -398,10 +398,18 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
         }
         if (x.Status == QuoteStatus.Accepted && x.BookingId is not null)
         {
-            // accepting while the quote's hold is live returns that same hold (C13)
             var now0 = time.UtcNow();
-            var live = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(b => b.Id == x.BookingId && b.Status == BookingStatus.Hold && b.HoldExpiresAt > now0);
-            if (live is not null) return new BRes(true, 200, "exists", "", new { created = false, booking = BookingService.Summary(live) });
+            var held = await db.Bookings.FirstOrDefaultAsync(b => b.Id == x.BookingId && b.Status == BookingStatus.Hold);
+            if (held is not null && held.HoldExpiresAt is { } until && until > now0)
+                return new BRes(true, 200, "exists", "", new { created = false, booking = BookingService.Summary(held) });   // accepting while the quote's hold is live returns that same hold (C13)
+            if (held is not null)
+            {
+                // the hold lapsed but the expiry job has not run yet: expire it here (same no-fee path), which gives the quote back, then go on as for a Quoted quote
+                var ex = await bookings.ExpireHoldAsync(held);
+                if (!ex.Ok) return ex;
+                db.ChangeTracker.Clear();
+                x = await db.QuoteRequests.FirstAsync(q => q.MarketplaceQuoteId == marketplaceQuoteId);
+            }
         }
         if (x.Status == QuoteStatus.Expired) return BRes.Conflict("This quote has expired.", "quote_expired");
         if (x.Status != QuoteStatus.Quoted) return BRes.Conflict($"A {x.Status} quote can't be accepted.", "quote_not_open");
