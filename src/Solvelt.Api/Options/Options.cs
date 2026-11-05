@@ -13,7 +13,10 @@ public class AppOptions
     public string HmacSecret { get; set; } = "";
     public bool UseHttpsRedirection { get; set; } = true;
     public bool UseHsts { get; set; } = true;
+    /// <summary>Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are honoured: single IP addresses or CIDR ranges (e.g. "10.0.0.0/24"). A catch-all range (broader than /8 for IPv4 or /16 for IPv6) is refused at startup.</summary>
     public string[] TrustedProxies { get; set; } = [];
+    /// <summary>Explicit opt-in for Azure App Service (or any platform whose front ends have no fixed IP): additionally trust the private / link-local ingress ranges, never the public internet. Default false.</summary>
+    public bool TrustPlatformProxy { get; set; }
 }
 
 public class JwtOptions

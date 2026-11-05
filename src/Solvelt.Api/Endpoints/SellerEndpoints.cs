@@ -228,5 +228,7 @@ public static partial class SellerEndpoints
             .Where(m => (to is null || m.To.Equals(to, StringComparison.OrdinalIgnoreCase)) && (kind is null || m.Kind == kind))
             .Select(m => new { m.To, m.Kind, m.Subject, m.Html, m.Text })));
         t.MapDelete("/emails", (EmailSink sink) => { sink.Clear(); return Results.NoContent(); });
+        // what the app believes about the caller after forwarded-header processing (tests only)
+        t.MapGet("/client", (HttpContext c) => Results.Ok(new { ip = c.Connection.RemoteIpAddress?.ToString(), scheme = c.Request.Scheme, forwardedFor = c.Request.Headers["X-Forwarded-For"].ToString() }));
     }
 }
