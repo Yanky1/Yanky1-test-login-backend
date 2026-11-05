@@ -172,8 +172,8 @@ public static class UserAdminEndpoints
             var days = Enumerable.Range(0, 14).Select(i => today.AddDays(-13 + i)).ToList();
             var from = days[0];
             var sellersByDay = (await db.Sellers.AsNoTracking().Where(s => s.CreatedAt >= from).Select(s => s.CreatedAt).ToListAsync()).GroupBy(d => d.Date).ToDictionary(x => x.Key, x => x.Count());
-            var ordersByDay = (await db.Orders.AsNoTracking().Where(o => o.PlacedAt >= from).Select(o => o.PlacedAt).ToListAsync()).GroupBy(d => d.Date).ToDictionary(x => x.Key, x => x.Count());
-            var bookingsByDay = (await db.Bookings.AsNoTracking().Where(o => o.CreatedAt >= from).Select(o => o.CreatedAt).ToListAsync()).GroupBy(d => d.Date).ToDictionary(x => x.Key, x => x.Count());
+            var ordersByDay = (await db.Orders.AsNoTracking().Where(o => o.PlacedAt >= from && !db.DemoRecords.Any(d => d.EntityId == o.Id)).Select(o => o.PlacedAt).ToListAsync()).GroupBy(d => d.Date).ToDictionary(x => x.Key, x => x.Count());
+            var bookingsByDay = (await db.Bookings.AsNoTracking().Where(o => o.CreatedAt >= from && !db.DemoRecords.Any(d => d.EntityId == o.Id)).Select(o => o.CreatedAt).ToListAsync()).GroupBy(d => d.Date).ToDictionary(x => x.Key, x => x.Count());
             var trend = days.Select(d => new { date = d.ToString("yyyy-MM-dd"), newSellers = sellersByDay.GetValueOrDefault(d), orders = ordersByDay.GetValueOrDefault(d), bookings = bookingsByDay.GetValueOrDefault(d) });
 
             var sms = await db.AuditEvents.AsNoTracking().Where(e => e.At >= since24 && (e.Type == "sms.sent" || e.Type == "sms.blocked" || e.Type == "sms.failed")).GroupBy(e => e.Type).Select(x => new { x.Key, N = x.Count() }).ToListAsync();
@@ -184,9 +184,9 @@ public static class UserAdminEndpoints
                 applications = new { waiting = await waiting.CountAsync(), pendingReview = submitted.Count, needsInfo = await db.Sellers.CountAsync(s => s.Status == SellerStatus.NeedsInfo), oldestPendingDays = oldest, averagePendingDays = avg },
                 sellers = new { newLast7Days = await db.Sellers.CountAsync(s => s.CreatedAt >= since7), newLast30Days = await db.Sellers.CountAsync(s => s.CreatedAt >= since30),
                     approved = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Approved), suspended = await db.Sellers.CountAsync(s => s.Status == SellerStatus.Suspended) },
-                listings = new { active = await db.Products.CountAsync(p => p.Status == ProductStatus.Active), activeServices = await db.Products.CountAsync(p => p.Status == ProductStatus.Active && p.Type == ListingType.Service),
+                listings = new { active = await db.Products.CountAsync(p => p.Status == ProductStatus.Active && !db.DemoRecords.Any(d => d.EntityId == p.Id)), activeServices = await db.Products.CountAsync(p => p.Status == ProductStatus.Active && p.Type == ListingType.Service && !db.DemoRecords.Any(d => d.EntityId == p.Id)),
                     hiddenByStaff = await db.Products.CountAsync(p => p.ModeratedAt != null) },
-                today = new { orders = await db.Orders.CountAsync(o => o.PlacedAt >= today), bookings = await db.Bookings.CountAsync(b => b.CreatedAt >= today) },
+                today = new { orders = await db.Orders.CountAsync(o => o.PlacedAt >= today && !db.DemoRecords.Any(d => d.EntityId == o.Id)), bookings = await db.Bookings.CountAsync(b => b.CreatedAt >= today && !db.DemoRecords.Any(d => d.EntityId == b.Id)) },
                 openReports = await db.ModerationReports.CountAsync(r => r.Status == ReportStatus.Open),
                 integrations = new
                 {

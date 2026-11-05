@@ -38,6 +38,8 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
         var qa = (await db.Questions.AsNoTracking().Where(q => ids.Contains(q.ProductId) && q.State == QuestionState.Published && q.Answer != null).OrderBy(q => q.AskedAt).ThenBy(q => q.Id).ToListAsync(ct)).ToLookup(q => q.ProductId);
         var services = (await db.ServiceDetails.AsNoTracking().Where(s => ids.Contains(s.ProductId)).ToListAsync(ct)).ToDictionary(s => s.ProductId);
         var delivery = await DeliveryContext.LoadAsync(db, products.Select(p => p.SellerId).Distinct().ToList(), ct);
+        // demo listings (test tool, see docs/CATALOG.md) are flagged so a buyer site can show or hide them
+        var demoIds = (await db.DemoRecords.AsNoTracking().Where(r => ids.Contains(r.EntityId) && (r.Kind == "product" || r.Kind == "service")).Select(r => r.EntityId).ToListAsync(ct)).ToHashSet();
 
         var brandIds = products.Select(p => p.BrandId).Distinct().ToList();
         var brands = (await db.Brands.AsNoTracking().Where(b => brandIds.Contains(b.Id)).ToListAsync(ct)).ToDictionary(b => b.Id);
@@ -85,6 +87,7 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                 listingId = p.Id,
                 version = p.CatalogVersion,
                 listed = true,
+                demo = demoIds.Contains(p.Id),
                 type = isService ? "service" : "product",
                 title = p.Title,
                 handle = p.Handle,
