@@ -99,8 +99,7 @@ public class CatalogReader(AppDbContext db, TimeProvider time)
                 searchTerms = SearchTerms.ForFeed(p.SearchTerms),
                 description = p.Description,
                 descriptionHtml = SafeMarkdown.Render(p.Description),
-                // a quote-priced service has no price: `price` is null (never an object with a null amount); the buyer asks for a quote (docs/CATALOG.md)
-                price = isService && baseCents is null ? (object?)null : new
+                price = new
                 {
                     amountMinor = baseCents, currency = Currency, compareAtMinor = p.CompareAtCents,
                     sale = p.SaleCents is { } sale ? new { amountMinor = sale, startsAt = p.SaleStart, endsAt = p.SaleEnd, active = ProductRules.EffectiveSale(p, now) is not null } : null
