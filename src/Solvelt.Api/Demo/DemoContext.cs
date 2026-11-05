@@ -27,6 +27,8 @@ public sealed class DemoContext(IOptions<DemoOptions> opt, EmailSink sink)
         if (!Enabled || eventType.StartsWith("listing.", StringComparison.Ordinal)) return false;
         if (SuppressOutbox) return true;
         if (scope is { Length: > 3 } && Guid.TryParseExact(scope[3..], "N", out var sid) && IsDemo(db, sid)) return true;
-        return Guid.TryParse(aggregateId, out var aid) && IsDemo(db, aid);
+        if (Guid.TryParse(aggregateId, out var aid)) return IsDemo(db, aid);
+        // message events are keyed by the marketplace conversation id
+        return db.Conversations.Any(c => c.MarketplaceConversationId == aggregateId && db.DemoRecords.Any(r => r.EntityId == c.Id));
     }
 }
