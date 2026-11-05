@@ -86,6 +86,8 @@ open returns, 30-day sales (daily series), **late-shipment rate** and **cancella
 
 ## 3. Integration contract (main website <-> portal)
 
+> Service bookings and quotes use the same signing and outbox; their contract is in `docs/SERVICES.md`. Note for the marketplace (C13): `POST /quotes/{id}/accept` now returns a **hold** (`status: Hold`, `holdExpiresAt`); take payment, then call `POST /bookings/{mid}/confirm` to make it `Confirmed` (`booking.confirmed` is sent then, not at accept). A lapsed hold sends `booking.hold_expired` and reopens the quote.
+
 ### 3.1 Signing (inbound: marketplace -> portal)
 Base path `/api/internal/v1`. Every request carries:
 
