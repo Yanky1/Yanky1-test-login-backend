@@ -14,6 +14,7 @@ using Microsoft.IdentityModel.Tokens;
 using Solvelt.Api;
 using Solvelt.Api.Admin;
 using Solvelt.Api.Data;
+using Solvelt.Api.Demo;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Email;
 using Solvelt.Api.Endpoints;
@@ -51,6 +52,11 @@ builder.Services.Configure<StorageOptions>(cfg.GetSection(StorageOptions.Section
 builder.Services.Configure<ExternalAuthOptions>(cfg.GetSection(ExternalAuthOptions.Section));
 builder.Services.Configure<AdminSeedOptions>(cfg.GetSection(AdminSeedOptions.Section));
 builder.Services.Configure<PasswordSettings>(cfg.GetSection(PasswordSettings.Section));
+
+// Test-only demo tools: no override. The very first startup check, so a misconfigured production deployment never serves a single request.
+if (cfg.GetValue<bool>("Demo:Enabled") && env.IsProduction())
+    throw new InvalidOperationException("Demo:Enabled must never be true in the Production environment: the demo-data and self-approve tools are for testing only.");
+builder.AddDemo();
 
 var app0 = cfg.GetSection(AppOptions.Section).Get<AppOptions>() ?? new AppOptions();
 if (string.IsNullOrWhiteSpace(app0.HmacSecret))
@@ -247,6 +253,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseDriverGuard();
+app.UseDemoFlags();
 
 await Seeder.InitAsync(app);
 
@@ -270,6 +277,7 @@ v1.MapAssistant();
 app.MapAdmin(v1);
 app.MapPayments(v1);
 app.MapShipping(v1);
+app.MapDemo(v1);
 if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
 
 app.Run();

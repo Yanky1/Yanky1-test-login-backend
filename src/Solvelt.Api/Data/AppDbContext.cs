@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Solvelt.Api.Admin;
+using Solvelt.Api.Demo;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Delivery;
 using Solvelt.Api.Assistant;
@@ -141,6 +142,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
     public DbSet<ShippingWebhookEvent> ShippingWebhookEvents => Set<ShippingWebhookEvent>();
     public DbSet<ShippingQuote> ShippingQuotes => Set<ShippingQuote>();
 
+    // test-only demo data (see Demo/)
+    public DbSet<Solvelt.Api.Demo.DemoBatch> DemoBatches => Set<Solvelt.Api.Demo.DemoBatch>();
+    public DbSet<Solvelt.Api.Demo.DemoRecord> DemoRecords => Set<Solvelt.Api.Demo.DemoRecord>();
+
     private TimeProvider Clock => clock ?? TimeProvider.System;
 
     /// <summary>A second context on the SAME connection and transaction: lets set-based code (ExecuteUpdate callers) write rows through EF without flushing the caller's pending changes.</summary>
@@ -219,6 +224,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
         b.ConfigurePayments();
         b.ConfigureLocalDelivery();
         b.ConfigureShipping();
+        b.ConfigureDemo();
     }
 
     public static void Seed(AppDbContext db)
