@@ -132,7 +132,8 @@ The money paths (refund/dispute ingest, release, staff retry) and the booking an
 | `App:SmsWordingVersion` | `App__SmsWordingVersion` | | | | `2026-01` | Version of the SMS consent wording |
 | `App:UseHttpsRedirection` | `App__UseHttpsRedirection` | | | | `true` | `UseHttpsRedirection()` |
 | `App:UseHsts` | `App__UseHsts` | | | | `true` (`false` in Development json) | HSTS, never in Development/Testing |
-| `App:TrustedProxies` | `App__TrustedProxies__0` | | see §23 | see §23 | `[]` | Reverse-proxy IPs for `X-Forwarded-For/Proto` |
+| `App:TrustedProxies` | `App__TrustedProxies__0` | | see §23 | see §23 | `[]` | Reverse-proxy IPs or CIDR ranges for `X-Forwarded-For/Proto` (a catch-all range refuses to start) |
+| `App:TrustPlatformProxy` | `App__TrustPlatformProxy` | | Azure | Azure | `false` | Opt-in for Azure App Service: also trust the private ingress ranges (§23.1) |
 | `App:FrontendBaseUrl`, `App:CorsOrigins`, `App:MarketplaceUrl` | | | | | | see §7 |
 
 Generate the secret with `openssl rand -hex 32`.
@@ -199,6 +200,8 @@ In production, mount a persistent volume that every instance shares, or implemen
 | `App:MarketplaceUrl` | `App__MarketplaceUrl` | | req | req | `https://example.com/marketplace` | Buyer marketplace URL, published in `/api/v1/public-config` |
 
 Serve the SPA and the API from the same site (for example `/` and `/api`). The refresh cookie is SameSite=Strict, so this is required for it to work. The frontend's runtime `public/config.json` is described in §8.1.
+
+**Single site from the API (one App Service).** Copy the frontend build (`dist/`) into `src/Solvelt.Api/wwwroot/` before `dotnet publish` (README, "Serve the SPA and API from the same site"). When `wwwroot/index.html` exists the API serves the pages itself: client routes fall back to `index.html`, pages carry the frontend CSP (`script-src 'self' https://challenges.cloudflare.com`, `frame-src https://challenges.cloudflare.com`, `connect-src 'self'`, ...) and `Cache-Control: no-store`, `/assets` is cacheable, `/api` and `/health` keep `default-src 'none'`. Then `App:FrontendBaseUrl` is the site's own https URL and `App:CorsOrigins` can stay as that same origin (same-origin requests need no CORS). No new setting; deploy `main` with the build copied in, never a patched `Program.cs`.
 
 ---
 
@@ -660,13 +663,27 @@ Signatures are read from `X-Twilio-Signature` or `X-SignalWire-Signature`.
 | `Admin:ReadsPerMinute` / `WritesPerMinute` / `RevealsPerMinute` | | `240` / `60` / `20` | Staff rate limits |
 | `Admin:MaxExportRows` | | `50000` | |
 
-The first admin enrols 2FA (`auth/2fa/setup`) and invites the others. The allowlist needs correct client IPs, so set `App:TrustedProxies` (§23).
+The first admin enrols 2FA (`auth/2fa/setup`) and invites the others. The allowlist needs correct client IPs, so set `App:TrustedProxies` or, on Azure App Service, `App:TrustPlatformProxy=true` (§23). Without either, the allowlist compares against the proxy's address, not the client's. Entries are single IPs or CIDR ranges.
 
 ---
 
 ## 23. Reverse proxy and TLS
 
-Run behind TLS. Set `App:TrustedProxies` (`App__TrustedProxies__0=10.0.0.5`, single IP addresses only, no CIDR) to the proxy's address. Only then does the app honour `X-Forwarded-For/Proto`, which per-IP rate limits, the admin IP allowlist and HTTPS redirection need.
+Run behind TLS. Set `App:TrustedProxies` (`App__TrustedProxies__0=10.0.0.5` or a CIDR range such as `App__TrustedProxies__0=10.20.0.0/24`) to the proxy's address or network. Only then does the app honour `X-Forwarded-For/Proto`, which per-IP rate limits, the admin IP allowlist and HTTPS redirection need.
+
+Rules the app enforces: nothing is trusted unless configured; only the **nearest hop** is used (`ForwardLimit` 1: the right-most `X-Forwarded-For` value, so a client cannot inject an earlier hop); a range broader than `/8` (IPv4) or `/16` (IPv6), such as `0.0.0.0/0`, or a malformed entry **refuses to start**; the host's `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` switch cannot widen the trust, because both read the same options. A request from any other peer keeps its own address; its `X-Forwarded-*` headers are ignored.
+
+### 23.1 Azure App Service
+
+TLS ends at Azure's front ends, which have no fixed IP addresses and reach the app container from varying private addresses. Set:
+
+| Setting | Env var | Value |
+|---|---|---|
+| `App:TrustPlatformProxy` | `App__TrustPlatformProxy` | `true` |
+
+Leave `App:TrustedProxies` empty (or list your own ranges as well). With the opt-in the app trusts, as proxy peers, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7` and `fe80::/10`: ranges a client on the public internet cannot be in. Per-IP rate limits (§24), `Admin:IpAllowlist` (§22) and the audit log then see the real client IP (App Service sends it as `ip:port`; the port is dropped).
+
+**Risk note.** The opt-in is safe only while the container is reachable through the platform front end alone. Anything else that can open a connection to the container from inside those private ranges (another app in the same virtual network, a private endpoint consumer, a misconfigured network rule) can then choose its own client IP, and with it its rate-limit bucket and the admin IP allowlist result. Do not turn it on for a host that is directly reachable by untrusted peers in those ranges; list the exact proxy ranges in `App:TrustedProxies` there instead. The opt-in is never implied by `ASPNETCORE_FORWARDEDHEADERS_ENABLED` and defaults to off.
 
 The Phone and Shipping webhooks use their own `PublicBaseUrl` settings instead of the request host.
 
@@ -755,7 +772,7 @@ Work through these in order. Rehearse each step in test-mode staging first.
    * `App:FrontendBaseUrl`, `App:CorsOrigins`, `App:MarketplaceUrl`;
    * `Passkeys:RelyingPartyId` + `AllowedOrigins`;
    * SPA and API on the same site;
-   * `App:TrustedProxies` set, with TLS at the proxy.
+   * `App:TrustedProxies` (or `App:TrustPlatformProxy` on Azure App Service) set, with TLS at the proxy.
 5. **Email:** provider (`Smtp`/`Resend`) and credentials, a verified sender domain with SPF/DKIM/DMARC, and a real monitored `Email:SupportAddress`.
 6. **Turnstile:** a production widget with both keys. `UseTestStub` stays off.
 7. **Passwords:** `Passwords:CheckPwned=true`.

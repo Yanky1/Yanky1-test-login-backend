@@ -61,5 +61,17 @@ For testing only. With `Demo:Enabled=true` (env `Demo__Enabled=true`, default **
 * Shipping: set `SHIPPO_API_KEY` (live token in Production; Production refuses a test token) `Shipping:WebhookSecret` and `Shipping:LinkKey` (a separate random value, not an Orders secret), register `https://<host>/api/v1/shipping/webhooks/shippo?token=<secret>` for `track_updated`, set `Shipping:PublicBaseUrl`. Go-live checklist: `docs/SHIPPING.md`.
 * Payments: set `STRIPE_SECRET_KEY` (live key in Production; Production refuses a test key) and `STRIPE_WEBHOOK_SECRET`, register `https://<host>/api/webhooks/stripe` (platform + Connect endpoints). Go-live checklist: `docs/PAYMENTS.md`.
 * Required in Production: `Orders:InboundSecret` + `Orders:OutboundSecret` (different) and `Orders:WebhookUrl`, `App:HmacSecret`, `Jwt:PrivateKeyPem`, Turnstile keys, an email provider, `DataProtection:KeysPath` (reset links must survive restarts), shared file storage if >1 instance.
-* Run behind TLS; set `App:TrustedProxies` to your reverse proxy so per-IP rate limits use the real client IP.
+* Run behind TLS; set `App:TrustedProxies` (IPs or CIDR ranges) to your reverse proxy so per-IP rate limits use the real client IP. On Azure App Service use `App:TrustPlatformProxy=true` (`docs/SETUP-INTEGRATIONS.md` §23).
 * Serve the SPA and API from the same site (e.g. `/` and `/api`) so the SameSite=Strict refresh cookie works. See `docs/SETUP-INTEGRATIONS.md`.
+
+### Serve the SPA and API from the same site
+
+The API can serve the built frontend itself (one App Service, one container). Build the frontend (`npm ci && npm run build` in the frontend repo) and copy the build output into `src/Solvelt.Api/wwwroot/` before `dotnet publish`, so `wwwroot/index.html` and `wwwroot/assets/` end up next to the API:
+
+```
+cd ../test-login-frontend && npm ci && npm run build
+rm -rf ../Yanky1-test-login-backend/src/Solvelt.Api/wwwroot && cp -r dist ../Yanky1-test-login-backend/src/Solvelt.Api/wwwroot
+cd ../Yanky1-test-login-backend && dotnet publish src/Solvelt.Api -c Release -o publish
+```
+
+When `wwwroot/index.html` exists the app serves it for `/` and for every client route; pages get the frontend's Content-Security-Policy and `Cache-Control: no-store`, `/assets` is cached for a year (fingerprinted names), and `/api` and `/health` keep their strict policy (unknown `/api/...` paths are 404). Without `index.html` nothing changes (local dev, tests). `wwwroot/` is a build output and is git-ignored.
