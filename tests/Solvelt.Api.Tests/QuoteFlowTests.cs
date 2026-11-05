@@ -227,11 +227,12 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         Assert.Single(Svc.Events(_f, b.Seller, "booking.hold_expired"));
         var q = _f.WithDb(db => db.QuoteRequests.Single(x => x.Id == id));
         Assert.Equal(QuoteStatus.Quoted, q.Status); Assert.Null(q.BookingId);
-        // the quote can be accepted again (new hold, same slot) while it is valid; a normal hold cannot take the slot twice
+        // the quote can be accepted again (new hold, same slot) while it is valid; another quote cannot offer the slot meanwhile
         var mid2 = Svc.BookingId();
         Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid2, start = s1 })).StatusCode);
-        var rival = await Svc.Post(b, "/bookings/holds", Svc.Body(b, Svc.BookingId(), s1, "customer"));
-        Assert.True(rival.StatusCode is HttpStatusCode.UnprocessableEntity or HttpStatusCode.Conflict); Assert.Equal("slot_unavailable", await rival.ErrCode());
+        var (_, id2) = await Request(b);
+        var rival = await b.Owner.Post($"/api/v1/seller/quote-requests/{id2}/quote", Quote(b, [s1]));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, rival.StatusCode); Assert.Equal("slot_unavailable", await rival.ErrCode());   // the live hold blocks the slot
     }
 
     [Fact]
