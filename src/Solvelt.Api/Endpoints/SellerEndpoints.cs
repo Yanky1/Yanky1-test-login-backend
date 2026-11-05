@@ -61,7 +61,7 @@ public static partial class SellerEndpoints
         {
             marketplaceUrl = app.Value.MarketplaceUrl, termsVersion = await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion),
             sellerAgreementVersion = await Solvelt.Api.Admin.PlatformSettings.AgreementAsync(db, app.Value.SellerAgreementVersion), smsWordingVersion = app.Value.SmsWordingVersion,
-            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey, demoEnabled = demo.Value.Enabled
+            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey, demoEnabled = demo.Value.Enabled, staffMfaSkipEnabled = demo.Value.StaffMfaSkipOn
         }));
 
         var s = g.MapGroup("/seller").RequireAuthorization("Seller");

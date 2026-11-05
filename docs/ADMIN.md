@@ -154,6 +154,8 @@ through the panel, owners are mailed. For a stuck account where the owner cannot
 **Locked-out / lost-device user.** Verify identity out of band, then Support: `clear-lockout` or `send-password-reset`; for a lost authenticator: Super admin `disable-2fa`
 (step-up, reason; the user is signed out everywhere and e-mailed). **Staff lost their device:** another Super admin deactivates and re-invites (or disables 2FA).
 
+**Test-site two-factor skip (never production).** `Demo:Enabled=true` AND `Demo:AllowStaffMfaSkip=true` (both; default off; the app refuses to start in Production with either) map `POST auth/demo-mfa {email,password}` and `POST auth/demo-step-up`. After the normal password step (same lockout, active-staff rule and IP allowlist) they give ONE session `Method = staff-demo-mfa` with two-factor and step-up satisfied; no TOTP secret is created and the account's 2FA state is untouched. Both settings are re-checked on every request of such a session, each skip is audited as `admin.demo_mfa_skipped` (actor `demo-mfa-skip` + staff user id), and `auth/me` returns `mfaSkipped` (the UI shows a permanent "Two-factor skipped (test mode)" banner). **For test sites only**: with the flags on, a staff password alone opens the admin. See `docs/SETUP-INTEGRATIONS.md` section 24 and `docs/DECISIONS.md` Q1-Q7.
+
 **Break-glass reveal.** Only with a ticket reference as the reason; reveals are reviewed through `audit?action=pii.revealed`.
 
 ## Frontend
