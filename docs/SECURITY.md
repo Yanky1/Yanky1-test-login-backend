@@ -37,5 +37,5 @@ Seller credentials and sessions, seller PII (business contact, phone, address), 
 * Security review round 2 (items 1-6): see DECISIONS 26-33; every fix has a regression test (xUnit `HardeningTests`, Vitest `multitab`/`security`, Playwright multi-tab, passkey binding and step-up).
 
 ## Residual risks / operator duties
-Persist Data Protection keys; run behind TLS and set `App:TrustedProxies`; enable `Passwords:CheckPwned`; rotate JWT keys; monitor `AuditEvents`;
+Persist Data Protection keys; run behind TLS and set `App:TrustedProxies` (IPs or CIDR; `App:TrustPlatformProxy` on Azure App Service, see SETUP-INTEGRATIONS §23.1); enable `Passwords:CheckPwned`; rotate JWT keys; monitor `AuditEvents`;
 Turnstile/email/Google/Apple require real credentials and were not exercised against live services in CI.

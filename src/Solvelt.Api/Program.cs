@@ -237,18 +237,23 @@ app.UseExceptionHandler();
 app.UseStatusCodePages();
 if (!env.IsDevelopment() && !env.IsEnvironment("Testing") && appOpts.UseHsts) app.UseHsts();
 if (appOpts.UseHttpsRedirection) app.UseHttpsRedirection();
+// Single-site hosting (#92): when the built SPA is in wwwroot (index.html present), this app serves it too. Nothing changes without that file.
+var spa = SpaHosting.Detect(env.WebRootPath);
 app.Use(async (ctx, next) =>
 {
     var h = ctx.Response.Headers;
-    h["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+    var page = spa is not null && !SpaHosting.IsApiPath(ctx.Request.Path);
+    h["Content-Security-Policy"] = page ? SpaHosting.PageCsp : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
     h["X-Content-Type-Options"] = "nosniff";
     h["Referrer-Policy"] = "no-referrer";
     h["X-Frame-Options"] = "DENY";
     h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     h["Cross-Origin-Opener-Policy"] = "same-origin";
     if (ctx.Request.Path.StartsWithSegments("/api")) h["Cache-Control"] = "no-store";
+    else if (page && !ctx.Request.Path.StartsWithSegments(SpaHosting.AssetsPath)) h["Cache-Control"] = "no-store";   // pages are never cached; the fingerprinted /assets are (see UseSpa)
     await next();
 });
+if (spa is not null) app.UseSpa(spa);
 app.UseCors();
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -282,6 +287,7 @@ app.MapPayments(v1);
 app.MapShipping(v1);
 app.MapDemo(v1);
 if (env.IsEnvironment("Testing")) app.MapTestEndpoints();
+if (spa is not null) app.MapSpaFallback(spa);   // last: client routes get index.html, unknown /api paths stay 404
 
 app.Run();
 

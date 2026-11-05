@@ -8,3 +8,4 @@ App_Data/
 appsettings.Local.json
 .env
 TestResults/
+src/Solvelt.Api/wwwroot/
