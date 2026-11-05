@@ -437,14 +437,18 @@ public class DemoIsolationFixTests(DemoSvcFactory f) : IClassFixture<DemoSvcFact
         await Pay.Paid(shop);
         Pay.Age(f, 8);
         Assert.True((await Pay.Release(f)).Released >= 1);
+        Assert.True((await Pay.Bal(f, seller)).Available > 0);
+        // a second real order that is old enough to be released but has not been yet: the demo fill must leave it pending
+        var second = await Pay.Paid(shop);
+        Pay.Age(f, 8);
         var before = await Pay.Bal(f, seller);
-        Assert.True(before.Available > 0);
         await shop.Owner.LoginAs(shop.Owner.Session!.Email, ApiFactory.Strong);
 
         Assert.Equal(HttpStatusCode.Created, await shop.Owner.Post("/api/v1/seller/demo-data").Code());
         var during = await Pay.Bal(f, seller);
         Assert.True(during.Available >= before.Available, "the real available money is still there");
         Assert.Equal(before.Settled, during.Settled);    // no demo transfer swept it away
+        Assert.Equal(0, f.WithDb(db => db.LedgerEntries.Where(e => e.OrderId == second.Id && e.Account == LedgerAccount.Available).Sum(e => e.AmountCents)));   // not released by the fill
         Assert.Equal(0, f.WithDb(db => db.PaymentTransfers.Count(t => t.SellerId == seller)));
         Assert.Equal(HttpStatusCode.OK, await shop.Owner.Delete("/api/v1/seller/demo-data").Code());
         var after = await Pay.Bal(f, seller);
