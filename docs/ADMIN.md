@@ -157,7 +157,20 @@ through the panel, owners are mailed. For a stuck account where the owner cannot
 **Break-glass reveal.** Only with a ticket reference as the reason; reveals are reviewed through `audit?action=pii.revealed`.
 
 ## Frontend
-The `/admin` area (own shell, code-split) is built in `Yanky1/test-login-frontend` (`docs/DESIGN.md` there). Status of that part: see `docs/AGENTS.md` row G.
+The `/admin` area (own shell, code-split) is built in `Yanky1/test-login-frontend` (`docs/DESIGN.md` there). Status of that part: see `docs/AGENTS.md` rows G and Q.
+
+Screens for the staff tools (worker Q, frontend `src/admin/pages/{Payments,Shipping,Delivery,Moderation,Sellers}.tsx`), each behind the permission its endpoint declares, with the nav item, tab or button hidden for roles that lack it:
+
+| Screen | Where | Permissions |
+|---|---|---|
+| Seller tabs: Overview, Payments, Shipping, Local delivery | `/admin/sellers/{id}/{tab}` | `PaymentsView`, `ShippingView`, `DeliveryView` (all roles) |
+| Seller payments: balances, Stripe status, holds, ledger with filters (type, dates, order, booking, number) | seller tab | view: `PaymentsView`; hold and release: `PaymentsHold`; manual adjustment (integer minor units, confirm dialog, step-up): `PaymentsAdjust` |
+| Payments lists: transfers (retry), payouts, accounts past due, reconciliation (run, resolve), unallocated disputes | `/admin/payments/{tab}` | view: `PaymentsView`; retry, run, resolve: `PaymentsRetry` |
+| Shipping: seller shipments and labels; refunds by state, exceptions, webhook failures; label refund retry | seller tab, `/admin/shipping/{tab}` | view: `ShippingView`; retry: `ShippingRetry` |
+| Local delivery: settings, zones, windows, routes, deliveries; proof of delivery (break-glass: reason, audited, shown only after the reveal and never kept) | seller tab | `DeliveryView`; proof: `LookupsReveal` |
+| Moderation: every report kind with its context (including `review`, `review_reply` and the marketplace reports), hide-content, remove-content, warn-seller, escalate-suspend, dismiss; `409 already_resolved` is shown as "another moderator already resolved this report" | `/admin/moderation/{id}` | `ModerationView`; actions: `ModerationAct` |
+
+Every write goes through the reason dialog (the reason is the audit-log reason); `step_up_required` opens the authenticator prompt and repeats the write. No backend change was needed for these screens.
 
 ## Configuration
 `Admin:SessionMinutes`, `IdleMinutes`, `StepUpMinutes`, `InviteDays`, `IpAllowlist` (array), `ReadsPerMinute`, `WritesPerMinute`, `RevealsPerMinute`, `MaxExportRows`.
