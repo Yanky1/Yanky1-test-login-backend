@@ -55,7 +55,7 @@ public class OrderReadTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var rid = (string)(await Detail(a.Owner, ia))["returns"]![0]!["id"]!;
         await Ok(Act(a.Owner, ia, $"returns/{rid}/approve", new { note = "send it" })); await Ok(Act(a.Owner, ia, $"returns/{rid}/receive", new { restock = true }));
         var lineA = await LineId(a.Owner, ia);
-        await Ok(Act(a.Owner, ia, "refunds", new { reason = "returned_item", returnId = rid, lines = new[] { new { lineId = lineA, quantity = 2 } }, shippingCents = 100 }));
+        await Ok(Act(a.Owner, ia, "refunds", new { reason = "returned_item", returnId = rid, lines = new[] { new { lineId = lineA, quantity = 1 } }, shippingCents = 100 }));
         await Ok(Act(b.Owner, ib, "accept")); var lineB = await LineId(b.Owner, ib);
         await Ok(Act(b.Owner, ib, "ship", Ship(lineB, 1, tracking: "1Z999AA10123456795")));
 
@@ -75,7 +75,7 @@ public class OrderReadTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         Assert.Equal(dbA.RefundedCents, (long)ja["refundedCents"]!); Assert.Equal("USD", (string)ja["currency"]!);
         var la = ja["lines"]!.AsArray().Single()!;
         Assert.Equal("LA", (string)la["marketplaceLineId"]!); Assert.Equal(3, (int)la["quantity"]!); Assert.Equal(3, (int)la["shippedQty"]!);
-        Assert.Equal(0, (int)la["cancelledQty"]!); Assert.Equal(2, (int)la["refundedQty"]!); Assert.Equal(2, (int)la["returnedQty"]!);
+        Assert.Equal(0, (int)la["cancelledQty"]!); Assert.Equal(1, (int)la["refundedQty"]!); Assert.Equal(2, (int)la["returnedQty"]!);   // refunded and returned differ on purpose
         // the refund is exactly what refund.issued sent
         var ev = JsonNode.Parse(OutboxFor(f, mid).Single(m => m.EventType == "refund.issued" && (string)JsonNode.Parse(m.PayloadJson)!["data"]!["order"]!["sellerOrderId"]! == ia.ToString()).PayloadJson)!["data"]!;
         var rf = ja["refunds"]!.AsArray().Single()!;
