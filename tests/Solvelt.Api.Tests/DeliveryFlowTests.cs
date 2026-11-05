@@ -188,6 +188,21 @@ public class DeliveryFlowTests : IDisposable
         Assert.True((bool)(await Node(await dr.Api.Get($"/api/v1/driver/stops/{sb}")))["detailsVisible"]!);       // the next stop is still shown
     }
 
+    [Theory]
+    [InlineData("jsmith@x.test", "Your driver")]
+    [InlineData("johnsmith1985@x.test", "Your driver")]
+    [InlineData("john.smith@x.test", "John")]
+    public async Task Tracking_events_name_the_driver_only_when_the_address_reliably_holds_a_first_name(string email, string expected)
+    {
+        var d = await NewDShop(f, stock: 10); var dr = await AddDriver(d);
+        f.WithDb(db => { var uid = db.Memberships.Where(x => x.Id == dr.Membership).Select(x => x.UserId).Single(); db.Users.Where(u => u.Id == uid).ExecuteUpdate(u => u.SetProperty(x => x.Email, email)); return 0; });
+        var (mid, id, _) = await PlaceLocal(d, accept: true);
+        await Assign(d, id, dr);
+        Assert.Equal(HttpStatusCode.OK, (await Start(dr, RouteOf(f, id))).StatusCode);
+        var names = Events(f, mid, "order.tracking_updated").Where(e => (string)e["status"]! == "out_for_delivery").Select(e => (string)e["driverFirstName"]!).ToList();
+        Assert.NotEmpty(names); Assert.All(names, n => Assert.Equal(expected, n));
+    }
+
     // ---- route start + tracking ----------------------------------------------------------------------------------------------------
     [Fact]
     public async Task Starting_the_route_ships_the_order_as_a_local_shipment_and_the_first_stop_is_out_for_delivery()
