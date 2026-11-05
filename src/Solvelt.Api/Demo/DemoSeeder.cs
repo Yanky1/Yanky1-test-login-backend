@@ -80,18 +80,18 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
     private string Mid(string kind, int n) => $"DEMO-{tag}-{kind}{n}";
 
     // ---- catalogue -----------------------------------------------------------------------------------------------------------------
-    private record Spec(string Title, string Slug, string Sku, long Price, long? Compare, long? Sale, int Stock, int Grams, int Hue, string[] Bullets, string Desc, string Terms, int Cat, string[]? Sizes = null);
+    private record Spec(string Title, string Slug, string Sku, long Price, long? Compare, long? Sale, int Stock, int Grams, int Hue, string[] Bullets, string Desc, string Terms, string Cat, string[]? Sizes = null);
 
     private static readonly Spec[] Specs =
     [
-        new("Handwoven Market Tote", "handwoven-market-tote", "DEMO-TOTE", 3800, 4500, null, 42, 380, 28, ["Natural cotton", "Reinforced handles", "Machine washable"], "A sturdy everyday tote, woven by hand from organic cotton.", "tote bag cotton market", 0),
-        new("Ceramic Pour-Over Set", "ceramic-pour-over-set", "DEMO-POUR", 5400, null, 4900, 18, 1100, 20, ["Dripper and carafe", "Dishwasher safe", "Fits standard filters"], "A matte ceramic dripper with a matching carafe.", "coffee ceramic dripper carafe", 1),
-        new("Linen Table Runner", "linen-table-runner", "DEMO-RUNNER", 2900, null, null, 60, 240, 150, ["100% European linen", "Hemmed edges"], "A relaxed linen runner that softens with every wash.", "linen table runner dining", 1, ["120 cm", "180 cm", "240 cm"]),
-        new("Beeswax Candle Trio", "beeswax-candle-trio", "DEMO-CANDLE", 2400, 2800, null, 75, 450, 45, ["Hand-poured", "Burns up to 40 hours each"], "Three tapered candles from local beeswax.", "candle beeswax gift", 2),
-        new("Walnut Serving Board", "walnut-serving-board", "DEMO-BOARD", 6200, null, null, 12, 1500, 25, ["Solid walnut", "Food-safe oil finish"], "A chunky board for cheese, bread and everything in between.", "walnut board cheese serving", 1, ["Small", "Large"]),
-        new("Wool Throw Blanket", "wool-throw-blanket", "DEMO-THROW", 8900, 10500, null, 9, 1300, 200, ["Merino blend", "Two-tone edge"], "A warm, soft throw for the sofa or the end of the bed.", "wool blanket throw merino", 2),
-        new("Botanical Print Set", "botanical-print-set", "DEMO-PRINT", 3200, null, null, 120, 200, 110, ["Set of three A4 prints", "Archival paper"], "Three botanical illustrations, printed on heavy cotton paper.", "art print botanical wall", 3),
-        new("Stoneware Mug Pair", "stoneware-mug-pair", "DEMO-MUG", 3600, null, null, 3, 700, 340, ["Set of two", "Microwave safe"], "Two chunky mugs with a speckled glaze. Low stock on purpose.", "mug stoneware pair coffee", 1),
+        new("Handwoven Market Tote", "handwoven-market-tote", "DEMO-TOTE", 3800, 4500, null, 42, 380, 28, ["Natural cotton", "Reinforced handles", "Machine washable"], "A sturdy everyday tote, woven by hand from organic cotton.", "tote bag cotton market", "Storage & Organization"),
+        new("Ceramic Pour-Over Set", "ceramic-pour-over-set", "DEMO-POUR", 5400, null, 4900, 18, 1100, 20, ["Dripper and carafe", "Dishwasher safe", "Fits standard filters"], "A matte ceramic dripper with a matching carafe.", "coffee ceramic dripper carafe", "Kitchen & Dining"),
+        new("Linen Table Runner", "linen-table-runner", "DEMO-RUNNER", 2900, null, null, 60, 240, 150, ["100% European linen", "Hemmed edges"], "A relaxed linen runner that softens with every wash.", "linen table runner dining", "Kitchen & Dining", ["120 cm", "180 cm", "240 cm"]),
+        new("Beeswax Candle Trio", "beeswax-candle-trio", "DEMO-CANDLE", 2400, 2800, null, 75, 450, 45, ["Hand-poured", "Burns up to 40 hours each"], "Three tapered candles from local beeswax.", "candle beeswax gift", "Home Décor"),
+        new("Walnut Serving Board", "walnut-serving-board", "DEMO-BOARD", 6200, null, null, 12, 1500, 25, ["Solid walnut", "Food-safe oil finish"], "A chunky board for cheese, bread and everything in between.", "walnut board cheese serving", "Kitchen & Dining", ["Small", "Large"]),
+        new("Wool Throw Blanket", "wool-throw-blanket", "DEMO-THROW", 8900, 10500, null, 9, 1300, 200, ["Merino blend", "Two-tone edge"], "A warm, soft throw for the sofa or the end of the bed.", "wool blanket throw merino", "Bedding & Bath"),
+        new("Botanical Print Set", "botanical-print-set", "DEMO-PRINT", 3200, null, null, 120, 200, 110, ["Set of three A4 prints", "Archival paper"], "Three botanical illustrations, printed on heavy cotton paper.", "art print botanical wall", "Home Décor"),
+        new("Stoneware Mug Pair", "stoneware-mug-pair", "DEMO-MUG", 3600, null, null, 3, 700, 340, ["Set of two", "Microwave safe"], "Two chunky mugs with a speckled glaze. Low stock on purpose.", "mug stoneware pair coffee", "Kitchen & Dining"),
     ];
 
     private async Task CatalogueAsync()
@@ -100,8 +100,9 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
         brand = await db.Brands.Where(b => b.SellerId == a.SellerId && b.Status == BrandStatus.Active).OrderByDescending(b => b.IsDefault).ThenBy(b => b.CreatedAt).FirstOrDefaultAsync()
             ?? new Brand { SellerId = a.SellerId, Name = "Demo Atelier", Slug = "demo-atelier-" + tag.ToLowerInvariant(), Description = "A made-up brand with demo products.", CreatedAt = now, UpdatedAt = now };
         if (db.Entry(brand).State == EntityState.Detached) { db.Brands.Add(brand); Reg("brand", brand.Id); await db.SaveChangesAsync(); }
-        var cats = await db.Categories.AsNoTracking().Where(c => c.ParentId != null).OrderBy(c => c.SortOrder).ThenBy(c => c.Name).Select(c => c.Id).Take(40).ToListAsync();
-        Guid? Cat(int i) => cats.Count == 0 ? null : cats[(i * 7) % cats.Count];
+        // Demo products sit in real, sensible categories without required attributes (Home & Kitchen), so they meet the publish rules like real data.
+        var cats = (await db.Categories.AsNoTracking().Where(c => c.ParentId != null).Select(c => new { c.Slug, c.Id }).ToListAsync()).ToDictionary(c => c.Slug, c => c.Id);
+        Guid? Cat(string name) => cats.TryGetValue(CategorySeed.Slugify(name), out var id) ? id : null;
         var n = 0;
         foreach (var s in Specs)
         {
@@ -166,18 +167,23 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
 
         var addOns = JsonSerializer.Serialize(new[] { new AddOn("rush", "Same-week scheduling", 2500, 0), new AddOn("notes", "Written summary", 1500, 15) }, J);
         var intake = JsonSerializer.Serialize(new[] { new IntakeQuestion("goal", "What would you like to get out of the session?", "text", null, true), new IntakeQuestion("exp", "Your experience level", "select", ["Beginner", "Some experience", "Advanced"], false) }, J);
-        var defs = new (string Title, string Slug, PricingModel Model, long Price, BookingMode Mode, string Desc)[]
+        // Demo listings follow the same publish rules as real ones: each service sits in a category of the Local Services department and has a photo.
+        ServiceCategories.Ensure(db);
+        var serviceCats = (await db.Categories.AsNoTracking().Where(c => c.Slug == CategorySeed.Slugify("Home Services") || c.Slug == CategorySeed.Slugify("Lessons & Classes") || c.Slug == CategorySeed.Slugify("Consulting & Coaching"))
+            .Select(c => new { c.Slug, c.Id }).ToListAsync()).ToDictionary(c => c.Slug, c => c.Id);
+        Guid? ServiceCat(string name) => serviceCats.TryGetValue(CategorySeed.Slugify(name), out var id) ? id : null;
+        var defs = new (string Title, string Slug, PricingModel Model, long Price, BookingMode Mode, string Desc, string Category, int Hue)[]
         {
-            ("Home Styling Consultation", "home-styling-consultation", PricingModel.Fixed, 8500, BookingMode.Instant, "A one-hour video or in-person consultation. Demo service."),
-            ("Pottery Coaching (hourly)", "pottery-coaching-hourly", PricingModel.Hourly, 6000, BookingMode.Request, "Hands-on coaching billed by the hour. Demo service."),
-            ("Custom Project Quote", "custom-project-quote", PricingModel.Quote, 0, BookingMode.Request, "Tell us about your project and get a quote. Demo service."),
+            ("Home Styling Consultation", "home-styling-consultation", PricingModel.Fixed, 8500, BookingMode.Instant, "A one-hour video or in-person consultation. Demo service.", "Home Services", 15),
+            ("Pottery Coaching (hourly)", "pottery-coaching-hourly", PricingModel.Hourly, 6000, BookingMode.Request, "Hands-on coaching billed by the hour. Demo service.", "Lessons & Classes", 175),
+            ("Custom Project Quote", "custom-project-quote", PricingModel.Quote, 0, BookingMode.Request, "Tell us about your project and get a quote. Demo service.", "Consulting & Coaching", 265),
         };
         var n = 0;
         foreach (var s in defs)
         {
             var p = new Product
             {
-                SellerId = a.SellerId, BrandId = brand.Id, Type = ListingType.Service, Status = ProductStatus.Active, Title = s.Title, Handle = s.Slug + "-" + tag.ToLowerInvariant(),
+                SellerId = a.SellerId, BrandId = brand.Id, Type = ListingType.Service, Status = ProductStatus.Active, CategoryId = ServiceCat(s.Category), Title = s.Title, Handle = s.Slug + "-" + tag.ToLowerInvariant(),
                 PriceCents = s.Model == PricingModel.Quote ? null : s.Price, Description = s.Desc, SearchTerms = "service demo consultation", CreatedAt = now.AddDays(-20 + n), UpdatedAt = now,
                 PublishedAt = now.AddDays(-20 + n), CreatedBy = OwnerId, Version = 1, BulletsJson = JsonSerializer.Serialize(new[] { "Demo service", "Flexible scheduling" })
             };
@@ -188,6 +194,17 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
                 Online = true, OnlineInstructions = "A video link is sent after confirmation.", AtSeller = true, SellerAddress = "100 Example Street, Brooklyn, NY 11201", BookingMode = s.Mode, ApprovalHours = 24,
                 IntakeJson = intake, AddOnsJson = addOns, CancelFreeHours = 24, CancelFeePercent = 50, MaxReschedules = 2, NoShowFeePercent = 100, AssignmentRule = AssignmentRule.BuyerChoice, UpdatedAt = now
             };
+            var imageKey = Guid.NewGuid().ToString("N");
+            var tile = DemoAssets.Tile(s.Hue);
+            await storage.SaveAsync(imageKey, new MemoryStream(tile));
+            p.Images.Add(new ProductImage
+            {
+                ProductId = p.Id, SellerId = a.SellerId, StorageKey = imageKey, ContentType = "image/png", Size = tile.Length, Width = DemoAssets.Side, Height = DemoAssets.Side,
+                Alt = $"{s.Title} placeholder image", SortOrder = 0, IsMain = true, CreatedAt = now
+            });
+            Reg("image_file", p.Images[^1].Id, imageKey);
+            p.ImageSeq = p.Images.Count;
+            await ProductRules.RefreshAsync(db, categories, p);
             db.Products.Add(p);
             db.ServiceProviders.Add(new ServiceProviderLink { ProductId = p.Id, MembershipId = a.MembershipId });
             Reg("service", p.Id);

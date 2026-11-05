@@ -114,6 +114,29 @@ public class DemoFillTests(DemoFactory f) : IClassFixture<DemoFactory>
         return (api, seller, await Orders.Node(r));
     }
 
+    /// <summary>#91: demo listings take the same path as real ones, so every one of them satisfies the publish rules (a category, a price, an image ...).</summary>
+    [Fact]
+    public async Task Every_demo_listing_satisfies_the_publish_rules_of_real_data()
+    {
+        var (_, seller, _) = await Filled();
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cats = new Solvelt.Api.Products.CategoryService(db);
+        var listings = await Solvelt.Api.Products.ProductService.WithChildren(db.Products.Where(p => p.SellerId == seller)).ToListAsync();
+        Assert.Equal(11, listings.Count);
+        Assert.Equal(3, listings.Count(p => p.Type == ListingType.Service));
+        foreach (var p in listings)
+        {
+            var r = Solvelt.Api.Products.ProductRules.Evaluate(p, await cats.AttributesAsync(p.CategoryId));
+            Assert.True(r.CanPublish, $"{p.Title}: " + string.Join("; ", r.Issues.Where(i => i.Severity == "required").Select(i => i.Message)));
+            Assert.NotNull(p.CategoryId);
+        }
+        // the services sit in the Local Services department
+        var root = await db.Categories.SingleAsync(c => c.Slug == "local-services");
+        foreach (var p in listings.Where(p => p.Type == ListingType.Service))
+            Assert.Equal(root.Id, (await db.Categories.SingleAsync(c => c.Id == p.CategoryId)).ParentId);
+    }
+
     [Fact]
     public async Task Fill_creates_every_kind_of_record_and_the_ledger_is_consistent()
     {
