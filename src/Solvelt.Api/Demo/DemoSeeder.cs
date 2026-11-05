@@ -21,7 +21,7 @@ public record DemoCounts(int Products, int Services, int Orders, int Bookings, i
 /// </summary>
 public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IFileStorage storage, OrderIngestService ingest, OrderActions actions, BuyerEventService buyer,
     MessageService messages, PaymentIngestService payments, ReleaseService release, TransferService transfers, BookingService bookings, QuoteService quotes, CalendarService cal,
-    IPaymentProvider provider, CategoryService categories, IAuditLog audit)
+    IPaymentProvider provider, CategoryService categories, IAuditLog audit, Solvelt.Api.Reviews.ReviewEngine reviewEngine)
 {
     private static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
 
@@ -59,6 +59,7 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             var orders = await OrdersAsync();
             await BookingsAsync();
             await MessagesAsync(orders);
+            await ReviewsAsync();
             await PaymentsAsync(orders);
             batch = await db.DemoBatches.FirstAsync(b => b.Id == batchId);
             batch.Completed = true;
@@ -441,6 +442,33 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
         Reg("conversation", pm.Conversation!.Id);
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
+    }
+
+    // ---- reviews -------------------------------------------------------------------------------------------------------------------
+    /// <summary>Three reviews through the same engine the marketplace endpoint uses (5 stars with a reply, 3 stars, 1 star). The fill runs with outbox events suppressed, so the reply sends nothing.</summary>
+    private async Task ReviewsAsync()
+    {
+        var specs = new[]
+        {
+            (Product: 0, Rating: 5, Name: "Morgan P.", Text: "Beautifully made and it arrived wrapped with care. I use it every day. (demo)", Days: 5, Reply: "Thank you, Morgan! We are so happy it found a good home. (demo)"),
+            (Product: 1, Rating: 3, Name: "Alex R.", Text: "Nice design, but the carafe was smaller than I expected. (demo)", Days: 3, Reply: (string?)null),
+            (Product: 3, Rating: 1, Name: "Sam T.", Text: "The candles arrived broken and I could not light them. (demo)", Days: 1, Reply: null),
+        };
+        var k = 0;
+        foreach (var s in specs)
+        {
+            var created = now.AddDays(-s.Days);
+            var r = await reviewEngine.IngestAsync(new($"DEMO-{tag}-REV{++k}", products[s.Product].Id, a.SellerId, s.Rating, s.Text, s.Name, created, null));
+            if (r.Status >= 400) throw new InvalidOperationException("Demo review failed: " + r.Code + " " + r.Message);
+            Reg("review", r.Review!.Id);
+            await db.SaveChangesAsync();
+            if (s.Reply is not null)
+            {
+                var rep = await reviewEngine.ReplyAsync(r.Review.Id, a.SellerId, OwnerId, s.Reply);
+                if (rep.Status >= 400) throw new InvalidOperationException("Demo reply failed: " + rep.Code + " " + rep.Message);
+            }
+            db.ChangeTracker.Clear();
+        }
     }
 
     // ---- payments ------------------------------------------------------------------------------------------------------------------

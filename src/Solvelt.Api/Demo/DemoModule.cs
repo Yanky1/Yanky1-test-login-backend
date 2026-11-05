@@ -108,7 +108,7 @@ public static class DemoModule
     }
 
     // ---- "demo": true on records in the seller's JSON responses -----------------------------------------------------------------
-    private static readonly string[] FlaggedAreas = ["/api/v1/seller/products", "/api/v1/seller/services", "/api/v1/seller/orders", "/api/v1/seller/bookings", "/api/v1/seller/quote-requests", "/api/v1/seller/messages", "/api/v1/seller/questions"];
+    private static readonly string[] FlaggedAreas = ["/api/v1/seller/products", "/api/v1/seller/services", "/api/v1/seller/orders", "/api/v1/seller/bookings", "/api/v1/seller/quote-requests", "/api/v1/seller/messages", "/api/v1/seller/questions", "/api/v1/seller/reviews"];
 
     /// <summary>Adds <c>"demo": true</c> to every object in a seller list/detail response whose id is a demo record of the caller's account (only when Demo:Enabled; one small query).</summary>
     public static void UseDemoFlags(this WebApplication app)

@@ -47,6 +47,11 @@ public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit)
         // the fake payout account the fill made, and only while it still is that one: a real account connected later survives
         if (recs.Any(r => r.Kind == "payout_account")) await db.PayoutAccounts.Where(p => p.SellerId == sellerId && p.StripeAccountId.StartsWith("acct_demo_")).ExecuteDeleteAsync();
 
+        // reviews of demo products (replies cascade); they never reached the marketplace, so there is nothing to retract there
+        var reviewIds = Ids("review");
+        // (and any review the marketplace sent for a demo product: the product goes, so its reviews must not stay behind as orphans)
+        await db.Reviews.Where(x => x.SellerId == sellerId && (reviewIds.Contains(x.Id) || productIds.Contains(x.ProductId))).ExecuteDeleteAsync();
+
         // conversations and their messages (messages, attachments, reads, notes cascade)
         var orderConvs = await db.Conversations.Where(c => c.SellerId == sellerId && ((c.OrderId != null && orderIds.Contains(c.OrderId.Value)) || convIds.Contains(c.Id))).Select(c => c.Id).ToListAsync();
         await db.Conversations.Where(c => orderConvs.Contains(c.Id)).ExecuteDeleteAsync();

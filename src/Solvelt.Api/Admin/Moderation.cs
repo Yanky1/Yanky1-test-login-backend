@@ -16,10 +16,10 @@ public record ListingReportRequest(string? Reason);
 public record ContentReportIn(string? ReportId, string? Kind, string? TargetId, string? Reason, string? Note, string? ReporterRef);
 public record IntakeResult(int Status, string Code, string Message, ContentReport? Report = null, bool Duplicate = false);
 
-public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mailer mailer, AdminAudit audit, SellerAdminService sellers, Outbox outbox, TimeProvider time)
+public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mailer mailer, AdminAudit audit, SellerAdminService sellers, Outbox outbox, TimeProvider time, Solvelt.Api.Reviews.ReviewEngine reviews)
 {
     public const string DecisionDismissed = "dismissed", DecisionHidden = "hidden", DecisionRemoved = "removed";
-    public static readonly string[] ContentKinds = ["review", "listing", "message"];
+    public static readonly string[] ContentKinds = ["review", "review_reply", "listing", "message"];
 
     /// <summary>Stable id for a marketplace-owned target (a review) so it can share the queue's (kind, targetId) uniqueness with our own Guid-keyed targets.</summary>
     public static Guid RefGuid(string kind, string targetRef) => new(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(kind + ":" + targetRef))[..16]);
@@ -56,7 +56,7 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
         var reportId = r.ReportId?.Trim() ?? ""; var kind = r.Kind?.Trim().ToLowerInvariant() ?? ""; var target = r.TargetId?.Trim() ?? "";
         var reason = r.Reason?.Trim() ?? ""; var note = r.Note?.Trim(); var reporter = r.ReporterRef?.Trim() ?? "";
         if (reportId.Length is 0 or > 100) return new(422, "invalid_report", "reportId is required (at most 100 characters).");
-        if (!ContentKinds.Contains(kind)) return new(422, "invalid_report", "kind must be review, listing or message.");
+        if (!ContentKinds.Contains(kind)) return new(422, "invalid_report", "kind must be review, review_reply, listing or message.");
         if (target.Length is 0 or > 200) return new(422, "invalid_report", "targetId is required (at most 200 characters).");
         if (reason.Length is 0 or > 300) return new(422, "invalid_report", "reason is required (at most 300 characters).");
         if (note is { Length: > 1000 }) return new(422, "invalid_report", "note can be at most 1000 characters.");
@@ -95,6 +95,15 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
                     else if (Guid.TryParse(target, out var bid) && await db.BookingMessages.AsNoTracking().Where(x => x.Id == bid).Select(x => new { x.SellerId, x.Text }).FirstOrDefaultAsync() is { } bm)
                     { queueTarget = bid; sellerId = bm.SellerId; summary = Cut(Mask.Text(bm.Text), 160); queueKind = "booking_message"; }
                     else return new(404, "not_found", "Unknown message.");
+                    break;
+                }
+            case "review_reply":
+                {
+                    // the seller's reply to a review (C17): targetId is the replyId the marketplace got in review.reply_posted
+                    if (!Guid.TryParse(target, out var rid)) return new(422, "invalid_report", "targetId of a review_reply report must be a replyId.");
+                    var rp = await db.ReviewReplies.AsNoTracking().Where(x => x.Id == rid && x.RemovedAt == null).Select(x => new { x.SellerId, x.Text }).FirstOrDefaultAsync();
+                    if (rp is null) return new(404, "not_found", "Unknown reply.");
+                    queueTarget = rid; sellerId = rp.SellerId; summary = Cut(Mask.Text(rp.Text), 160);
                     break;
                 }
             default:    // review: it lives on the marketplace; the portal keeps only the report and the decision
@@ -319,6 +328,7 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
         if (r is null) return Results.NotFound();
         if (r.Status != ReportStatus.Open) return AlreadyResolved();
         if (r.Kind == "listing") return await HideListingAsync(s, r.TargetId, reason, id, shown, remove: decision == DecisionRemoved);
+        if (r.Kind == "review_reply") return await DecideReplyAsync(s, r, reason, decision, shown);
         return await InTx(async () =>
         {
             if (!await ClaimAsync(id, s, ReportStatus.Actioned, decision, reason)) return AlreadyResolved();
@@ -326,6 +336,29 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
             await audit.WriteAsync(s, "moderation." + decision, "report", id, reason, extra: "kind=" + r.Kind);
             return Results.Ok(new { id, status = "Actioned", resolution = decision });
         });
+    }
+
+    /// <summary>
+    /// Staff decision on a reported seller reply: the only content action is removal (a reply cannot be hidden). The report is claimed first, so of a parallel dismiss and remove exactly one wins;
+    /// the winner of a removal removes the reply, queues <c>review.reply_removed</c> (reason <c>staff_removed</c>) and e-mails the seller once the decision is committed.
+    /// </summary>
+    private async Task<IResult> DecideReplyAsync(StaffContext s, ModerationReport r, string reason, string decision, string? shown)
+    {
+        if (decision != DecisionRemoved) return AdminHttp.Err(409, "unsupported_decision", "A reply can only be dismissed or removed.");
+        string? title = null;
+        var res = await InTx(async () =>
+        {
+            if (!await ClaimAsync(r.Id, s, ReportStatus.Actioned, "removed", reason)) return AlreadyResolved();
+            await DecideAsync(r, DecisionRemoved, shown);
+            var removed = await reviews.RemoveReplyForStaffAsync(r.TargetId);
+            await audit.WriteAsync(s, "moderation.reply_removed", "report", r.Id, reason, extra: $"reply={r.TargetId};seller={r.SellerId};removed={removed}");
+            if (removed) title = "removed";
+            return Results.Ok(new { id = r.Id, status = "Actioned", resolution = "removed", replyRemoved = removed });
+        });
+        if (title is not null && (res as IStatusCodeHttpResult)?.StatusCode is null or < 400)
+            await NotifyAsync(r.SellerId, "review-reply-removed", "A reply of yours was removed", "A reply of yours was removed", reason,
+                "Solvelt removed one of your replies to a buyer review after a report. Please review our seller rules before replying again.");
+        return res;
     }
 
     public async Task<IResult> UnhideListingAsync(StaffContext s, Guid productId, string reason)
@@ -397,6 +430,22 @@ public static class ModerationEndpoints
                 if (msg is not null) target = new { bookingId = msg.BookingId, messages = new[] { new { msg.Id, direction = msg.Direction, text = T(msg.Text), msg.CreatedAt } } };
             }
             else if (r.Kind == "listing") target = new { productId = r.TargetId };
+            else if (r.Kind == "review_reply")
+            {
+                // the reply and the review it answers (the buyer's display name is the only thing about the buyer that exists here); text is masked for roles that cannot act
+                var ctxRow = await (from rp in db.ReviewReplies.AsNoTracking()
+                                    join rv in db.Reviews.AsNoTracking() on rp.ReviewId equals rv.Id
+                                    join pr in db.Products.AsNoTracking() on rv.ProductId equals pr.Id into prs
+                                    from pr in prs.DefaultIfEmpty()
+                                    where rp.Id == r.TargetId
+                                    select new { rp, rv, title = pr == null ? null : pr.Title }).FirstOrDefaultAsync();
+                if (ctxRow is not null)
+                    target = new
+                    {
+                        replyId = ctxRow.rp.Id, replyText = T(ctxRow.rp.Text), repliedAt = ctxRow.rp.CreatedAt, editedAt = ctxRow.rp.EditedAt, removed = ctxRow.rp.RemovedAt is not null, removedReason = ctxRow.rp.RemovedReason,
+                        review = new { reviewId = ctxRow.rv.ExternalId, rating = ctxRow.rv.Rating, text = T(ctxRow.rv.Text), buyerDisplayName = ctxRow.rv.BuyerDisplayName, createdAt = ctxRow.rv.CreatedAt, state = ctxRow.rv.State.ToString().ToLowerInvariant(), productTitle = ctxRow.title }
+                    };
+            }
             var content = await db.ContentReports.AsNoTracking().Where(c => c.ModerationReportId == id).OrderBy(c => c.CreatedAt)
                 .Select(c => new { c.ReportId, c.Kind, targetId = c.TargetRef, c.Reason, c.Note, c.ReporterRef, c.Decision, c.DecidedAt, c.CreatedAt }).ToListAsync();
             if (r.Kind == "review") target = new { reviewId = content.FirstOrDefault()?.targetId };

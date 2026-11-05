@@ -13,6 +13,7 @@ using Solvelt.Api.Orders;
 using Solvelt.Api.Payments;
 using Solvelt.Api.Products;
 using Solvelt.Api.Shipping;
+using Solvelt.Api.Reviews;
 using Solvelt.Api.Teams;
 
 namespace Solvelt.Api.Data;
@@ -49,6 +50,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
     public DbSet<ProductAttributeValue> ProductAttributeValues => Set<ProductAttributeValue>();
     public DbSet<ProductFaq> ProductFaqs => Set<ProductFaq>();
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
+    public DbSet<Solvelt.Api.Reviews.Review> Reviews => Set<Solvelt.Api.Reviews.Review>();
+    public DbSet<Solvelt.Api.Reviews.ReviewReply> ReviewReplies => Set<Solvelt.Api.Reviews.ReviewReply>();
     public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
     public DbSet<CatalogCounter> CatalogCounters => Set<CatalogCounter>();
     public DbSet<CatalogRefreshRequest> CatalogRefreshRequests => Set<CatalogRefreshRequest>();
@@ -225,6 +228,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
         b.ConfigureLocalDelivery();
         b.ConfigureShipping();
         b.ConfigureDemo();
+        b.ConfigureReviews();
     }
 
     public static void Seed(AppDbContext db)
