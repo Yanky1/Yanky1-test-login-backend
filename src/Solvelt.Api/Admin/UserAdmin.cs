@@ -25,6 +25,7 @@ public static class UserAdminEndpoints
         var opt = ctx.RequestServices.GetRequiredService<IOptions<AdminOptions>>().Value;
         var time = ctx.RequestServices.GetRequiredService<TimeProvider>().UtcNow();
         if (!StaffPermissions.Has(me.Role, StaffPermission.StaffManage)) return AdminHttp.Err(403, "staff_target", "This account belongs to a staff member: only a Super admin can act on it.");
+        if (me.StepUpWaived) return null;      // a test-mode session that skipped two-factor (the gate already re-checked the flags on this request)
         var sess = await db.Sessions.AsNoTracking().Where(x => x.Id == me.SessionId).Select(x => x.StepUpAt).FirstOrDefaultAsync();
         return sess is { } su && time - su <= TimeSpan.FromMinutes(opt.StepUpMinutes) ? null : AdminHttp.Err(403, "step_up_required", "Confirm it's you again with your authenticator code to do this.");
     }

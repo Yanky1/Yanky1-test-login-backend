@@ -237,6 +237,34 @@ public class DemoStaffMfaTests(DemoStaffMfaFactory f) : IClassFixture<DemoStaffM
     }
 
     [Fact]
+    public async Task A_skipped_session_can_act_on_a_staff_account_without_a_code_but_a_normal_session_still_needs_one()
+    {
+        var target = StaffKit.UserId(f, await StaffKit.Create(f, StaffRole.Support));
+        var path = $"/api/v1/admin/users/{target}/clear-lockout";
+
+        var email = await StaffKit.Create(f, StaffRole.SuperAdmin);
+        var (skipped, res) = await MfaSkipKit.Skip(f, email);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await skipped.Post(path, new { reason = StaffKit.Why })).StatusCode);       // no code, no step-up
+
+        var normal = await StaffKit.Login(f, email);                                                                // same account, a real two-factor session
+        Assert.Equal("step_up_required", await StaffKit.Err(await normal.Post(path, new { reason = StaffKit.Why })));
+        await StaffKit.StepUp(f, normal, email);
+        Assert.Equal(HttpStatusCode.NoContent, (await normal.Post(path, new { reason = StaffKit.Why })).StatusCode);
+
+        // the role rule is untouched: only a Super admin may act on a staff account, skipped or not
+        var support = await StaffKit.Create(f, StaffRole.Support, twoFactor: false);
+        var (supportSkipped, r2) = await MfaSkipKit.Skip(f, support);
+        Assert.Equal(HttpStatusCode.OK, r2.StatusCode);
+        Assert.Equal("staff_target", await StaffKit.Err(await supportSkipped.Post(path, new { reason = StaffKit.Why })));
+
+        // and with the gate closed the skipped session cannot do it either
+        var o = MfaSkipKit.Options(f);
+        try { o.AllowStaffMfaSkip = false; Assert.Equal("two_factor_required", await StaffKit.Err(await skipped.Post(path, new { reason = StaffKit.Why }))); }
+        finally { o.AllowStaffMfaSkip = true; }
+    }
+
+    [Fact]
     public async Task The_step_up_route_needs_a_staff_session()
     {
         Assert.Equal(HttpStatusCode.Unauthorized, (await new Api(f).Post("/api/v1/admin/auth/demo-step-up", new { }, false)).StatusCode);
