@@ -377,3 +377,79 @@ public class DemoRateLimitTests(DemoLimitedFactory f) : IClassFixture<DemoLimite
         Assert.Contains("demo.filled", types); Assert.Contains("demo.removed", types);
     }
 }
+
+public class DemoSvcFactory : DemoFactory
+{
+    public DemoSvcFactory()
+    {
+        Extra["Session:IdleTimeoutMinutes"] = "100000000";
+        Extra["Session:RefreshTokenDays"] = "36000";
+        Extra["Jwt:AccessTokenMinutes"] = "100000000";
+    }
+}
+
+/// <summary>Orchestrator verification fixes: background jobs stay silent for demo records, and the demo cannot touch real money or a real payout account.</summary>
+public class DemoIsolationFixTests(DemoSvcFactory f) : IClassFixture<DemoSvcFactory>
+{
+    private async Task RunBookingJobs() => Assert.Equal(HttpStatusCode.OK, (await f.NewClient().PostAsync("/api/dev/bookings/maintenance/run", null)).StatusCode);
+
+    [Fact]
+    public async Task Booking_reminders_are_not_mailed_for_demo_bookings_but_still_are_for_real_ones()
+    {
+        var (demo, demoSeller) = await ProdApi.Approved(f);
+        Assert.Equal(HttpStatusCode.Created, await demo.Post("/api/v1/seller/demo-data").Code());
+        var demoEmail = demo.Session!.Email;
+        var real = await Svc.NewBiz(f);
+        var (_, _, start) = await Svc.Book(real);
+        var realEmail = f.WithDb(db => (from m in db.Memberships join u in db.Users on m.UserId equals u.Id where m.Id == real.OwnerMember select u.Email).First())!;
+        f.Time.Advance(start - f.Time.GetUtcNow().UtcDateTime - TimeSpan.FromHours(23));
+        // the demo account's confirmed booking is now inside the 24-hour window too
+        var soon = f.Time.GetUtcNow().UtcDateTime.AddHours(10);
+        f.WithDb(db => db.Bookings.Where(b => b.SellerId == demoSeller && b.Status == BookingStatus.Confirmed).ExecuteUpdate(s => s.SetProperty(b => b.StartUtc, soon).SetProperty(b => b.EndUtc, soon.AddHours(1))));
+        await RunBookingJobs();
+        Assert.Empty(f.Mails(demoEmail, "booking-reminder"));
+        Assert.Empty(f.WithDb(db => db.Outbox.Where(m => m.SellerId == demoSeller && m.EventType == "booking.reminder").ToList()));
+        Assert.Single(f.Mails(realEmail, "booking-reminder"));
+        Assert.NotEmpty(f.WithDb(db => db.Outbox.Where(m => m.SellerId == real.Seller && m.EventType == "booking.reminder").ToList()));
+    }
+
+    [Fact]
+    public async Task Removing_demo_data_keeps_a_real_payout_account_connected_later()
+    {
+        var (api, seller) = await ProdApi.Approved(f);
+        Assert.Equal(HttpStatusCode.Created, await api.Post("/api/v1/seller/demo-data").Code());
+        Assert.StartsWith("acct_demo_", f.WithDb(db => db.PayoutAccounts.Single(p => p.SellerId == seller).StripeAccountId));
+        f.WithDb(db => db.PayoutAccounts.Where(p => p.SellerId == seller).ExecuteUpdate(s => s.SetProperty(p => p.StripeAccountId, "acct_real_1234")));
+        Assert.Equal(HttpStatusCode.OK, await api.Delete("/api/v1/seller/demo-data").Code());
+        Assert.Equal("acct_real_1234", f.WithDb(db => db.PayoutAccounts.Single(p => p.SellerId == seller).StripeAccountId));
+        // and a fresh fill/remove cycle on an account without one still removes the fake account
+        var (other, otherSeller) = await ProdApi.Approved(f);
+        Assert.Equal(HttpStatusCode.Created, await other.Post("/api/v1/seller/demo-data").Code());
+        Assert.Equal(HttpStatusCode.OK, await other.Delete("/api/v1/seller/demo-data").Code());
+        Assert.False(f.WithDb(db => db.PayoutAccounts.Any(p => p.SellerId == otherSeller)));
+    }
+
+    [Fact]
+    public async Task A_real_available_balance_is_not_swept_into_the_demo_transfer_and_survives_fill_and_remove()
+    {
+        var shop = await Orders.NewShop(f);
+        var seller = shop.Seller;
+        await Pay.Paid(shop);
+        Pay.Age(f, 8);
+        Assert.True((await Pay.Release(f)).Released >= 1);
+        var before = await Pay.Bal(f, seller);
+        Assert.True(before.Available > 0);
+        await shop.Owner.LoginAs(shop.Owner.Session!.Email, ApiFactory.Strong);
+
+        Assert.Equal(HttpStatusCode.Created, await shop.Owner.Post("/api/v1/seller/demo-data").Code());
+        var during = await Pay.Bal(f, seller);
+        Assert.True(during.Available >= before.Available, "the real available money is still there");
+        Assert.Equal(before.Settled, during.Settled);    // no demo transfer swept it away
+        Assert.Equal(0, f.WithDb(db => db.PaymentTransfers.Count(t => t.SellerId == seller)));
+        Assert.Equal(HttpStatusCode.OK, await shop.Owner.Delete("/api/v1/seller/demo-data").Code());
+        var after = await Pay.Bal(f, seller);
+        Assert.Equal(before.Available, after.Available);
+        Assert.Equal(before.Pending, after.Pending);
+        Assert.Equal(before.Settled, after.Settled);
+    }
+}

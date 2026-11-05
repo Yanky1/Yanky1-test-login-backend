@@ -261,7 +261,7 @@ public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox
         var counts = await db.LocalDeliveries.Where(x => x.RouteId == routeId).GroupBy(x => x.Status).Select(g => new { g.Key, N = g.Count() }).ToListAsync();
         await SaveAsync();
         await notifier.DeliveryAlertAsync(route.SellerId, brand, "delivery.route_finished", "Delivery route finished", "A route is finished",
-            $"{counts.FirstOrDefault(c => c.Key == LocalStatus.Delivered)?.N ?? 0} delivered, {counts.Where(c => c.Key != LocalStatus.Delivered).Sum(c => c.N)} not delivered.", "/delivery", new { routeId });
+            $"{counts.FirstOrDefault(c => c.Key == LocalStatus.Delivered)?.N ?? 0} delivered, {counts.Where(c => c.Key != LocalStatus.Delivered).Sum(c => c.N)} not delivered.", "/delivery", new { routeId }, await db.LocalDeliveries.Where(x => x.RouteId == routeId).Select(x => x.OrderId).ToListAsync());
     }
 
     // ---- tracking + outbox ------------------------------------------------------------------------------------------------------

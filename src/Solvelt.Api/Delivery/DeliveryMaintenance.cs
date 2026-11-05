@@ -44,7 +44,7 @@ public class DeliveryMaintenance(AppDbContext db, TimeProvider time, OrderNotifi
             d.LateNotifiedAt = now;
             var number = await db.Orders.Where(o => o.Id == d.OrderId).Select(o => o.Number).FirstAsync(ct);
             await db.SaveChangesAsync(ct);
-            await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.late", $"Delivery is late: {number}", "A delivery is late", $"Order {number} was not delivered within its window.", "/delivery", new { deliveryId = d.Id });
+            await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.late", $"Delivery is late: {number}", "A delivery is late", $"Order {number} was not delivered within its window.", "/delivery", new { deliveryId = d.Id }, [d.OrderId]);
         }
 
         // buyer data redacted -> proof photos and signatures go too
