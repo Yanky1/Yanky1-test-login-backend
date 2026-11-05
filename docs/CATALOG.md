@@ -210,3 +210,8 @@ A background job (the same loop that dispatches the outbox, about every 10 secon
 and gives **only the listings whose options actually changed** a new version and a `listing.upserted` event through the outbox. Hidden, unlisted and unaffected listings get nothing. Changes to a service's location flags are part of the service
 details, so they bump the version immediately like any other listing edit. A repeated or interrupted run is safe (it compares against the signature stored with each version). Listings that predate the field are refreshed once at start-up.
 
+
+
+## 10. Demo listings (`demo`)
+
+Every listing document (feed item and `GET /listings/{id}`) has `demo: boolean`. It is `true` for the products and services created by the seller portal's test tool ("Fill with demo data", only available when the portal runs with `Demo:Enabled`, never in Production). Demo listings are listed like any other, so a buyer site can be tested end to end; filter on `demo` to hide them. Demo orders, bookings and messages never produce marketplace events. Removing the demo data deletes the listings and the feed shows tombstones (`reason: "deleted"`).

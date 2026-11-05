@@ -52,6 +52,10 @@ Payments: `seller/payments/*` (summary, ledger, transfers, payouts, disputes, st
 Assistant: `assistant/config`, `assistant/conversations*`, `assistant/messages` (+ `/stream` SSE), `assistant/actions/{id}/confirm|cancel` (CSRF header required), `assistant/usage`.
 Development/Testing only: `seller/dev/*` order and booking simulator, `/api/dev/outbox` sink (`scripts/post-signed.sh` signs real requests).
 
+## Demo data (test mode)
+
+For testing only. With `Demo:Enabled=true` (env `Demo__Enabled=true`, default **false**) the owner of a seller account gets: `POST /api/v1/seller/demo-data` (fills the account with products, services, orders in every state, bookings, a quote, messages and payments), `DELETE /api/v1/seller/demo-data` (removes exactly those records), `GET /api/v1/seller/demo-data` (status) and `POST /api/v1/seller/demo/approve` (approves the caller's own pending account through the staff code path, audit actor `demo-self-approve`). `GET /api/v1/public-config` exposes `demoEnabled` so the frontend shows its TEST MODE badge and buttons. **The app refuses to start when `Demo:Enabled=true` and `ASPNETCORE_ENVIRONMENT=Production`; there is no override.** Limit: 5 actions per account per hour. Details: `docs/SETUP-INTEGRATIONS.md` section 24 and `docs/DECISIONS.md` O1-O9.
+
 ## Deploy notes
 * PostgreSQL: set `Database:Provider=Postgres`; apply migrations with `dotnet ef database update` (or `Database:AutoMigrate=true` for a single instance).
 * Shipping: set `SHIPPO_API_KEY` (live token in Production; Production refuses a test token) `Shipping:WebhookSecret` and `Shipping:LinkKey` (a separate random value, not an Orders secret), register `https://<host>/api/v1/shipping/webhooks/shippo?token=<secret>` for `track_updated`, set `Shipping:PublicBaseUrl`. Go-live checklist: `docs/SHIPPING.md`.
