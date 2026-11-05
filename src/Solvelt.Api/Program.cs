@@ -212,6 +212,10 @@ builder.Services.AddRateLimiter(o =>
     };
 });
 
+// Forwarded headers: validated at startup (a catch-all or malformed range refuses to start) and configured through DI, so the host's
+// ASPNETCORE_FORWARDEDHEADERS_ENABLED switch (trust everyone) cannot widen what App:TrustedProxies / App:TrustPlatformProxy allow.
+var forwardedTrust = ForwardedHeadersSetup.Resolve(app0);
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o => ForwardedHeadersSetup.Apply(o, forwardedTrust));
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(app0.CorsOrigins)
     .WithHeaders("Authorization", "Content-Type", "X-CSRF-Token").WithMethods("GET", "POST", "PUT", "PATCH", "DELETE").AllowCredentials()));
 builder.Services.AddProblemDetails();
@@ -228,13 +232,7 @@ builder.AddPhoneChannels();
 var app = builder.Build();
 
 var appOpts = app.Services.GetRequiredService<IOptions<AppOptions>>().Value;
-if (appOpts.TrustedProxies.Length > 0)
-{
-    var fh = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto };
-    fh.KnownIPNetworks.Clear(); fh.KnownProxies.Clear();
-    foreach (var p in appOpts.TrustedProxies) fh.KnownProxies.Add(System.Net.IPAddress.Parse(p));
-    app.UseForwardedHeaders(fh);
-}
+if (forwardedTrust.Enabled) app.UseForwardedHeaders();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 if (!env.IsDevelopment() && !env.IsEnvironment("Testing") && appOpts.UseHsts) app.UseHsts();
