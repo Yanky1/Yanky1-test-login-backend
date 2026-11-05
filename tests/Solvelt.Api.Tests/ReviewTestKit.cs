@@ -83,3 +83,22 @@ public static class Rev
         return (brand, product);
     }
 }
+
+/// <summary>Can make every claim of a review (the conditional version bump) lose, as if another writer kept winning.</summary>
+public sealed class ClaimBreaker : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+{
+    public volatile bool Active;
+    private void Break(System.Data.Common.DbCommand c)
+    {
+        if (Active && c.CommandText.Contains("UPDATE \"reviews\"") && c.CommandText.Contains("\"Version\"")) c.CommandText = c.CommandText.Replace("WHERE ", "WHERE 1 = 0 AND ");
+    }
+    public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> NonQueryExecuting(System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData, Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result) { Break(command); return result; }
+    public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData, Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken ct = default) { Break(command); return new(result); }
+}
+
+public class ReviewClaimFactory : ReviewFactory
+{
+    public ClaimBreaker Breaker { get; } = new();
+    protected override void ConfigureTestServices(Microsoft.Extensions.DependencyInjection.IServiceCollection services) =>
+        Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions.ConfigureDbContext<Solvelt.Api.Data.AppDbContext>(services, o => o.AddInterceptors(Breaker));
+}

@@ -212,13 +212,14 @@ public class ReviewEngine(AppDbContext db, Outbox outbox, TimeProvider time, IAu
 
     /// <summary>
     /// Staff removal of a reported reply (inside the moderation transaction, after the report was claimed). Claims the review so the event takes its place in the sequence; false when the reply
-    /// was already gone (the seller deleted it a moment earlier: that removal already sent its event).
+    /// was already gone (the seller deleted it a moment earlier: that removal already sent its event), and <c>null</c> when the review could not be claimed (another writer kept winning):
+    /// the caller must roll the decision back and answer 409, the reply is still there.
     /// </summary>
-    public async Task<bool> RemoveReplyForStaffAsync(Guid replyId)
+    public async Task<bool?> RemoveReplyForStaffAsync(Guid replyId)
     {
         var reply = await db.ReviewReplies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == replyId);
         if (reply is null || reply.RemovedAt is not null) return false;
-        if (!await ClaimAsync(reply.ReviewId)) return false;
+        if (!await ClaimAsync(reply.ReviewId)) return null;
         var review = await db.Reviews.AsNoTracking().FirstAsync(x => x.Id == reply.ReviewId);
         return await RemoveReplyAsync(review, "staff_removed", replyId) is not null;
     }

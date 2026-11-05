@@ -181,3 +181,32 @@ public class ReviewModerationTests(ReviewFactory f) : IClassFixture<ReviewFactor
         Assert.Equal(keys.Count, keys.Distinct().Count());
     }
 }
+
+/// <summary>A staff removal whose review claim keeps losing must not half-succeed.</summary>
+public class ReviewClaimConflictTests(ReviewClaimFactory f) : IClassFixture<ReviewClaimFactory>
+{
+    [Fact]
+    public async Task Staff_removal_that_cannot_claim_the_review_is_409_rolled_back_and_succeeds_when_retried()
+    {
+        var s = await Orders.NewShop(f);
+        var (id, _) = await Rev.Ingest(f, s);
+        var replyId = (string)(await Orders.Node(await Rev.Reply(s.Owner, id, "Thank you")))["reply"]!["id"]!;
+        var rid = "R-" + Guid.NewGuid().ToString("N")[..14];
+        Assert.Equal(HttpStatusCode.Created, (await PostSigned(f, "/api/internal/v1/content/reports", new { reportId = rid, kind = "review_reply", targetId = replyId, reason = "Rude", reporterRef = "b1" })).StatusCode);
+        var mod = await Staff(f, StaffRole.Moderator);
+        var q = await ProdApi.Node(await mod.Get("/api/v1/admin/moderation?kind=review_reply&pageSize=100"));
+        var qid = (string)q["items"]!.AsArray().Single(i => (string)i!["targetId"]! == replyId)!["id"]!;
+
+        f.Breaker.Active = true;
+        var res = await mod.Post($"/api/v1/admin/moderation/{qid}/remove-content", new { reason = "Abusive tone" });
+        f.Breaker.Active = false;
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode); Assert.Equal("conflict", await Orders.Code(res));
+        Assert.Equal("Open", (string)(await ProdApi.Node(await mod.Get($"/api/v1/admin/moderation/{qid}")))["status"]!);       // the report is still open
+        Assert.True(f.WithDb(db => db.ReviewReplies.AsNoTracking().Single(r => r.Id == Guid.Parse(replyId)).RemovedAt is null));  // the reply stays
+        Assert.Empty(Rev.Events(f, id, "review.reply_removed")); Assert.Empty(f.Mails(s.Owner.Session!.Email, "review-reply-removed"));
+        Assert.Empty(Events(f, f.WithDb(db => db.ContentReports.AsNoTracking().Single(c => c.ReportId == rid).Id).ToString(), "content.report_decided"));
+
+        Assert.Equal(HttpStatusCode.OK, (await mod.Post($"/api/v1/admin/moderation/{qid}/remove-content", new { reason = "Abusive tone" })).StatusCode);   // retry works
+        Assert.Single(Rev.Events(f, id, "review.reply_removed")); Assert.Single(f.Mails(s.Owner.Session!.Email, "review-reply-removed"));
+    }
+}

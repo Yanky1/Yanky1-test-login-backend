@@ -350,7 +350,9 @@ public class ModerationService(AppDbContext db, UserManager<AppUser> users, Mail
         {
             if (!await ClaimAsync(r.Id, s, ReportStatus.Actioned, "removed", reason)) return AlreadyResolved();
             await DecideAsync(r, DecisionRemoved, shown);
-            var removed = await reviews.RemoveReplyForStaffAsync(r.TargetId);
+            var claimed = await reviews.RemoveReplyForStaffAsync(r.TargetId);
+            if (claimed is null) return AdminHttp.Err(409, "conflict", "The review was changed by someone else at the same time; the report is still open, try again.");   // InTx rolls the whole decision back
+            var removed = claimed.Value;
             await audit.WriteAsync(s, "moderation.reply_removed", "report", r.Id, reason, extra: $"reply={r.TargetId};seller={r.SellerId};removed={removed}");
             if (removed) title = "removed";
             return Results.Ok(new { id = r.Id, status = "Actioned", resolution = "removed", replyRemoved = removed });
