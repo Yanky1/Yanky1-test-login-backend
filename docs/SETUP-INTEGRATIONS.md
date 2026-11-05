@@ -801,3 +801,19 @@ Work through these in order. Rehearse each step in test-mode staging first.
     * failed transfers and payouts, accounts with requirements past due, reconciliation flags;
     * failed label refunds and webhook failures;
     * job runs with `LastSucceeded=false`.
+
+## 24. Demo data (test mode)
+
+A test tool so that every screen has something to show after you create an account. **Never enable it in production.**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Demo:Enabled` (`Demo__Enabled`) | `false` | Maps the demo endpoints and turns on `demoEnabled` in `GET /api/v1/public-config` |
+| `Demo:PerHour` (`Demo__PerHour`) | `5` | Fill / remove / approve calls per seller account per hour |
+
+- **Production guard:** with `ASPNETCORE_ENVIRONMENT=Production` and `Demo:Enabled=true` the process stops at startup with an `InvalidOperationException`. There is no override.
+- **Fill:** Owner only, also for a pending account (filling does not approve it). One batch per account; a second fill answers `409 demo_data_exists` until you remove it. It creates 1 brand (if none), 8 products with variants and placeholder images, 3 services, a ship-from address, package preset, shipping profile and a local-delivery zone with windows, 10 orders (new, accepted, partially shipped, shipped with tracking, delivered x2, cancelled, refunded, return requested, local delivery), 4 bookings plus a quote request, buyer messages and a product question, and payments (pending and available balances, one transfer, a statement) written through the normal services. Example buyers use `example.com` addresses and 555 numbers.
+- **Isolation:** demo orders, bookings, messages and quotes send no outbox events and no email, and are not counted in staff metrics. Demo products appear in the catalog feed with `demo: true` (`docs/CATALOG.md` section 10).
+- **Approve this account:** `POST /api/v1/seller/demo/approve` (Owner only) approves the caller's own `PendingReview`/`NeedsInfo` account with the staff approval code (audit actor `demo-self-approve`, approval mail to the in-memory sink). `409 already_approved`, `409 not_pending`; a suspended or rejected account can never be un-suspended this way.
+- **Remove:** `DELETE /api/v1/seller/demo-data` (or Settings -> Test tools -> Remove demo data) deletes exactly the demo records of the account, children first; real records are untouched.
+- **E2E:** start the backend with `Demo__Enabled=true`.
