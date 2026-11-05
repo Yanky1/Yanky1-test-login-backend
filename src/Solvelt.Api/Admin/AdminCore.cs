@@ -13,6 +13,7 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Solvelt.Api.Data;
 using Solvelt.Api.Delivery;
+using Solvelt.Api.Demo;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Options;
 using Solvelt.Api.Services;
@@ -128,10 +129,14 @@ public static class AdminGate
         // A seller session (even of a staff member or an Admin-role user) is never a staff session: separate session context.
         if (session is null || session.RevokedAt is not null || session.Kind != "staff") return AdminHttp.Err(403, "not_staff_session", "Staff area: sign in through the staff sign-in.");
         if (session.MfaAt is null) return AdminHttp.Err(403, "two_factor_required", "Two-factor authentication is required for staff.");
+        // A test-mode session that skipped two-factor is only valid while the gate is open: re-checked on EVERY request, so turning the flags off ends such sessions at once.
+        var skipped = session.Method == StaffSessionService.DemoMfaMethod;
+        if (skipped && !sp.GetRequiredService<IOptions<Solvelt.Api.Demo.DemoOptions>>().Value.StaffMfaSkipOn)
+            return AdminHttp.Err(403, "two_factor_required", "Two-factor authentication is required for staff. Sign in again.");
         var staff = await db.StaffMembers.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == uid);
         if (staff is null || !staff.Active) return AdminHttp.Err(403, "not_staff", "This account is not an active staff member.");
         if (!StaffPermissions.Has(staff.Role, perm)) return AdminHttp.Err(403, "forbidden", "Your staff role doesn't allow this.");
-        if (StaffPermissions.StepUp.Contains(perm) && !(session.StepUpAt is { } su && now - su <= TimeSpan.FromMinutes(opt.StepUpMinutes)))
+        if (StaffPermissions.StepUp.Contains(perm) && !skipped && !(session.StepUpAt is { } su && now - su <= TimeSpan.FromMinutes(opt.StepUpMinutes)))
             return AdminHttp.Err(403, "step_up_required", "Confirm it's you again with your authenticator code to do this.");
         http.SetStaff(new StaffContext(uid, http.User.FindFirstValue("email") ?? "", staff.Role, sid, session.StepUpAt));
         return null;
@@ -250,12 +255,15 @@ public static class Csv
 /// <summary>Dispatches creation of staff-only JWTs: separate session kind, short lifetime, no refresh token, no seller account.</summary>
 public class StaffSessionService(AppDbContext db, JwtKeys keys, TimeProvider time, IOptions<JwtOptions> jwt, IOptions<AdminOptions> opt)
 {
-    public async Task<(string Token, int ExpiresIn, Guid SessionId)> CreateAsync(AppUser user, string? ip, string? ua)
+    /// <summary>Session.Method of a test-mode session whose two-factor was skipped (Demo:Enabled + Demo:AllowStaffMfaSkip). No TOTP secret is ever created for it.</summary>
+    public const string DemoMfaMethod = "staff-demo-mfa";
+
+    public async Task<(string Token, int ExpiresIn, Guid SessionId)> CreateAsync(AppUser user, string? ip, string? ua, bool mfaSkipped = false)
     {
         var o = opt.Value; var now = time.UtcNow();
         var s = new UserSession
         {
-            UserId = user.Id, CreatedAt = now, LastActivityAt = now, Method = "staff-2fa", Kind = "staff", MfaAt = now,
+            UserId = user.Id, CreatedAt = now, LastActivityAt = now, Method = mfaSkipped ? DemoMfaMethod : "staff-2fa", Kind = "staff", MfaAt = now,
             IdleLimitMinutes = o.IdleMinutes, ExpiresAt = now.AddMinutes(o.SessionMinutes), IpAddress = ip, UserAgent = ua is { Length: > 300 } ? ua[..300] : ua
         };
         db.Sessions.Add(s);
@@ -356,6 +364,7 @@ public static class AdminModule
         app.MapAdminInternalEndpoints();
         var g = v1.MapGroup("/admin").RequireAllowedIp();
         g.MapStaffAuthEndpoints();
+        app.MapDemoStaffMfa(g);
         g.MapStaffManagementEndpoints();
         g.MapDashboardEndpoints();
         g.MapApplicationEndpoints();

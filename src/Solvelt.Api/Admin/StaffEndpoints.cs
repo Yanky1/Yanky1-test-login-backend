@@ -159,7 +159,7 @@ public static class StaffEndpoints
     private static IResult Generic() => Results.Json(new { error = "Login failed" }, statusCode: 401);
 
     /// <summary>Password check with the shared sign-in throttle (same lockout as the seller sign-in). Returns the staff user, or an error result.</summary>
-    private static async Task<(AppUser? User, StaffMember? Staff, IResult? Error)> PasswordAsync(string? emailRaw, string? password,
+    internal static async Task<(AppUser? User, StaffMember? Staff, IResult? Error)> PasswordAsync(string? emailRaw, string? password,
         UserManager<AppUser> users, LoginThrottleService throttle, AppDbContext db, IAuditLog audit, IOptions<LockoutSettings> lo)
     {
         if (string.IsNullOrWhiteSpace(emailRaw) || string.IsNullOrEmpty(password) || emailRaw.Length > 254 || password.Length > 256) return (null, null, Generic());
@@ -253,7 +253,7 @@ public static class StaffEndpoints
             {
                 userId = s.UserId, email = s.Email, role = s.Role.ToString(),
                 permissions = StaffPermissions.Matrix[s.Role].Select(p => p.ToString()).Order(),
-                sessionExpiresAt = sess.ExpiresAt, idleMinutes = o.Value.IdleMinutes,
+                sessionExpiresAt = sess.ExpiresAt, idleMinutes = o.Value.IdleMinutes, mfaSkipped = sess.Method == StaffSessionService.DemoMfaMethod,
                 stepUpUntil = stepUntil is { } su && su > time.UtcNow() ? stepUntil : null
             });
         }).RequireStaff(StaffPermission.DashboardView, "read");
