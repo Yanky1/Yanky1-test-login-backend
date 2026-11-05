@@ -57,6 +57,15 @@ public static class InternalEndpoints
             return Results.Json(new { created = r.Created, orders = r.Orders.Select(OrderDto) }, OrderJson.Opts, statusCode: r.Created ? 201 : 200);
         });
 
+        // C16: signed read for reconciliation (own per-caller limit, config RateLimit:InternalOrderReadPerMinute)
+        g.MapGet("/orders/{marketplaceOrderId}", async (HttpContext ctx, InboundVerifier verifier, AppDbContext db, string marketplaceOrderId) =>
+        {
+            var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
+            if (!v.Ok) return Err(v.Status, v.Code, v.Message);
+            var doc = await OrderRead.BuildAsync(db, marketplaceOrderId, ctx.RequestAborted);
+            return doc is null ? Err(404, "order_not_found", "Order not found.") : Results.Json(doc, OrderJson.Opts);
+        }).RequireRateLimiting("internal-order-read");
+
         g.MapPost("/orders/{marketplaceOrderId}/cancel-requests", async (HttpContext ctx, InboundVerifier verifier, BuyerEventService svc, string marketplaceOrderId) =>
         {
             var (req, err) = await Signed<BuyerCancelRequest>(ctx, verifier);

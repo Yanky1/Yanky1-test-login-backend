@@ -43,10 +43,13 @@ public static class OrdersModule
 
         var perMinute = cfg.GetValue("RateLimit:OrdersPerMinute", 300);
         var internalPerMinute = cfg.GetValue("RateLimit:InternalPerMinute", 1200);
+        var orderReadPerMinute = cfg.GetValue("RateLimit:InternalOrderReadPerMinute", 600);
         builder.Services.Configure<RateLimiterOptions>(r =>
         {
             r.AddPolicy("orders", c => RateLimitPartition.GetFixedWindowLimiter("orders:" + (c.User.FindFirst("sub")?.Value ?? c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = perMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+            r.AddPolicy("internal-order-read", c => RateLimitPartition.GetFixedWindowLimiter("iorderread:" + (c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = orderReadPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
             r.AddPolicy("internal", c => RateLimitPartition.GetFixedWindowLimiter("internal:" + (c.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = internalPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
