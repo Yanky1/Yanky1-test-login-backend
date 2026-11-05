@@ -276,7 +276,8 @@ public class DeliveryService(AppDbContext db, OrderActions orders, Outbox outbox
     {
         if (membershipId is null) return "Your driver";
         var email = await (from m in db.Memberships join u in db.Users on m.UserId equals u.Id where m.Id == membershipId select u.Email).FirstOrDefaultAsync();
-        return FirstName(email);
+        // buyer-facing: the first name only, and only when the address reliably holds one (N14); otherwise neutral. Never a guess from a one-token address.
+        return Solvelt.Api.Bookings.ServiceOptions.PublicNameOrNull(email)?.Split(' ')[0] ?? "Your driver";
     }
 
     /// <summary>Writes the tracking history row, updates the shipment's normalized status (an older event never overwrites a newer one) and enqueues order.tracking_updated.</summary>

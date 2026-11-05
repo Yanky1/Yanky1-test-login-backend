@@ -76,6 +76,38 @@ public class ServiceOptionsTests(SvcFactory f) : IClassFixture<SvcFactory>
             Assert.DoesNotContain("\"" + banned, body, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ---- N14: a provider's public name never leaks a sign-in address ---------------------------------------------------------------
+
+    [Theory]
+    [InlineData("jsmith@x.test", "Provider 1")]
+    [InlineData("johnsmith1985@x.test", "Provider 1")]
+    [InlineData("j.smith@x.test", "Provider 1")]
+    [InlineData("1234@x.test", "Provider 1")]
+    [InlineData("john.smith@x.test", "John S.")]
+    [InlineData("anna_marie-lopez99@x.test", "Anna L.")]
+    public async Task A_provider_name_is_first_name_plus_last_initial_only_from_two_real_tokens_else_neutral(string email, string expected)
+    {
+        var b = await Svc.NewBiz(f);
+        var user = f.WithDb(db => { var uid = db.Memberships.Where(m => m.Id == b.OwnerMember).Select(m => m.UserId).Single(); db.Users.Where(u => u.Id == uid).ExecuteUpdate(u => u.SetProperty(x => x.Email, email)); return 0; });
+        var body = await (await Options(b.Service)).Content.ReadAsStringAsync();
+        var name = (string)JsonNode.Parse(body)!["providers"]![0]!["displayName"]!;
+        Assert.Equal(expected, name);
+        var local = email.Split('@')[0];
+        foreach (var token in System.Text.RegularExpressions.Regex.Split(local, "[^A-Za-z]+").Where(t => t.Length > 0))
+            if (expected.StartsWith("Provider")) Assert.DoesNotContain(token, body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(local, body, StringComparison.OrdinalIgnoreCase);                       // no email substring beyond the first name ever appears
+        Assert.DoesNotContain("1985", body); Assert.DoesNotContain("@", name);
+    }
+
+    [Fact]
+    public void The_public_name_helper_never_returns_part_of_a_one_token_address_and_numbers_providers_neutrally()
+    {
+        Assert.Null(Solvelt.Api.Bookings.ServiceOptions.PublicNameOrNull("jsmith@x"));
+        Assert.Null(Solvelt.Api.Bookings.ServiceOptions.PublicNameOrNull(null));
+        Assert.Equal("John S.", Solvelt.Api.Bookings.ServiceOptions.PublicNameOrNull("john.smith@x"));
+        Assert.Equal("Provider 2", Solvelt.Api.Bookings.ServiceOptions.PublicName("jsmith@x", 2));
+    }
+
     [Fact]
     public async Task The_options_carry_an_ETag_that_answers_If_None_Match_with_304_and_changes_with_the_content()
     {

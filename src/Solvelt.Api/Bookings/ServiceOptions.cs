@@ -13,15 +13,21 @@ namespace Solvelt.Api.Bookings;
 /// </summary>
 public static class ServiceOptions
 {
-    /// <summary>Public name of a provider: first name plus last initial ("Jane D."), taken from the part of the sign-in address before the @ (the portal stores no other name); never the address itself.</summary>
-    public static string PublicName(string? email)
+    /// <summary>
+    /// A person's public name derived from a sign-in address (the portal stores no other name): first name plus last initial ("John S."), and ONLY when the part before the @
+    /// has at least two alphabetic tokens and the first is a real name (2+ letters). Otherwise null: a one-token local part ("jsmith", "johnsmith1985") is never published, not even partly (N14).
+    /// </summary>
+    public static string? PublicNameOrNull(string? email)
     {
         var local = (email ?? "").Split('@')[0];
         var tokens = System.Text.RegularExpressions.Regex.Split(local, "[^A-Za-z]+").Where(t => t.Length > 0).ToList();
-        if (tokens.Count == 0) return "Your provider";
+        if (tokens.Count < 2 || tokens[0].Length < 2) return null;
         var first = char.ToUpperInvariant(tokens[0][0]) + tokens[0][1..].ToLowerInvariant();
-        return tokens.Count > 1 ? first + " " + char.ToUpperInvariant(tokens[1][0]) + "." : first;
+        return first + " " + char.ToUpperInvariant(tokens[^1][0]) + ".";
     }
+
+    /// <summary>Public provider label: the derived name when it is reliable, else a neutral "Provider N" (N = the provider's 1-based place in the service's provider list; never derived from the address).</summary>
+    public static string PublicName(string? email, int ordinal) => PublicNameOrNull(email) ?? "Provider " + ordinal;
 
     public static string AssignmentOf(AssignmentRule r) => r switch { AssignmentRule.LeastBusy => "leastBusy", AssignmentRule.RoundRobin => "roundRobin", _ => "buyerChoice" };
 
@@ -48,7 +54,7 @@ public static class ServiceOptions
                                 where l.ProductId == serviceId && m.Status == MembershipStatus.Active && pp.IsProvider
                                     && (db.WorkingHours.Any(h => h.MembershipId == m.Id) || db.DateOverrides.Any(o => o.MembershipId == m.Id))
                                 select new { m.Id, u.Email }).ToListAsync(ct))
-            .OrderBy(x => x.Id).Select(x => new Dictionary<string, object?> { ["providerId"] = x.Id, ["displayName"] = PublicName(x.Email) }).ToList();   // no photo: the portal stores none
+            .OrderBy(x => x.Id).Select((x, i) => new Dictionary<string, object?> { ["providerId"] = x.Id, ["displayName"] = PublicName(x.Email, i + 1) }).ToList();   // no photo: the portal stores none
 
         var doc = new Dictionary<string, object?>
         {
