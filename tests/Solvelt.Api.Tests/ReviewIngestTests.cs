@@ -99,7 +99,7 @@ public class ReviewIngestTests(ReviewFactory f) : IClassFixture<ReviewFactory>
         Assert.Equal(HttpStatusCode.UnprocessableEntity, res.StatusCode);
         var body = await Orders.Node(res);
         Assert.Equal("invalid_review", (string)body["code"]!);
-        Assert.NotNull(body["errors"]![field]);
+        Assert.Contains(body["errors"]!.AsArray(), e => (string)e!["code"]! == field && (int)e["index"]! == -1);   // same shape as the order ingest: [{index, code, message}]
     }
 
     [Fact]
