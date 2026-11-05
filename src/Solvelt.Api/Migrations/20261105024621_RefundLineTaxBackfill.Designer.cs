@@ -12,7 +12,7 @@ using Solvelt.Api.Data;
 namespace Solvelt.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261104230423_RefundLineTaxBackfill")]
+    [Migration("20261105024621_RefundLineTaxBackfill")]
     partial class RefundLineTaxBackfill
     {
         /// <inheritdoc />
@@ -2933,7 +2933,9 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("AggregateId", "OrderKey");
 
-                    b.HasIndex("SequenceScope", "OrderKey");
+                    b.HasIndex("SequenceScope", "OrderKey")
+                        .IsUnique()
+                        .HasFilter("\"SequenceScope\" IS NOT NULL");
 
                     b.HasIndex("Status", "NextAttemptAt");
 
