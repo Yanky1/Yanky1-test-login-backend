@@ -34,6 +34,10 @@ var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
 var env = builder.Environment;
 
+// Test-only demo tools: no override. The very first startup check, so a misconfigured production deployment never serves a single request.
+if (cfg.GetValue<bool>("Demo:Enabled") && env.IsProduction())
+    throw new InvalidOperationException("Demo:Enabled must never be true in the Production environment: the demo-data and self-approve tools are for testing only.");
+
 builder.Services.Configure<AppOptions>(cfg.GetSection(AppOptions.Section));
 builder.Services.Configure<JwtOptions>(cfg.GetSection(JwtOptions.Section));
 builder.Services.Configure<SessionSettings>(cfg.GetSection(SessionSettings.Section));
@@ -53,9 +57,6 @@ builder.Services.Configure<ExternalAuthOptions>(cfg.GetSection(ExternalAuthOptio
 builder.Services.Configure<AdminSeedOptions>(cfg.GetSection(AdminSeedOptions.Section));
 builder.Services.Configure<PasswordSettings>(cfg.GetSection(PasswordSettings.Section));
 
-// Test-only demo tools: no override. The very first startup check, so a misconfigured production deployment never serves a single request.
-if (cfg.GetValue<bool>("Demo:Enabled") && env.IsProduction())
-    throw new InvalidOperationException("Demo:Enabled must never be true in the Production environment: the demo-data and self-approve tools are for testing only.");
 builder.AddDemo();
 
 var app0 = cfg.GetSection(AppOptions.Section).Get<AppOptions>() ?? new AppOptions();

@@ -433,6 +433,7 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             var m = await messages.IngestBuyerMessageAsync(new($"MSG-{tag}-{++k}", $"CONV-{tag}-{k}", "order", o.Mid, o.Number, null, Buyers[ix % Buyers.Length].Name, text, now.AddHours(-2 * k)));
             if (m.Status >= 400) throw new InvalidOperationException("Demo message failed: " + m.Code + " " + m.Message);
             Reg("conversation", m.Conversation!.Id);
+            await db.SaveChangesAsync();
         }
         // a pre-sale question about a product (a product conversation)
         var pm = await messages.IngestBuyerMessageAsync(new($"MSG-{tag}-P", $"PQ-{tag}-1", "product", null, null, products[1].Id, "Jamie W.", "Is the pour-over set suitable for a gas stove? (demo)", now.AddHours(-1)));
@@ -452,6 +453,7 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             var r = await payments.HandleAsync(new MarketplacePaymentEvent(eventId, type, el));
             if (r.Status != 200) throw new InvalidOperationException($"Demo payment event {type} failed: {r.Code} {r.Message}");
             Reg("payment_event", Guid.Empty, eventId);
+            await db.SaveChangesAsync();   // services clear the change tracker: never leave a registry row pending
         }
         foreach (var o in orders.Where(o => o.Paid))
             await Event("payment.captured", new { kind = "order", marketplaceOrderId = o.Mid, sellerOrderNumber = o.Number, paymentRef = "ch_demo_" + tag + o.Number.GetHashCode().ToString("x"), currency = "USD" }, "cap-" + o.Number);
