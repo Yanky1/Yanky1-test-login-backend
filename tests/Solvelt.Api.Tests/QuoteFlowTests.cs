@@ -57,7 +57,8 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         var acc = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid, start = s2 });
         Assert.Equal(HttpStatusCode.Created, acc.StatusCode);
         var booking = (await Orders.Node(acc))["booking"]!;
-        Assert.Equal("Confirmed", (string)booking["status"]!);
+        Assert.Equal("Hold", (string)booking["status"]!);                    // C13: accepting holds the slot, the marketplace's confirm after payment makes it final
+        Assert.Empty(Svc.Events(_f, b.Seller, "booking.confirmed"));
         Assert.Equal(25000 + 1000, (int)booking["totalCents"]!);              // quoted price + travel fee
         Assert.Equal(180, (int)booking["durationMinutes"]!);
         var q = await ProdApi.Node(await b.Owner.Get($"/api/v1/seller/quote-requests/{id}"));
@@ -66,10 +67,17 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         var (_, id2) = await Request(b);
         var clash = await b.Owner.Post($"/api/v1/seller/quote-requests/{id2}/quote", Quote(b, [s2.AddHours(1)]));
         Assert.Equal(HttpStatusCode.UnprocessableEntity, clash.StatusCode); Assert.Equal("slot_unavailable", await clash.ErrCode());
-        // accepting again with the same booking id is idempotent, with another it is refused
+        // accepting again with the same booking id is idempotent; with another booking id while the hold is live it returns the same hold
         Assert.Equal(HttpStatusCode.OK, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid, start = s2 })).StatusCode);
         var other = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 });
-        Assert.Equal(HttpStatusCode.Conflict, other.StatusCode); Assert.Equal("quote_not_open", await other.ErrCode());
+        Assert.Equal(HttpStatusCode.OK, other.StatusCode); Assert.Equal((string)booking["bookingId"]!, (string)(await Orders.Node(other))["booking"]!["bookingId"]!);
+        // the confirm call after payment turns the hold into a Confirmed booking, with the event at that point only
+        var conf = await Svc.Post(b, $"/bookings/{mid}/confirm", Svc.Body(b, mid, s2, "customer"));
+        Assert.Equal(HttpStatusCode.OK, conf.StatusCode); Assert.Equal("Confirmed", (string)(await Orders.Node(conf))["booking"]!["status"]!);
+        Assert.Single(Svc.Events(_f, b.Seller, "booking.confirmed"));
+        Assert.Empty(Svc.Events(_f, b.Seller, "booking.requested"));
+        var again2 = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 });
+        Assert.Equal(HttpStatusCode.Conflict, again2.StatusCode); Assert.Equal("quote_not_open", await again2.ErrCode());
         // it shows up in Bookings and the seller can run the normal lifecycle on it
         Assert.Equal(1, (int)(await ProdApi.Node(await b.Owner.Get("/api/v1/seller/bookings?tab=upcoming")))["total"]!);
     }
@@ -200,5 +208,43 @@ public class QuoteFlowTests : IClassFixture<SvcFactory>
         Assert.Equal(HttpStatusCode.Created, acc.StatusCode);
         var (other, _) = await ProdApi.Approved(_f);
         Assert.Equal(HttpStatusCode.NotFound, (await other.Post($"/api/v1/seller/dev/quotes/{mq}/decline", new { })).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_lapsed_quote_hold_frees_the_slot_reopens_the_quote_and_costs_nothing()
+    {
+        var b = await QuoteBiz();
+        var (qid, id) = await Request(b);
+        var wed = Svc.Next(_f, DayOfWeek.Wednesday); var s1 = Svc.Local(b.Tz, wed, 10);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", Quote(b, [s1]))).StatusCode);
+        var mid = Svc.BookingId();
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid, start = s1 })).StatusCode);
+        _f.Time.Advance(TimeSpan.FromMinutes(30));
+        Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/bookings/maintenance/run", null)).StatusCode);
+        var row = _f.WithDb(db => db.Bookings.Single(x => x.MarketplaceBookingId == mid));
+        Assert.Equal(BookingStatus.Expired, row.Status); Assert.Equal(0, row.CancellationFeeCents);
+        Assert.Empty(Svc.Events(_f, b.Seller, "booking.cancelled")); Assert.Empty(Svc.Events(_f, b.Seller, "booking.confirmed"));
+        Assert.Single(Svc.Events(_f, b.Seller, "booking.hold_expired"));
+        var q = _f.WithDb(db => db.QuoteRequests.Single(x => x.Id == id));
+        Assert.Equal(QuoteStatus.Quoted, q.Status); Assert.Null(q.BookingId);
+        // the quote can be accepted again (new hold, same slot) while it is valid; a normal hold cannot take the slot twice
+        var mid2 = Svc.BookingId();
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = mid2, start = s1 })).StatusCode);
+        var rival = await Svc.Post(b, "/bookings/holds", Svc.Body(b, Svc.BookingId(), s1, "customer"));
+        Assert.True(rival.StatusCode is HttpStatusCode.UnprocessableEntity or HttpStatusCode.Conflict); Assert.Equal("slot_unavailable", await rival.ErrCode());
+    }
+
+    [Fact]
+    public async Task Accepting_after_the_quote_expired_is_refused_even_with_a_lapsed_hold()
+    {
+        var b = await QuoteBiz();
+        var (qid, id) = await Request(b);
+        var s1 = Svc.Local(b.Tz, Svc.Next(_f, DayOfWeek.Wednesday), 10);
+        Assert.Equal(HttpStatusCode.OK, (await b.Owner.Post($"/api/v1/seller/quote-requests/{id}/quote", Quote(b, [s1], expiresInHours: 1))).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 })).StatusCode);
+        _f.Time.Advance(TimeSpan.FromHours(2));
+        Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/bookings/maintenance/run", null)).StatusCode);
+        var late = await Svc.Post(b, $"/quotes/{qid}/accept", new { marketplaceBookingId = Svc.BookingId(), start = s1 });
+        Assert.Equal(HttpStatusCode.Conflict, late.StatusCode); Assert.Equal("quote_expired", await late.ErrCode());
     }
 }

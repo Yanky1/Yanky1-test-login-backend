@@ -396,6 +396,14 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
             var done = await db.Bookings.AsNoTracking().FirstAsync(b => b.Id == x.BookingId);
             return new BRes(true, 200, "exists", "", new { created = false, booking = BookingService.Summary(done) });
         }
+        if (x.Status == QuoteStatus.Accepted && x.BookingId is not null)
+        {
+            // accepting while the quote's hold is live returns that same hold (C13)
+            var now0 = time.UtcNow();
+            var live = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(b => b.Id == x.BookingId && b.Status == BookingStatus.Hold && b.HoldExpiresAt > now0);
+            if (live is not null) return new BRes(true, 200, "exists", "", new { created = false, booking = BookingService.Summary(live) });
+        }
+        if (x.Status == QuoteStatus.Expired) return BRes.Conflict("This quote has expired.", "quote_expired");
         if (x.Status != QuoteStatus.Quoted) return BRes.Conflict($"A {x.Status} quote can't be accepted.", "quote_not_open");
         if (x.QuoteExpiresAt is { } e && BJson.Utc(e) <= time.UtcNow()) return BRes.Conflict("This quote has expired.", "quote_expired");
         if (r.Start is not { } start) return BRes.Invalid("Choose one of the proposed times.", "start");
@@ -403,7 +411,7 @@ public class QuoteService(AppDbContext db, CalendarService cal, BookingService b
         if (!slots.Select(BJson.Utc).Contains(BJson.Utc(start))) return BRes.Invalid("That time wasn't part of the quote.", "slot_not_offered");
         var req = new BookingIn(r.MarketplaceBookingId, x.ProductId, x.QuoteProviderId, start, null, x.Location.ToString(), r.AddOnIds, r.Buyer ?? new BuyerIn(x.BuyerName, x.BuyerEmail, x.BuyerPhone),
             string.IsNullOrEmpty(x.AddressJson) ? null : BJson.From<AddressIn>(x.AddressJson), r.IntakeAnswers);
-        var res = await bookings.CreateAsync(req, hold: false, quote: x);
+        var res = await bookings.CreateAsync(req, hold: true, quote: x);
         if (!res.Ok) return res;
         return res;
     }
