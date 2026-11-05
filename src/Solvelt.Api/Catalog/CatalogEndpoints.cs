@@ -32,7 +32,8 @@ public static class CatalogEndpoints
             QuestionsPerCaller: cfg.GetValue("RateLimit:InternalQuestionsPerCallerPerMinute", 2000),
             ReportsPerTarget: cfg.GetValue("RateLimit:InternalReportsPerTargetPerMinute", 60),
             ReportsPerCaller: cfg.GetValue("RateLimit:InternalReportsPerCallerPerMinute", 2000),
-            FailedPerIp: cfg.GetValue("RateLimit:InternalUnsignedPerMinute", 60)));
+            FailedPerIp: cfg.GetValue("RateLimit:InternalUnsignedPerMinute", 60),
+            ReviewsPerCaller: cfg.GetValue("RateLimit:InternalReviewsPerCallerPerMinute", 2000)));
         builder.Services.Configure<RateLimiterOptions>(r =>
         {
             static string Ip(HttpContext c) => c.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -183,19 +184,20 @@ public static class CatalogEndpoints
 /// per-IP bucket (same pattern as availability, docs/SERVICES.md), so a flood of forged requests can never drain the signed buckets.
 /// The caller is "marketplace": the holder of <c>Orders:InboundSecret</c> is the only verified identity this API knows.
 /// </summary>
-public sealed class MarketplaceWriteLimits(int QuestionsPerListing, int QuestionsPerCaller, int ReportsPerTarget, int ReportsPerCaller, int FailedPerIp)
+public sealed class MarketplaceWriteLimits(int QuestionsPerListing, int QuestionsPerCaller, int ReportsPerTarget, int ReportsPerCaller, int FailedPerIp, int ReviewsPerCaller = 2000)
 {
     public const string Caller = "marketplace";
     private static PartitionedRateLimiter<string> Make(int permits) => PartitionedRateLimiter.Create<string, string>(key =>
         RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions { PermitLimit = Math.Max(1, permits), Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 
     private readonly PartitionedRateLimiter<string> _qSubject = Make(QuestionsPerListing), _qCaller = Make(QuestionsPerCaller),
-        _rSubject = Make(ReportsPerTarget), _rCaller = Make(ReportsPerCaller), _failed = Make(FailedPerIp);
+        _rSubject = Make(ReportsPerTarget), _rCaller = Make(ReportsPerCaller), _failed = Make(FailedPerIp), _review = Make(ReviewsPerCaller);
 
     private static bool Take(PartitionedRateLimiter<string> l, string key) { using var lease = l.AttemptAcquire(key); return lease.IsAcquired; }
 
     public bool TryQuestion(Guid listingId) => Take(_qSubject, Caller + "|" + listingId) && Take(_qCaller, Caller);
     public bool TryReport(string? targetId) => Take(_rSubject, Caller + "|" + (targetId ?? "").Trim().ToLowerInvariant()) && Take(_rCaller, Caller);
+    public bool TryReview() => Take(_review, Caller);
     public bool TryFailed(string ip) => Take(_failed, ip);
 
     public IResult Limited(HttpContext ctx, string message)
