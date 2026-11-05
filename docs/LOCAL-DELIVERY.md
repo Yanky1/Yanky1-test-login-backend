@@ -104,7 +104,7 @@ The zone and window are checked again and capacity is booked atomically; the who
   "eta": { "windowStart": "…", "windowEnd": "…", "estimatedAt": "2026-11-04T12:41:00Z" }, "driverFirstName": "Sam",
   "position": { "lat": 40.693, "lng": -73.99 }, "occurredAt": "…" } }
 ```
-`position` is present **only** on events for the stop that is next (`out_for_delivery`), rounded to 3 decimals (~100 m), at most one per minute. `driverFirstName` is the first name only (the first letters of the e-mail local part).
+`position` is present **only** on events for the stop that is next (`out_for_delivery`), rounded to 3 decimals (~100 m), at most one per minute. `driverFirstName` is the first name only, and only when the driver's sign-in address reliably holds one (two alphabetic tokens such as `sam.jones@`); otherwise it is "Your driver" (never a guess from a one-token address, N14).
 
 `shipment.delivered`: `{ order, shipmentId, method:"local", deliveredAt, placement, recipientName, proof: { photoUrls:[…], signatureUrl, expiresInMinutes: 60 } }` - the URLs are `/api/public/delivery-proof/{id}?exp=…&sig=…` (HMAC with the outbound secret, valid `LocalDelivery:ProofUrlMinutes`, default 60; prefix with the portal API origin).
 `delivery.attempt_failed`: `{ order, shipmentId, method:"local", attempt, reason, occurredAt }` (`no_one_home | address_issue | refused | unsafe`; the free-text note stays in the portal).
