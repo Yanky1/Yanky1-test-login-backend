@@ -72,14 +72,14 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
     private static readonly OrderStatus[] ReleasableOrder = [OrderStatus.Delivered, OrderStatus.Completed, OrderStatus.Refunded];
     private static readonly BookingStatus[] ReleasableBooking = [BookingStatus.Completed, BookingStatus.NoShow, BookingStatus.CancelledByBuyer, BookingStatus.CancelledBySeller];
 
-    public async Task<ReleaseSummary> RunAsync(CancellationToken ct = default)
+    public async Task<ReleaseSummary> RunAsync(CancellationToken ct = default, Guid? onlySeller = null)
     {
         await leases.EnsureAsync(ct);
         var o = opt.Value; var now = time.UtcNow();
         int released = 0; long cents = 0;
 
         // sources with a positive pending balance
-        var pendingOrders = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && e.OrderId != null)
+        var pendingOrders = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && e.OrderId != null && (onlySeller == null || e.SellerId == onlySeller))
             .GroupBy(e => e.OrderId!.Value).Select(g => new { Id = g.Key, Sum = g.Sum(x => x.AmountCents), Max = g.Max(x => x.Id) }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var p in pendingOrders)
         {
@@ -89,7 +89,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
             if (await ReleaseAsync(ord.SellerId, ord.Currency, p.Id, null, ord.Number, ct) is { } got) { released++; cents += got; }
         }
-        var pendingBookings = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && e.BookingId != null)
+        var pendingBookings = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Pending && e.BookingId != null && (onlySeller == null || e.SellerId == onlySeller))
             .GroupBy(e => e.BookingId!.Value).Select(g => new { Id = g.Key, Sum = g.Sum(x => x.AmountCents), Max = g.Max(x => x.Id), Cur = g.Max(x => x.Currency)! }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var p in pendingBookings)
         {
@@ -101,7 +101,7 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
             if (hooks.AfterReleaseCandidate is { } h) await h(p.Id);
             if (await ReleaseAsync(b.SellerId, p.Cur, null, p.Id, b.Number, ct) is { } got) { released++; cents += got; }
         }
-        return new(released, await ReleaseReservesAsync(ct), cents);
+        return new(released, await ReleaseReservesAsync(ct, onlySeller), cents);
     }
 
     /// <summary>
@@ -156,10 +156,10 @@ public class ReleaseService(AppDbContext db, LedgerService ledger, IOptions<Paym
         catch (Exception ex) when (ex is DbUpdateException || DbErrors.IsSerialization(ex)) { db.ChangeTracker.Clear(); return null; }   // lost a race (unique key, or a PostgreSQL serialization failure at the write or at COMMIT): the next run re-reads
     }
 
-    private async Task<int> ReleaseReservesAsync(CancellationToken ct)
+    private async Task<int> ReleaseReservesAsync(CancellationToken ct, Guid? onlySeller = null)
     {
         var o = opt.Value; var cutoff = time.UtcNow().AddDays(-o.ReserveReleaseDays);
-        var reserves = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Reserved && e.AmountCents > 0 && e.Kind == "reserve" && e.CreatedAt <= cutoff)
+        var reserves = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Reserved && e.AmountCents > 0 && e.Kind == "reserve" && e.CreatedAt <= cutoff && (onlySeller == null || e.SellerId == onlySeller))
             .OrderBy(e => e.Id).Take(500).ToListAsync(ct);
         var n = 0;
         foreach (var r in reserves)
@@ -193,12 +193,13 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
         return (false, null);
     }
 
-    public async Task<TransferSummary> RunAsync(CancellationToken ct = default)
+    /// <param name="onlySeller">Test tools only: batch just this account's available balance (the demo fill must not move other accounts' money).</param>
+    public async Task<TransferSummary> RunAsync(CancellationToken ct = default, Guid? onlySeller = null)
     {
         await leases.EnsureAsync(ct);
         int created = 0, paused = 0, skipped = 0;
         var o = opt.Value; var now = time.UtcNow(); var day = now.Date;
-        var sellers = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Available)
+        var sellers = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Available && (onlySeller == null || e.SellerId == onlySeller))
             .GroupBy(e => new { e.SellerId, e.Currency }).Select(g => new { g.Key.SellerId, g.Key.Currency, Sum = g.Sum(x => x.AmountCents) }).Where(x => x.Sum > 0).ToListAsync(ct);
         foreach (var s in sellers)
         {
@@ -219,15 +220,15 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
                 [new(LedgerAccount.Available, -s.Sum, "transfer"), new(LedgerAccount.Settled, s.Sum, "transfer")], sourceRef: t.Id.ToString());
             if (await ledger.SaveAsync(ct)) created++; else skipped++;   // lost the race for this batch: someone else created it
         }
-        var (sent, failed, pausedSend) = await SendDueAsync(ct);
+        var (sent, failed, pausedSend) = await SendDueAsync(ct, onlySeller);
         return new(created, sent, failed, paused + pausedSend, skipped);
     }
 
-    public async Task<(int Sent, int Failed, int Paused)> SendDueAsync(CancellationToken ct = default)
+    public async Task<(int Sent, int Failed, int Paused)> SendDueAsync(CancellationToken ct = default, Guid? onlySeller = null)
     {
         int sent = 0, failed = 0, paused = 0;
         var o = opt.Value; var now = time.UtcNow();
-        var due = await db.PaymentTransfers.AsNoTracking().Where(t => t.Status == TransferStatus.Pending && t.NextAttemptAt <= now && (t.LockedUntil == null || t.LockedUntil < now))
+        var due = await db.PaymentTransfers.AsNoTracking().Where(t => t.Status == TransferStatus.Pending && t.NextAttemptAt <= now && (t.LockedUntil == null || t.LockedUntil < now) && (onlySeller == null || t.SellerId == onlySeller))
             .OrderBy(t => t.CreatedAt).Take(100).Select(t => t.Id).ToListAsync(ct);
         foreach (var id in due)
         {

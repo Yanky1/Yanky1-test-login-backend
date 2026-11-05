@@ -32,7 +32,7 @@ public class SellerAdminService(AppDbContext db, SellerStatusService status, Ses
         var sel = await db.Sellers.FirstOrDefaultAsync(s => s.Id == id);
         if (sel is null) return Results.NotFound();
         var from = sel.Status;
-        var (ok, err) = await status.ChangeAsync(sel, to, note, actor.UserId); // `reason` stays in the audit log only; the seller sees `note` (null unless staff wrote one for them)
+        var (ok, err) = await status.ChangeAsync(sel, to, note, actor.UserId, actor.UserId == Guid.Empty ? actor.Email : null); // `reason` stays in the audit log only; the seller sees `note` (null unless staff wrote one for them)
         if (!ok) return AdminHttp.Err(409, "invalid_transition", err!);
         await audit.WriteAsync(actor, action, "seller", id, reason, new { status = from.ToString() }, new { status = to.ToString() });
         return Results.Ok(new { sellerId = id, status = sel.Status.ToString() });
@@ -133,8 +133,8 @@ public static class SellerAdminEndpoints
             members, brands,
             counts = new
             {
-                listings = await db.Products.CountAsync(p => p.SellerId == id), activeListings = await db.Products.CountAsync(p => p.SellerId == id && p.Status == ProductStatus.Active),
-                orders = await db.Orders.CountAsync(o => o.SellerId == id), bookings = await db.Bookings.CountAsync(b => b.SellerId == id)
+                listings = await db.Products.CountAsync(p => p.SellerId == id && !db.DemoRecords.Any(d => d.EntityId == p.Id)), activeListings = await db.Products.CountAsync(p => p.SellerId == id && p.Status == ProductStatus.Active && !db.DemoRecords.Any(d => d.EntityId == p.Id)),
+                orders = await db.Orders.CountAsync(o => o.SellerId == id && !db.DemoRecords.Any(d => d.EntityId == o.Id)), bookings = await db.Bookings.CountAsync(b => b.SellerId == id && !db.DemoRecords.Any(d => d.EntityId == b.Id))
             },
             statusHistory = history,
             recentActivity = new { lastOrderAt = lastOrder, lastBookingAt = lastBooking, lastListingUpdateAt = lastProduct, lastMemberActivityAt = members.Max(m => m.LastActiveAt) },

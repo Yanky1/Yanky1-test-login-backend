@@ -153,7 +153,7 @@ public static class OutboxScopes
 }
 
 /// <summary>Writes outbound events. Call <see cref="Enqueue"/> BEFORE the SaveChanges that persists the state change: both commit in one transaction.</summary>
-public class Outbox(AppDbContext db, TimeProvider time)
+public class Outbox(AppDbContext db, TimeProvider time, Solvelt.Api.Demo.DemoContext? demo = null)
 {
     /// <param name="orderKey">Optional per-aggregate ordering key: the dispatcher never sends a message while an older one (smaller key) of the same aggregate is still pending.</param>
     /// <summary>The ordered-sequence scope of an event payload: its seller order or its booking, null for everything else (listings, messages, quotes, reports).</summary>
@@ -173,6 +173,9 @@ public class Outbox(AppDbContext db, TimeProvider time)
         var payload = OrderJson.Ser(new { id, type, createdAt = now, data });
         // an event about a seller order (data.order.sellerOrderId) or a booking (data.booking.bookingId) joins that order's / booking's ordered sequence
         if (scope is null && orderKey is null) scope = ScopeOf(payload);
+        // demo orders, bookings, messages and quotes never reach the marketplace (test tool, see docs/DECISIONS.md): the message is built but never stored
+        if (demo is not null && demo.SuppressEvent(db, type, aggregateId, scope))
+            return new OutboxMessage { Id = id, EventType = type, SellerId = sellerId, AggregateId = aggregateId, OrderKey = orderKey, SequenceScope = scope, CreatedAt = now, NextAttemptAt = now, PayloadJson = payload, Status = OutboxStatus.Discarded };
         if (scope is not null && orderKey is null)
         {
             var queued = db.ChangeTracker.Entries<OutboxMessage>().Where(e => e.State == EntityState.Added && e.Entity.SequenceScope == scope).Select(e => e.Entity.OrderKey ?? 0).DefaultIfEmpty(0).Max();

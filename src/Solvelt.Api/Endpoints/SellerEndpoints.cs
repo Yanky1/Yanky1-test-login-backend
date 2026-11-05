@@ -57,11 +57,11 @@ public static partial class SellerEndpoints
 
     public static void MapSellerEndpoints(this RouteGroupBuilder g)
     {
-        g.MapGet("/public-config", async (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts, AppDbContext db) => Results.Ok(new
+        g.MapGet("/public-config", async (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts, AppDbContext db, IOptions<Solvelt.Api.Demo.DemoOptions> demo) => Results.Ok(new
         {
             marketplaceUrl = app.Value.MarketplaceUrl, termsVersion = await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion),
             sellerAgreementVersion = await Solvelt.Api.Admin.PlatformSettings.AgreementAsync(db, app.Value.SellerAgreementVersion), smsWordingVersion = app.Value.SmsWordingVersion,
-            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey
+            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey, demoEnabled = demo.Value.Enabled
         }));
 
         var s = g.MapGroup("/seller").RequireAuthorization("Seller");

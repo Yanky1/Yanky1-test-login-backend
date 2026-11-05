@@ -73,7 +73,7 @@ public class ResendEmailSender(HttpClient http, IOptions<EmailOptions> opt, ILog
     }
 }
 
-public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<EmailOptions> opt, IOptions<PhoneOptions> phone, ILogger<Mailer> log)
+public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<EmailOptions> opt, IOptions<PhoneOptions> phone, ILogger<Mailer> log, Solvelt.Api.Demo.DemoContext? demo = null)
 {
     private static int _warnedDefaultSupport;
 
@@ -86,9 +86,21 @@ public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<E
         return EmailLayout.Resolve(m, support);
     }
 
+    /// <summary>Demo tools (test only): mail written while a demo fill runs is dropped, mail of a self-approval goes to the in-memory sink, never to a real provider.</summary>
+    private bool DemoRouted(EmailMessage m)
+    {
+        switch (demo?.Mail)
+        {
+            case Solvelt.Api.Demo.DemoMail.Suppress: return true;
+            case Solvelt.Api.Demo.DemoMail.Sink: demo.Sink.Add(Finish(m)); return true;
+            default: return false;
+        }
+    }
+
     /// <summary>Never throws: failed email must not break the security flow; failures are logged without content.</summary>
     public async Task SendAsync(EmailMessage m)
     {
+        if (DemoRouted(m)) return;
         try { await sender.SendAsync(Finish(m)); }
         catch (Exception ex) { log.LogError(ex, "Failed to send {Kind} email", m.Kind); }
     }
@@ -96,6 +108,7 @@ public class Mailer(IEmailSender sender, IServiceScopeFactory scopes, IOptions<E
     /// <summary>For anti-enumeration flows: returns immediately (when enabled) so timing is identical whether or not a mail is sent.</summary>
     public Task SendDetachedAsync(EmailMessage m)
     {
+        if (DemoRouted(m)) return Task.CompletedTask;
         if (!opt.Value.SendInBackground) return SendAsync(m);
         _ = Task.Run(async () =>
         {

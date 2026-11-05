@@ -109,14 +109,14 @@ public class SellerStatusService(AppDbContext db, TimeProvider time, Mailer mail
 
     public static bool CanTransition(SellerStatus from, SellerStatus to) => Allowed.TryGetValue(from, out var t) && t.Contains(to);
 
-    public async Task<(bool Ok, string? Error)> ChangeAsync(SellerAccount seller, SellerStatus to, string? note, Guid? actor)
+    public async Task<(bool Ok, string? Error)> ChangeAsync(SellerAccount seller, SellerStatus to, string? note, Guid? actor, string? actorLabel = null)
     {
         if (!CanTransition(seller.Status, to)) return (false, $"Cannot change status from {seller.Status} to {to}.");
         var from = seller.Status;
         seller.Status = to; seller.StatusNote = note; seller.UpdatedAt = time.UtcNow();
         if (to == SellerStatus.PendingReview) seller.SubmittedAt = time.UtcNow();
         await db.SaveChangesAsync();
-        await audit.WriteAsync("seller.status_changed", seller.UserId, null, $"{from}->{to};actor={actor};note={(note is null ? "" : "yes")};seller={seller.Id}");
+        await audit.WriteAsync("seller.status_changed", seller.UserId, null, $"{from}->{to};actor={actorLabel ?? actor?.ToString()};note={(note is null ? "" : "yes")};seller={seller.Id}");
         // Status mails go to the account's CURRENT active Owners (a removed or departed primary owner hears nothing); legacy accounts without memberships fall back to UserId.
         var ownerIds = await db.Memberships.Where(m => m.SellerId == seller.Id && m.Role == AccountRole.Owner && m.Status == MembershipStatus.Active).Select(m => m.UserId).ToListAsync();
         if (ownerIds.Count == 0 && !await db.Memberships.AnyAsync(m => m.SellerId == seller.Id)) ownerIds.Add(seller.UserId);
