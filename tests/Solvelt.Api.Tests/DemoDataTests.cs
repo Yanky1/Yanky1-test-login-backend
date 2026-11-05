@@ -456,4 +456,19 @@ public class DemoIsolationFixTests(DemoSvcFactory f) : IClassFixture<DemoSvcFact
         Assert.Equal(before.Pending, after.Pending);
         Assert.Equal(before.Settled, after.Settled);
     }
+
+    [Fact]
+    public async Task Overdue_reply_mails_are_not_sent_for_demo_conversations_but_still_are_for_real_ones()
+    {
+        var (demo, demoSeller) = await ProdApi.Approved(f);
+        Assert.Equal(HttpStatusCode.Created, await demo.Post("/api/v1/seller/demo-data").Code());
+        var shop = await Orders.NewShop(f);
+        var (_, orderId, _, _) = await Orders.Place(shop);
+        Assert.True((await shop.Owner.Post($"/api/v1/seller/dev/orders/{orderId}/events", new { type = "message", text = "Where is my order?" })).IsSuccessStatusCode);
+        var realEmail = shop.Owner.Session!.Email; var demoEmail = demo.Session!.Email;
+        f.Time.Advance(TimeSpan.FromDays(3));
+        Assert.Equal(HttpStatusCode.OK, (await f.NewClient().PostAsync("/api/dev/maintenance/run", null)).StatusCode);
+        Assert.NotEmpty(f.Mails(realEmail, "message-overdue"));
+        Assert.Empty(f.Mails(demoEmail, "message-overdue"));
+    }
 }
