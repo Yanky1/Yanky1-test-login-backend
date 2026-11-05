@@ -35,6 +35,9 @@ public static class ReviewEndpoints
     private static IResult Problem(int status, string code, string title, object? errors = null) =>
         Results.Json(new { type = "about:blank", title, status, code, errors }, statusCode: status);
 
+    /// <summary>The 422 error list in the exact shape of the order ingest: <c>[{index, code, message}]</c>, with index -1 and the field name as code for request-level problems.</summary>
+    private static List<LineError> Shape(Dictionary<string, string> errors) => errors.Select(kv => new LineError(-1, kv.Key, kv.Value)).ToList();
+
     private static string StateName(ReviewState s) => s.ToString().ToLowerInvariant();
 
     private static IResult Fail(ReviewResult r) => Problem(r.Status, r.Code, r.Message, r.Errors);
@@ -156,9 +159,9 @@ public static class ReviewEndpoints
             using (doc)
             {
                 var (value, errors) = ReviewEngine.Parse(doc!.RootElement);
-                if (value is null) return InternalEndpoints.Err(422, "invalid_review", "The review was rejected.", errors);
+                if (value is null) return InternalEndpoints.Err(422, "invalid_review", "The review was rejected.", Shape(errors));
                 var r = await engine.IngestAsync(value);
-                if (r.Status >= 400) return InternalEndpoints.Err(r.Status, r.Code, r.Message, r.Errors);
+                if (r.Status >= 400) return InternalEndpoints.Err(r.Status, r.Code, r.Message, r.Errors is null ? null : Shape(r.Errors));
                 return Results.Json(new { reviewId = r.Review!.ExternalId, id = r.Review.Id, duplicate = r.Duplicate, updated = r.Updated, state = StateName(r.Review.State) }, OrderJson.Opts, statusCode: r.Status);
             }
         });
@@ -174,11 +177,11 @@ public static class ReviewEndpoints
                 if (root.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String) state = s.GetString();
                 if (root.TryGetProperty("reason", out var rs) && rs.ValueKind != JsonValueKind.Null)
                 {
-                    if (rs.ValueKind != JsonValueKind.String) return InternalEndpoints.Err(422, "invalid_state", "The review state was rejected.", new { reason = "Must be a string." });
+                    if (rs.ValueKind != JsonValueKind.String) return InternalEndpoints.Err(422, "invalid_state", "The review state was rejected.", Shape(new Dictionary<string, string> { ["reason"] = "Must be a string." }));
                     reason = rs.GetString();
                 }
                 var r = await engine.SetStateAsync(reviewId, state, reason);
-                if (r.Status >= 400) return InternalEndpoints.Err(r.Status, r.Code, r.Message, r.Errors);
+                if (r.Status >= 400) return InternalEndpoints.Err(r.Status, r.Code, r.Message, r.Errors is null ? null : Shape(r.Errors));
                 return Results.Json(new { reviewId = r.Review!.ExternalId, state = StateName(r.Review.State), changed = r.Changed }, OrderJson.Opts);
             }
         });

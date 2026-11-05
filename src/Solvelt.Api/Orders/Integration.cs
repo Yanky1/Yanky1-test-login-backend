@@ -196,6 +196,20 @@ public class Outbox(AppDbContext db, TimeProvider time, Solvelt.Api.Demo.DemoCon
 public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeProvider time, IHttpClientFactory http, OutboxSink sink,
     IHostEnvironment env, ILogger<OutboxDispatcher> log)
 {
+    /// <summary>
+    /// The signed body of a scoped event (seller order, booking, review): the stored payload plus, at send time, the top-level <c>sequenceScope</c> and <c>sequence</c> (the OrderKey) so the
+    /// receiver can apply "only if greater than the last applied for that scope", and <c>predecessorDead</c> when an older event of the scope is Dead. Events without a scope (catalog, legacy) are sent unchanged.
+    /// </summary>
+    internal static string Envelope(OutboxMessage m, bool predecessorDead)
+    {
+        var hasSeq = m.SequenceScope is not null && m.OrderKey is not null;
+        if (!hasSeq && !predecessorDead) return m.PayloadJson;
+        var node = System.Text.Json.Nodes.JsonNode.Parse(m.PayloadJson)!.AsObject();
+        if (hasSeq) { node["sequenceScope"] = m.SequenceScope; node["sequence"] = m.OrderKey; }
+        if (predecessorDead) node["predecessorDead"] = true;
+        return node.ToJsonString();
+    }
+
     /// <summary>An older event of the same seller order / booking is Dead (it never reached the marketplace): the envelope says so, so the consumer knows its view of that order has a gap.</summary>
     internal static string MarkPredecessorDead(string payloadJson)
     {
@@ -262,7 +276,7 @@ public class OutboxDispatcher(AppDbContext db, IOptions<OrderOptions> opt, TimeP
             var m = await db.Outbox.AsNoTracking().FirstAsync(x => x.Id == id, ct);
             var ok = false; string? err = null;
             var ts = time.GetUtcNow().ToUnixTimeSeconds().ToString();
-            var body = predecessorDead ? MarkPredecessorDead(m.PayloadJson) : m.PayloadJson;   // the marker is part of the signed body; the stored payload is untouched
+            var body = Envelope(m, predecessorDead);   // sequenceScope / sequence / predecessorDead are part of the signed body; the stored payload is untouched
             var sig = Signing.SignOutbound(o.OutboundSecret, ts, body);
             try
             {

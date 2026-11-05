@@ -29,7 +29,7 @@ bucket; verified calls are limited per caller: `RateLimit:InternalReviewsPerCall
 ```
 * `201 {reviewId, id, duplicate:false, updated:false, state:"visible"}` for a new review (`id` is the portal's id, used in the seller API and in `aggregateId`).
 * **Idempotent by `reviewId`.** The same body again: `200 {duplicate:true}`. A **newer** `editedAt` than the stored one updates rating, text and display name: `200 {updated:true}`. An **older or equal** `editedAt` (or none) is ignored: `200 {duplicate:true}`, nothing changes. Parallel deliveries end with the newest edit (one conditional UPDATE). A `removed` review is never changed again.
-* **Validation, anything else is `422 invalid_review`** with `errors:{field: message}`: `listingId` must be a product of that seller and `sellerId` must match (no cross-seller injection; an existing `reviewId` cannot move to another listing); `rating` an integer 1-5 (`4.5` and `"4"` are refused); `text` <= 5000 characters (may be empty); `buyerDisplayName` <= 60 characters, stored exactly as sent; `reviewId` 1-50 characters; `createdAt` (and `editedAt` when present) ISO 8601.
+* **Validation, anything else is `422 invalid_review`** with `errors:[{index, code, message}]`, the SAME shape as the order ingest (`docs/ORDERS.md` 3.2; `index` is -1 and `code` is the field name, e.g. `{"index":-1,"code":"rating","message":"An integer from 1 to 5."}`), the state endpoint's `422 invalid_state` too: `listingId` must be a product of that seller and `sellerId` must match (no cross-seller injection; an existing `reviewId` cannot move to another listing); `rating` an integer 1-5 (`4.5` and `"4"` are refused); `text` <= 5000 characters (may be empty); `buyerDisplayName` <= 60 characters, stored exactly as sent; `reviewId` 1-50 characters; `createdAt` (and `editedAt` when present) ISO 8601.
 * Demo products accept reviews like any other.
 
 ### `POST /api/internal/v1/reviews/{reviewId}/state`
@@ -72,7 +72,14 @@ Same envelope, signing and at-least-once rule as every event (`docs/ORDERS.md` 3
 { "id": "9a21...", "type": "review.reply_removed", "createdAt": "2026-11-05T11:00:00Z",
   "data": { "reviewId": "rev-8841", "replyId": "0f6c...", "removedAt": "2026-11-05T11:00:00Z", "reason": "staff_removed" } }
 ```
-The events carry no buyer data (not even the display name). Every writer of one review (seller reply, delete, marketplace removal, staff removal) first **claims** the review with an atomic version bump inside its transaction, so two writers can never take the same sequence number (the loser answers `409 conflict`, retry).
+The events carry no buyer data (not even the display name).
+
+**Sequence fields (C17.1, see `docs/ORDERS.md` C14).** The signed body of every review event also carries `sequenceScope` (`review:{reviewId}`) and `sequence` (the integer OrderKey, 1, 2, 3 ... per review), added at send time. **Apply an event only if its `sequence` is greater than the last one you applied for that `sequenceScope`; still dedupe on `id`;** after a re-queued Dead event an older sequence can arrive late, so reconcile instead of applying it blindly (with `predecessorDead: true` your view of the review has a gap: keep the highest sequence, and the reply of the highest `review.reply_posted` unless a later `review.reply_removed` exists).
+```json
+{ "id": "9a21...", "type": "review.reply_posted", "createdAt": "2026-11-05T10:20:00Z",
+  "data": { "reviewId": "rev-8841", "replyId": "0f6c...", "text": "Thank you very much!", "repliedAt": "2026-11-05T10:05:00Z", "editedAt": "2026-11-05T10:20:00Z" },
+  "sequenceScope": "review:rev-8841", "sequence": 2 }
+``` Every writer of one review (seller reply, delete, marketplace removal, staff removal) first **claims** the review with an atomic version bump inside its transaction, so two writers can never take the same sequence number (the loser answers `409 conflict`, retry).
 
 ## 5. Moderation (staff, `docs/ADMIN.md`)
 
