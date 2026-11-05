@@ -152,6 +152,7 @@ Content-Type: application/json
 | `POST /messages/{messageId}/reports` | `{reason?}` | Buyer reported a message: conversation flagged for admin review. |
 | `POST /messages/{messageId}/receipts` | `{status:"delivered"\|"read"\|"failed"}` | `messageId` = the id from the `message.sent` event; status only moves forward. |
 | `GET /attachments/{id}` | - | Signed GET (empty body) to download a seller attachment listed in a `message.sent` event. |
+| `GET /orders/{marketplaceOrderId}` | - | **Order read (C16)**, signed GET with an empty body (same signing, freshness and one-time nonce as the other calls), own per-caller limit `RateLimit:InternalOrderReadPerMinute` (default 600/min, `429` over it). `404 order_not_found` for an unknown order. Returns every seller order of the marketplace order, see below. |
 
 ### 3.4 Outbound webhook (portal -> marketplace)
 Every seller-side change is written to `outbox_messages` **in the same SaveChanges/transaction** as the state change (a rejected action writes nothing),
@@ -171,6 +172,22 @@ in-memory **dev sink** (`GET /api/dev/outbox` shows body, timestamp and signatur
 
 **Ordering (C14).** The events of **one seller order** (`order.*`, `refund.issued`, `shipment.*`, `return.*`, `delivery.*`, `cancellation.decided`) and of **one booking** (`booking.*`) are delivered **in the order they were written**: each gets the next sequence number of its seller order / booking (`outbox_messages.SequenceScope` + `OrderKey`, assigned in the transaction that records the change) and the dispatcher never sends one while an older event of the same seller order / booking is pending, being sent or waiting for a retry. Events of different seller orders (and of different bookings) are independent and flow in parallel; there is no global blocking.
 **A Dead predecessor does not block its successors forever.** When an older event of the same seller order / booking is **Dead** (it exhausted its attempts and never reached the marketplace), the later events are sent and carry `"predecessorDead": true` at the top level of the signed body (next to `id`, `type`, `createdAt`, `data`; the stored payload does not have it, it is added when sending). It stays on every later event of that seller order until the Dead one is re-queued (`POST /api/v1/admin/outbox/{id}/retry`) and delivered: treat it as "your view of this order has a gap; reconcile". A re-queued event is sent late, after its successors (events are never dropped as superseded: every event is information), so **still dedupe on the signed body `id`** and do not assume a strictly increasing delivery after a re-queue. Events written before the ordering existed have no sequence and are not ordered.
+
+**Reconciling with `GET /orders/{marketplaceOrderId}` (C16).** Use it when an event arrives with `predecessorDead: true` and for a manual reconcile. It returns the portal's current state, with the same money the events carried (the refund's stored amounts, never recomputed; `refunds[].taxCents` is the `refund.issued` `taxCents`, line tax + shipping tax):
+
+```json
+{ "marketplaceOrderId": "MP-1001",
+  "sellerOrders": [{
+    "sellerOrderId": "...", "sellerOrderNumber": "SO-2026-000123", "sellerId": "...", "brandId": "...", "status": "Delivered", "updatedAt": "2026-11-05T10:00:00Z",
+    "currency": "USD", "totalCents": 6640, "taxCents": 600, "shippingCents": 400, "shippingTaxCents": 40, "refundedCents": 4140,
+    "lines": [{ "marketplaceLineId": "LA", "sku": "SKU-1", "quantity": 3, "shippedQty": 3, "cancelledQty": 0, "refundedQty": 2, "returnedQty": 2 }],
+    "refunds": [{ "refundId": "...", "amountCents": 4140, "taxCents": 440, "shippingCents": 100, "shippingTaxCents": 10, "reason": "returned_item", "createdAt": "..." }],
+    "shipments": [{ "shipmentId": "...", "method": "carrier", "carrier": "UPS", "trackingNumber": "1Z999AA10123456784", "status": null, "shippedAt": "...", "deliveredAt": "..." }],
+    "returns": [{ "returnId": "R-A", "status": "Refunded", "createdAt": "...", "updatedAt": "..." }],
+    "lastEventSequence": 7 } ] }
+```
+
+`lastEventSequence` is the highest `orderKey` ever enqueued in that seller order's event sequence (`so:<sellerOrderId>`, C14), or `null` when none: compare it with the last sequence you applied to see whether you missed events. No buyer name, address, e-mail, phone, notes or messages are ever returned (tracking numbers are, as in the events); after the retention redaction the same document is returned, still without personal data. `returnId` is the marketplace's `returnId` (the portal's own id for a return it created itself).
 
 **`order.cancelled` and the refunds it nets out (C14).** `refundDueCents` already subtracts refunds recorded earlier, so the event names them: `refundIdsAccounted: [refundId, ...]` (the `refundId` of each `refund.issued` already recorded on that seller order when the cancel happened) and `previouslyRefundedCents` (their sum, including tax and shipping). For a partial (remainder) cancel it lists the refunds recorded so far too, not the remainder's own refund (that is `refundDueCents`). Both are `[]` / `0` when nothing was refunded before.
 
