@@ -358,7 +358,7 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
             b.AddressJson = pl.AddressJson ?? b.AddressJson; b.PostalCode = pl.Postal ?? b.PostalCode; b.IntakeAnswersJson = pl.IntakeJson;
         }
         b.BuyerName = Cut(r.Buyer?.DisplayName, 200) ?? b.BuyerName; b.BuyerEmail = Cut(r.Buyer?.RelayEmail, 254); b.BuyerPhone = Cut(r.Buyer?.Phone, 40);
-        var status = d.BookingMode == BookingMode.Instant ? BookingStatus.Confirmed : BookingStatus.Requested;
+        var status = d.BookingMode == BookingMode.Instant || b.QuoteId is not null ? BookingStatus.Confirmed : BookingStatus.Requested;   // a seller-sent quote counts as approved (C13)
         b.Status = status; b.HoldExpiresAt = null; b.ApprovalDeadline = status == BookingStatus.Requested ? now.AddHours(d.ApprovalHours) : null;
         if (status == BookingStatus.Confirmed) b.ConfirmedAt ??= now;
         b.Version++; b.UpdatedAt = now;
@@ -427,6 +427,13 @@ public partial class BookingService(AppDbContext db, CalendarService cal, Outbox
         b.Status = BookingStatus.Expired;
         Event(b, "booking.hold_expired", Actor.System);
         outbox.Enqueue("booking.hold_expired", b.SellerId, b.Id.ToString(), Data(b));
+        if (b.QuoteId is { } qid)
+        {
+            // a lapsed hold born from a quote gives the quote back (C13): it is open again until its own validity ends. No fee, no buyer-cancel count, no cancel notification.
+            await db.QuoteRequests.Where(q => q.Id == qid && q.Status == QuoteStatus.Accepted && q.BookingId == b.Id)
+                .ExecuteUpdateAsync(u => u.SetProperty(q => q.Status, QuoteStatus.Quoted).SetProperty(q => q.BookingId, (Guid?)null).SetProperty(q => q.Version, q => q.Version + 1).SetProperty(q => q.UpdatedAt, time.UtcNow()));
+            b.QuoteId = null;   // the unique index allows one booking per quote: the lapsed hold lets go so the quote can be accepted again
+        }
         return await SaveAsync(b);
     }
 
