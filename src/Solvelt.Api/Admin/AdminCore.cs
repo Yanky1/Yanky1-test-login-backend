@@ -37,7 +37,8 @@ public class AdminOptions
     public int MaxExportRows { get; set; } = 50_000;
 }
 
-public sealed record StaffContext(Guid UserId, string Email, StaffRole Role, Guid SessionId, DateTime? StepUpAt);
+/// <param name="StepUpWaived">True only for a test-mode session that skipped two-factor while the gate is open (Demo:Enabled + Demo:AllowStaffMfaSkip): its step-up is satisfied.</param>
+public sealed record StaffContext(Guid UserId, string Email, StaffRole Role, Guid SessionId, DateTime? StepUpAt, bool StepUpWaived = false);
 
 public static class AdminHttp
 {
@@ -138,7 +139,7 @@ public static class AdminGate
         if (!StaffPermissions.Has(staff.Role, perm)) return AdminHttp.Err(403, "forbidden", "Your staff role doesn't allow this.");
         if (StaffPermissions.StepUp.Contains(perm) && !skipped && !(session.StepUpAt is { } su && now - su <= TimeSpan.FromMinutes(opt.StepUpMinutes)))
             return AdminHttp.Err(403, "step_up_required", "Confirm it's you again with your authenticator code to do this.");
-        http.SetStaff(new StaffContext(uid, http.User.FindFirstValue("email") ?? "", staff.Role, sid, session.StepUpAt));
+        http.SetStaff(new StaffContext(uid, http.User.FindFirstValue("email") ?? "", staff.Role, sid, session.StepUpAt, skipped));
         return null;
     }
 }
