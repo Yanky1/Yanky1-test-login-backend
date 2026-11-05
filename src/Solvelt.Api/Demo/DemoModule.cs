@@ -1,8 +1,12 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Solvelt.Api.Endpoints;
+using Solvelt.Api.Options;
 using Solvelt.Api.Admin;
 using Solvelt.Api.Data;
 using Solvelt.Api.Domain;
@@ -99,6 +103,47 @@ public static class DemoModule
             }
             finally { demo.Mail = DemoMail.Normal; }
         });
+    }
+
+    public const string MfaSkipActor = "demo-mfa-skip";
+
+    /// <summary>
+    /// TEST SITES ONLY. Mapped only when Demo:Enabled AND Demo:AllowStaffMfaSkip are both true (otherwise 404). Two routes, both audited with actor "demo-mfa-skip" + the staff user id:
+    /// <c>POST auth/demo-mfa {email,password}</c>: after the PASSWORD step (same check, throttle, active-staff rule and IP allowlist as the staff sign-in; the password step issues no session of its own)
+    /// it opens a staff session that is marked as having skipped two-factor; <c>POST auth/demo-step-up</c>: the same marker for an existing staff session, for the step-up prompt.
+    /// Neither creates a TOTP secret or touches the account's two-factor state; the marker lives on the session only.
+    /// </summary>
+    public static void MapDemoStaffMfa(this WebApplication app, RouteGroupBuilder admin)
+    {
+        if (!app.Services.GetRequiredService<IOptions<DemoOptions>>().Value.StaffMfaSkipOn) return;
+        var a = admin.MapGroup("/auth");
+
+        a.MapPost("/demo-mfa", async (Solvelt.Api.Admin.StaffLoginRequest r, HttpContext ctx, UserManager<AppUser> users, LoginThrottleService throttle, AppDbContext db, IAuditLog audit,
+            IOptions<LockoutSettings> lo, StaffSessionService sessions, DemoRateLimiter limit, TimeProvider time) =>
+        {
+            var (user, staff, err) = await Solvelt.Api.Admin.StaffEndpoints.PasswordAsync(r.Email, r.Password, users, throttle, db, audit, lo);
+            if (err is not null) return err;
+            if (!limit.TryAcquire(user!.Id, out var retry)) return TooMany(ctx, retry);
+            await throttle.ResetAsync(Crypto.NormalizeEmail(r.Email!));
+            var (token, expiresIn, sid) = await sessions.CreateAsync(user, AuthFlows.Ip(ctx), AuthFlows.Ua(ctx), mfaSkipped: true);
+            staff!.LastLoginAt = time.UtcNow();
+            await db.SaveChangesAsync();
+            await audit.WriteAsync("admin.demo_mfa_skipped", user.Id, user.Email, $"actor={MfaSkipActor};staffUser={user.Id};session={sid};role={staff.Role}");
+            return Results.Ok(new
+            {
+                tokenType = "Bearer", accessToken = token, expiresIn, email = user.Email, role = staff.Role.ToString(), mfaSkipped = true,
+                permissions = StaffPermissions.Matrix[staff.Role].Select(p => p.ToString()).Order()
+            });
+        }).RequireRateLimiting("auth");
+
+        a.MapPost("/demo-step-up", async (HttpContext ctx, AppDbContext db, IAuditLog audit, DemoRateLimiter limit) =>
+        {
+            var s = ctx.Staff();
+            if (!limit.TryAcquire(s.UserId, out var retry)) return TooMany(ctx, retry);
+            await db.Sessions.Where(x => x.Id == s.SessionId).ExecuteUpdateAsync(x => x.SetProperty(y => y.Method, StaffSessionService.DemoMfaMethod));
+            await audit.WriteAsync("admin.demo_mfa_skipped", s.UserId, s.Email, $"actor={MfaSkipActor};staffUser={s.UserId};session={s.SessionId};role={s.Role};step_up=true");
+            return Results.Ok(new { mfaSkipped = true });
+        }).RequireStaff(StaffPermission.DashboardView, "write").RequireRateLimiting("auth");
     }
 
     private static IResult TooMany(HttpContext ctx, TimeSpan retry)
