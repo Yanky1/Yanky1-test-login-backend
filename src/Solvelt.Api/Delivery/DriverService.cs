@@ -181,7 +181,7 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
                 db.AddEvent(order.Id, "delivery.returned", Party.System, null, $"Returned to the store ({d.Code})", now);
                 await svc.RecordAsync(d, order, TrackingStatus.ReturnToSender, "Returned to the store", clientAt);
                 result = await svc.SaveAsync();
-                if (result.Ok) await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.returned", $"Delivery returned: {order.Number}", "A delivery came back to the store", $"Order {order.Number} was returned to the store. Refund it or arrange a new delivery.", $"/orders/{order.Id}", new { orderId = order.Id });
+                if (result.Ok) await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.returned", $"Delivery returned: {order.Number}", "A delivery came back to the store", $"Order {order.Number} was returned to the store. Refund it or arrange a new delivery.", $"/orders/{order.Id}", orderIds: [order.Id], data: new { orderId = order.Id });
                 break;
             case "failed":
             {
@@ -199,7 +199,7 @@ public class DriverService(AppDbContext db, DeliveryService svc, OrderActions or
                 await svc.RecordAsync(d, order, TrackingStatus.Failure, reason, clientAt);
                 outbox.Enqueue("delivery.attempt_failed", d.SellerId, order.MarketplaceOrderId, new { order = DeliveryService.OrderRef(order), shipmentId = d.ShipmentId, method = DeliveryMethod.Local, attempt = d.Attempts, reason, occurredAt = clientAt });
                 result = await svc.SaveAsync();
-                if (result.Ok) await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.attempt_failed", $"Delivery attempt failed: {order.Number}", "A delivery attempt failed", $"Order {order.Number}: {reason.Replace('_', ' ')}.", "/delivery", new { orderId = order.Id });
+                if (result.Ok) await notifier.DeliveryAlertAsync(d.SellerId, d.BrandId, "delivery.attempt_failed", $"Delivery attempt failed: {order.Number}", "A delivery attempt failed", $"Order {order.Number}: {reason.Replace('_', ' ')}.", "/delivery", new { orderId = order.Id }, [order.Id]);
                 break;
             }
             default: // delivered

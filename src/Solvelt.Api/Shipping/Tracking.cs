@@ -41,7 +41,7 @@ public class ShipmentTracker(AppDbContext db, IShippingProvider provider, TimePr
 }
 
 /// <summary>In-app signal + email when a shipment needs attention or a return parcel arrived. Owners always get the email; other members only when opted in (ShippingEmails).</summary>
-public class ShippingNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOptions<AppOptions> app, ILogger<ShippingNotifier> log)
+public class ShippingNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOptions<AppOptions> app, ILogger<ShippingNotifier> log, Solvelt.Api.Demo.DemoContext? demo = null)
 {
     public async Task<List<string>> RecipientsAsync(Guid sellerId, Guid brandId)
     {
@@ -55,6 +55,7 @@ public class ShippingNotifier(AppDbContext db, Mailer mailer, EventHub hub, IOpt
 
     private async Task Mail(SellerOrder o, string kind, string subject, string heading, string line, string button)
     {
+        if (demo?.IsDemo(db, o.Id) == true) return;   // demo orders (test tool) never mail
         try
         {
             var url = app.Value.FrontendBaseUrl.TrimEnd('/') + $"/orders/{o.Id}";

@@ -23,7 +23,7 @@ public record BookingMessageOut(string? Text);
 
 /// <summary>Background work: expire holds, auto-decline unanswered requests, expire quotes, remind providers, redact customer data.</summary>
 public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mailer, CalendarService cal, Outbox outbox, IOptions<BookingOptions> opt, IOptions<AppOptions> app,
-    TimeProvider time, ILogger<BookingMaintenance> log)
+    TimeProvider time, ILogger<BookingMaintenance> log, Solvelt.Api.Demo.DemoContext? demo = null)
 {
     public record Summary(int HoldsExpired, int AutoDeclined, int QuotesExpired, int RemindersSent, int Redacted);
 
@@ -93,7 +93,8 @@ public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mail
             if (hour) { b.ReminderHourSentAt = now; b.ReminderDaySentAt ??= now; } else b.ReminderDaySentAt = now;
             outbox.Enqueue("booking.reminder", b.SellerId, b.Id.ToString(), new { booking = new { bookingId = b.Id, number = b.Number, marketplaceBookingId = b.MarketplaceBookingId }, kind, startAt = BJson.Utc(b.StartUtc) });
             var prof = await db.ProviderProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.MembershipId == b.ProviderId, ct);
-            if (prof is not null && (hour ? prof.ReminderHourBefore : prof.ReminderDayBefore))
+            // demo bookings (test tool) never send mail: the outbox event above is already dropped for them
+            if (prof is not null && (hour ? prof.ReminderHourBefore : prof.ReminderDayBefore) && demo?.IsDemo(db, b.Id) != true)
             {
                 try
                 {

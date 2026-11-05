@@ -44,7 +44,8 @@ public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit)
         await db.PaymentTransfers.Where(t => t.SellerId == sellerId && transferIds.Contains(t.Id)).ExecuteDeleteAsync();
         await db.ProcessedPaymentEvents.Where(p => eventKeys.Contains(p.EventId)).ExecuteDeleteAsync();
         await db.PaymentReferences.Where(p => eventKeys.Contains(p.EventId)).ExecuteDeleteAsync();
-        if (recs.Any(r => r.Kind == "payout_account")) await db.PayoutAccounts.Where(p => p.SellerId == sellerId).ExecuteDeleteAsync();
+        // the fake payout account the fill made, and only while it still is that one: a real account connected later survives
+        if (recs.Any(r => r.Kind == "payout_account")) await db.PayoutAccounts.Where(p => p.SellerId == sellerId && p.StripeAccountId.StartsWith("acct_demo_")).ExecuteDeleteAsync();
 
         // conversations and their messages (messages, attachments, reads, notes cascade)
         var orderConvs = await db.Conversations.Where(c => c.SellerId == sellerId && ((c.OrderId != null && orderIds.Contains(c.OrderId.Value)) || convIds.Contains(c.Id))).Select(c => c.Id).ToListAsync();

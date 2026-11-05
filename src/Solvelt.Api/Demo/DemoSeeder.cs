@@ -475,8 +475,13 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             Reg("payout_account", a.SellerId);
             await db.SaveChangesAsync();
         }
-        await release.RunAsync(onlySeller: a.SellerId);
-        if (provider.IsFake) await transfers.RunAsync(onlySeller: a.SellerId);
+        // only the demo orders and bookings are released; the transfer batches the account's WHOLE available balance, so it only runs when that balance is demo money alone
+        db.ChangeTracker.Clear();
+        var sources = await db.DemoRecords.AsNoTracking().Where(r => r.SellerId == a.SellerId && (r.Kind == "order" || r.Kind == "booking")).Select(r => r.EntityId).ToListAsync();
+        await release.RunAsync(onlySeller: a.SellerId, onlySources: sources);
+        var realAvailable = await db.LedgerEntries.AsNoTracking().Where(e => e.SellerId == a.SellerId && e.Account == LedgerAccount.Available
+            && !((e.OrderId != null && sources.Contains(e.OrderId.Value)) || (e.BookingId != null && sources.Contains(e.BookingId.Value)))).SumAsync(e => (long?)e.AmountCents) ?? 0;
+        if (provider.IsFake && realAvailable == 0) await transfers.RunAsync(onlySeller: a.SellerId);
         // a later sale stays available (not yet transferred): release the recently delivered order's twin by hand is NOT done; pending + available both exist from the orders above
         db.ChangeTracker.Clear();
         foreach (var t in await db.PaymentTransfers.AsNoTracking().Where(t => t.SellerId == a.SellerId).Select(t => t.Id).ToListAsync()) Reg("transfer", t);
