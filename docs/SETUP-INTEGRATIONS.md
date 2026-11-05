@@ -396,7 +396,9 @@ The portal and the marketplace must use the **same Stripe platform account**, be
 | JSON path | Env var | Dev | Staging | Prod | Default | Meaning |
 |---|---|---|---|---|---|---|
 | `Stripe:SecretKey` | `Stripe__SecretKey` or `STRIPE_SECRET_KEY` | – (fake) | `sk_test_…`/`rk_test_…` | `sk_live_…`/`rk_live_…` | empty | Platform secret or restricted key (secret) |
-| `Stripe:WebhookSecret` | `Stripe__WebhookSecret` or `STRIPE_WEBHOOK_SECRET` | – | **req** with a key | **req** with a key | empty | Endpoint signing secret `whsec_…`. Without it the webhook answers `503 webhook_not_configured`. |
+| `Stripe:WebhookSecret` | `Stripe__WebhookSecret` or `STRIPE_WEBHOOK_SECRET` | – | **req** with a key | **req** with a key | empty | Signing secret `whsec_…` of the **platform** endpoint ("Your account"). Without it the webhook answers `503 webhook_not_configured`. |
+| `Stripe:ConnectWebhookSecret` | `Stripe__ConnectWebhookSecret` or `STRIPE_CONNECT_WEBHOOK_SECRET` | – | **req** with two endpoints | **req** with a live key | empty | Signing secret `whsec_…` of the **Connect** endpoint ("Connected accounts"). With both secrets set, an event carrying `account` must be signed with this one, and other events with the platform secret; otherwise `400 wrong_endpoint_secret`. |
+| `Payments:AllowSingleWebhookSecret` | `Payments__AllowSingleWebhookSecret` | | | `false` | `false` | Accept a live key with only one webhook secret, on purpose (e.g. one endpoint only). |
 | `Stripe:DefaultCountry` | `Stripe__DefaultCountry` | | | | `US` | Country of new Express accounts when the seller account has none |
 | `Payments:AllowTestKeysInProduction` | `Payments__AllowTestKeysInProduction` | | | `false` | `false` | Escape hatch: a test key in Production |
 | `Payments:AllowLiveKeysOutsideProduction` | `Payments__AllowLiveKeysOutsideProduction` | `false` | `false` | | `false` | Escape hatch: a live key outside Production |
@@ -435,18 +437,14 @@ The portal and the marketplace must use the **same Stripe platform account**, be
 
    Unknown events are acknowledged and ignored.
 
-   > **Known gap:** Stripe issues a different `whsec_…` per endpoint, and the code accepts exactly **one** `Stripe:WebhookSecret`. It accepts several `v1` signatures in the header, which covers rotation of one endpoint, not two endpoints. With two endpoints, one of them always fails with `400 bad_signature`. Until the code accepts a list of secrets, there are two options:
-   > * use the Stripe CLI, which signs platform and Connect events with one secret (fine for dev and test-mode staging), or
-   > * accept that only one endpoint verifies, and rely on `POST /api/v1/seller/payments/onboarding/sync` plus the reconciliation job for the other side.
-   >
-   > The Connect endpoint carries onboarding status and payouts. The platform endpoint carries transfers and disputes.
+   > **Two secrets.** Stripe issues a different `whsec_…` per endpoint: set the platform one as `STRIPE_WEBHOOK_SECRET` and the Connect one as `STRIPE_CONNECT_WEBHOOK_SECRET`. Both endpoints may point at `/api/webhooks/stripe`, or register the Connect endpoint at the optional `/api/webhooks/stripe/connect`, which accepts only the Connect secret. With only one secret configured (or two equal values) both URLs accept it, which is what the Stripe CLI needs. Production with a live key refuses to start unless both are set or `Payments:AllowSingleWebhookSecret=true`.
 
 7. Local or staging forwarding with the CLI:
    ```bash
    stripe login
    stripe listen --forward-to https://localhost:5001/api/webhooks/stripe \
                  --forward-connect-to https://localhost:5001/api/webhooks/stripe
-   # prints whsec_… -> Stripe:WebhookSecret (the same secret signs both kinds of events)
+   # prints one whsec_… that signs both kinds of events -> set it as STRIPE_WEBHOOK_SECRET only (single-secret mode)
    stripe trigger payout.paid   # smoke test
    ```
 
@@ -459,7 +457,7 @@ The portal and the marketplace must use the **same Stripe platform account**, be
 ### 16.4 Going live
 
 1. Activate the platform account (business verification, bank account), complete Connect activation, and confirm the tax-reporting settings (Connect → Settings → Tax reporting).
-2. Create the **live** restricted key and the live webhook endpoints. Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` in the production secret store with `ASPNETCORE_ENVIRONMENT=Production`. Leave both `Allow…` flags `false`.
+2. Create the **live** restricted key and the live webhook endpoints. Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (platform endpoint) and `STRIPE_CONNECT_WEBHOOK_SECRET` (Connect endpoint) in the production secret store with `ASPNETCORE_ENVIRONMENT=Production`. Leave both `Allow…` flags `false`.
 3. The marketplace must send `payment.captured` for every successful charge, with the charge or payment-intent id, plus `refund.processed` and `dispute.*` (`docs/PAYMENTS.md` §6). Optionally it can create charges with a `transfer_group` per order.
 4. Keep `Payments:RunBackgroundJobs=true` on at least one instance. Check Admin → Integrations → jobs (`payments-release`, `payments-transfers`, `payments-reconcile`).
 5. Make a small live transfer to a staff-owned seller before opening payouts to everyone.
@@ -771,7 +769,7 @@ Work through these in order. Rehearse each step in test-mode staging first.
     * platform activated, Connect Express, branding, payouts and tax settings;
     * a live restricted key;
     * webhook endpoints and events (§16.2; read the one-secret gap);
-    * `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`, with both `Allow…` flags false;
+    * `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_CONNECT_WEBHOOK_SECRET`, with the `Allow…` flags false;
     * the marketplace sends `payment.captured`, `refund.processed` and `dispute.*`.
 11. **Shippo:**
     * live token, payment method, carrier accounts;
