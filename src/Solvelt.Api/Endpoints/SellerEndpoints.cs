@@ -57,11 +57,13 @@ public static partial class SellerEndpoints
 
     public static void MapSellerEndpoints(this RouteGroupBuilder g)
     {
-        g.MapGet("/public-config", async (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts, AppDbContext db, IOptions<Solvelt.Api.Demo.DemoOptions> demo) => Results.Ok(new
+        g.MapGet("/public-config", async (IOptions<AppOptions> app, IOptions<TurnstileOptions> ts, AppDbContext db, IOptions<Solvelt.Api.Demo.DemoOptions> demo, IOptions<ExternalAuthOptions> ext) => Results.Ok(new
         {
             marketplaceUrl = app.Value.MarketplaceUrl, termsVersion = await Solvelt.Api.Admin.PlatformSettings.TermsAsync(db, app.Value.TermsVersion),
             sellerAgreementVersion = await Solvelt.Api.Admin.PlatformSettings.AgreementAsync(db, app.Value.SellerAgreementVersion), smsWordingVersion = app.Value.SmsWordingVersion,
-            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey, demoEnabled = demo.Value.Enabled, staffMfaSkipEnabled = demo.Value.StaffMfaSkipOn
+            smsWording = SmsWording, turnstileSiteKey = ts.Value.SiteKey, demoEnabled = demo.Value.Enabled, staffMfaSkipEnabled = demo.Value.StaffMfaSkipOn,
+            // the Google sign-in provider is only registered when a client id is configured (otherwise /auth/external/google/start is a 404): the SPA hides its Google buttons
+            googleEnabled = !string.IsNullOrEmpty(ext.Value.GoogleClientId)
         }));
 
         var s = g.MapGroup("/seller").RequireAuthorization("Seller");

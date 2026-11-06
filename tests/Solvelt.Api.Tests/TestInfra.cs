@@ -65,7 +65,8 @@ public class ApiFactory : WebApplicationFactory<Program>
         {
             s.RemoveAll<TimeProvider>();
             s.AddSingleton<TimeProvider>(Time);
-            s.AddAuthentication().AddScheme<AuthenticationSchemeOptions, StubOidcHandler>("Google", _ => { });
+            if (string.IsNullOrEmpty(settings.GetValueOrDefault("ExternalAuth:GoogleClientId")))   // a test that configures real Google settings gets the real scheme, not the stub
+                s.AddAuthentication().AddScheme<AuthenticationSchemeOptions, StubOidcHandler>("Google", _ => { });
             ConfigureTestServices(s);
         });
     }

@@ -214,17 +214,19 @@ public class MessageService(AppDbContext db, TimeProvider time, IOptions<OrderOp
         return new(201, "ok", "", conv, msg, Warnings: warn.Count > 0 ? warn : null);
     }
 
-    /// <summary>Marks the conversation read for one user. Idempotent and race-free: an UPDATE first, an INSERT only when there is no row yet, and a lost INSERT race falls back to the UPDATE.</summary>
+    /// <summary>
+    /// Marks the conversation read for one user. Idempotent and race-free with a single atomic upsert (INSERT ... ON CONFLICT DO UPDATE, valid on PostgreSQL and SQLite):
+    /// concurrent calls for the same (conversation, user) never raise (nor log) a unique-key violation, and the stored read position only ever moves forward.
+    /// </summary>
     public async Task MarkReadAsync(Guid conversationId, Guid userId, DateTime at, int? buyerCount = null)
     {
         var count = buyerCount ?? await db.Conversations.Where(c => c.Id == conversationId).Select(c => c.BuyerMessageCount).FirstOrDefaultAsync();
-        Task<int> Update() => db.ConversationReads.Where(x => x.ConversationId == conversationId && x.UserId == userId)
-            .ExecuteUpdateAsync(u => u.SetProperty(x => x.LastReadAt, x => x.LastReadAt < at ? at : x.LastReadAt)
-                .SetProperty(x => x.ReadBuyerCount, x => x.ReadBuyerCount < count ? count : x.ReadBuyerCount));
-        if (await Update() > 0) return;
-        db.ConversationReads.Add(new ConversationRead { ConversationId = conversationId, UserId = userId, LastReadAt = at, ReadBuyerCount = count });
-        try { await db.SaveChangesAsync(); }
-        catch (DbUpdateException) { db.ChangeTracker.Clear(); await Update(); }   // another request inserted the row first
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO conversation_reads ("ConversationId", "UserId", "LastReadAt", "ReadBuyerCount") VALUES ({conversationId}, {userId}, {at}, {count})
+            ON CONFLICT ("ConversationId", "UserId") DO UPDATE SET
+              "LastReadAt" = CASE WHEN conversation_reads."LastReadAt" < excluded."LastReadAt" THEN excluded."LastReadAt" ELSE conversation_reads."LastReadAt" END,
+              "ReadBuyerCount" = CASE WHEN conversation_reads."ReadBuyerCount" < excluded."ReadBuyerCount" THEN excluded."ReadBuyerCount" ELSE conversation_reads."ReadBuyerCount" END
+            """);
     }
 
     public record AttachmentOutcome(int Status, string Code, string Message, MessageAttachment? Attachment = null);

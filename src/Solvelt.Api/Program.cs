@@ -218,6 +218,9 @@ builder.Services.AddRateLimiter(o =>
 // ASPNETCORE_FORWARDEDHEADERS_ENABLED switch (trust everyone) cannot widen what App:TrustedProxies / App:TrustPlatformProxy allow.
 var forwardedTrust = ForwardedHeadersSetup.Resolve(app0);
 builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o => ForwardedHeadersSetup.Apply(o, forwardedTrust));
+// ASPNETCORE_FORWARDEDHEADERS_ENABLED=true makes the host register its OWN forwarded-headers middleware (an IStartupFilter) in front of ours, i.e. a second hop.
+// Drop that one: the single UseForwardedHeaders below (same options) is the only one that runs. (Runs after the host's default registrations.)
+builder.Host.ConfigureServices((_, services) => ForwardedHeadersSetup.RemoveHostMiddleware(services));
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(app0.CorsOrigins)
     .WithHeaders("Authorization", "Content-Type", "X-CSRF-Token").WithMethods("GET", "POST", "PUT", "PATCH", "DELETE").AllowCredentials()));
 builder.Services.AddProblemDetails();

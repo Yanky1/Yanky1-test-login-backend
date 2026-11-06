@@ -48,6 +48,16 @@ public static class ForwardedHeadersSetup
         return new(enabled, proxies, nets);
     }
 
+    /// <summary>
+    /// Removes the forwarded-headers middleware the host adds when ASPNETCORE_FORWARDEDHEADERS_ENABLED=true (an IStartupFilter that would run in front of the app's own
+    /// UseForwardedHeaders and consume a second hop). Exactly one forwarded-headers middleware, with the options from <see cref="Apply"/>, then runs.
+    /// </summary>
+    public static void RemoveHostMiddleware(Microsoft.Extensions.DependencyInjection.IServiceCollection services)
+    {
+        foreach (var d in services.Where(d => d.ServiceType == typeof(Microsoft.AspNetCore.Hosting.IStartupFilter) && d.ImplementationType?.Name == "ForwardedHeadersStartupFilter").ToList())
+            services.Remove(d);
+    }
+
     /// <summary>Fills the options. Called from DI configuration so it also overrides the trust-everyone defaults that ASPNETCORE_FORWARDEDHEADERS_ENABLED=true would install.</summary>
     public static void Apply(ForwardedHeadersOptions fh, Trust t)
     {
