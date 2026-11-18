@@ -144,7 +144,7 @@ public class OfferValidationTests(OrdersFactory f) : IClassFixture<OrdersFactory
 {
     private static async Task<JsonNode> Bad(CardShop s, object body, string field)
     {
-        var r = await s.Owner.Post(Path, body);
+        var r = await s.Owner.Post(OffersUrl, body);
         var text = await r.Content.ReadAsStringAsync();
         Assert.True(r.StatusCode == HttpStatusCode.BadRequest, $"{(int)r.StatusCode} {text}");
         var n = JsonNode.Parse(text)!;
@@ -162,7 +162,7 @@ public class OfferValidationTests(OrdersFactory f) : IClassFixture<OrdersFactory
         await Bad(s, Write(s, tiers: [Tier(10, 0)]), "tiers");
         await Bad(s, Write(s, tiers: [Tier(0, 50)]), "tiers");
         await Bad(s, Write(s, tiers: [], gifts: []), "tiers");                           // an offer must offer something
-        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(Path, Write(s, tiers: [Tier(20, 90), Tier(10, 95)]))).StatusCode);   // order of the input does not matter
+        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(OffersUrl, Write(s, tiers: [Tier(20, 90), Tier(10, 95)]))).StatusCode);   // order of the input does not matter
     }
 
     [Fact]
@@ -173,7 +173,7 @@ public class OfferValidationTests(OrdersFactory f) : IClassFixture<OrdersFactory
         var six = new List<object>();
         for (var i = 0; i < 6; i++) six.Add(Gift(10, await Product(s.Owner, s.Brand, $"Gift {i}", 1.00)));
         await Bad(s, Write(s, gifts: six.ToArray()), "gifts");
-        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(Path, Write(s, name: "Ten steps", tiers: Enumerable.Range(1, 10).Select(i => Tier(i * 10, 200 - i)).ToArray(), gifts: six.Take(5).ToArray(), status: "draft"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(OffersUrl, Write(s, name: "Ten steps", tiers: Enumerable.Range(1, 10).Select(i => Tier(i * 10, 200 - i)).ToArray(), gifts: six.Take(5).ToArray(), status: "draft"))).StatusCode);
     }
 
     [Fact]
@@ -290,7 +290,7 @@ public class OfferIntakeTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var m = (await Orders.Detail(s.Owner, id))["money"]!;
         Assert.Equal(900 + 400 + 425, (long)m["totalCents"]!);
         // the preview quotes the sale price for the sale card, never the higher tier price
-        var pv = await Orders.Ok(s.Owner.Post($"{Path}/preview", new { scope = "products", productIds = new[] { onSale }, tiers = new[] { Tier(20, 90) }, gifts = Array.Empty<object>(), sampleProductId = onSale, quantities = new[] { 20 } }));
+        var pv = await Orders.Ok(s.Owner.Post($"{OffersUrl}/preview", new { scope = "products", productIds = new[] { onSale }, tiers = new[] { Tier(20, 90) }, gifts = Array.Empty<object>(), sampleProductId = onSale, quantities = new[] { 20 } }));
         Assert.Equal(85, (long)pv["rows"]![0]!["unitPriceCents"]!);
         Assert.Equal(1700, (long)pv["rows"]![0]!["totalCents"]!);
     }
@@ -335,7 +335,7 @@ public class OfferGraceTests(OfferGraceFactory f) : IClassFixture<OfferGraceFact
         await Accepted(f, Order(f, Join([Line(s, s.CardA, 20, discount: 300, offer: offer)], Gifts(s, offer)), [Ref(offer, 2)]));
         // an edit and an end later, the first order still names version 1
         await Update(s, offer, Write(s, tiers: [Tier(20, 80)], version: 2));
-        await Orders.Ok(s.Owner.Post($"{Path}/{offer}/end", new { version = 3 }));
+        await Orders.Ok(s.Owner.Post($"{OffersUrl}/{offer}/end", new { version = 3 }));
         Assert.Equal(1, (int)LineOf(await Orders.Detail(s.Owner, old), s.CardA)["offerVersion"]!);
         Assert.Equal(2, (int)LineOf(await Orders.Detail(s.Owner, cur), s.CardA)["offerVersion"]!);
         Assert.Equal(1, f.WithDb(db => db.OrderLines.AsNoTracking().Single(l => l.OrderId == old && l.ProductId == s.CardA).OfferVersion));
@@ -352,7 +352,7 @@ public class OfferGraceTests(OfferGraceFactory f) : IClassFixture<OfferGraceFact
         f.Time.Advance(TimeSpan.FromMinutes(11));
         var mid = Orders.Mid();
         await Mismatch(f, Order(f, [Line(s, s.CardA, 20)], null, mid), "offer_missing", mid);
-        await Orders.Ok(s.Owner.Post($"{Path}/{offer}/end", new { version = 1 }));
+        await Orders.Ok(s.Owner.Post($"{OffersUrl}/{offer}/end", new { version = 1 }));
         f.Time.Advance(TimeSpan.FromMinutes(1));
         await Accepted(f, Order(f, [Line(s, s.CardA, 20)], null));                                    // ended: no longer required
         await Accepted(f, Order(f, Join([Line(s, s.CardA, 20, discount: 200, offer: offer)], Gifts(s, offer)), [Ref(offer, 1)]));   // ... but still honoured within the grace
@@ -375,19 +375,19 @@ public class OfferSellerApiTests(OrdersFactory f) : IClassFixture<OrdersFactory>
             await m.Switch(s.Seller);
             var created = await Create(s, Write(s, status: "draft", name: role + " draft"), m);
             var id = (string)created["id"]!;
-            Assert.Equal(HttpStatusCode.OK, (await m.Put($"{Path}/{id}", Write(s, status: "draft", name: role + " edit", version: 1))).StatusCode);
-            Assert.Equal(HttpStatusCode.OK, (await m.Post($"{Path}/{id}/end", new { version = 2 })).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await m.Put($"{OffersUrl}/{id}", Write(s, status: "draft", name: role + " edit", version: 1))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await m.Post($"{OffersUrl}/{id}/end", new { version = 2 })).StatusCode);
         }
         var draft = await Create(s, Write(s, status: "draft"));
         var did = (string)draft["id"]!;
         var (viewer, _) = await TeamHelpers.JoinAs(f, s.Owner, "Viewer");
         await viewer.Switch(s.Seller);
-        Assert.Equal(HttpStatusCode.OK, (await viewer.Get(Path)).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await viewer.Get($"{Path}/{did}")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await viewer.Post($"{Path}/preview", Write(s))).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Post(Path, Write(s, status: "draft"))).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Put($"{Path}/{did}", Write(s, status: "draft", version: 1))).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Post($"{Path}/{did}/end", new { version = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await viewer.Get(OffersUrl)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await viewer.Get($"{OffersUrl}/{did}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await viewer.Post($"{OffersUrl}/preview", Write(s))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Post(OffersUrl, Write(s, status: "draft"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Put($"{OffersUrl}/{did}", Write(s, status: "draft", version: 1))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await viewer.Post($"{OffersUrl}/{did}/end", new { version = 1 })).StatusCode);
         Assert.Equal(1, f.WithDb(db => db.Offers.Single(o => o.Id == Guid.Parse(did)).CurrentVersion));
     }
 
@@ -397,11 +397,11 @@ public class OfferSellerApiTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var s = await Shop(f);
         var other = await Shop(f);
         var id = await Standard(s);
-        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Get($"{Path}/{id}")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Put($"{Path}/{id}", Write(other, version: 1))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Post($"{Path}/{id}/end", new { version = 1 })).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Post($"{Path}/preview", new { brandId = s.Brand, scope = "all", tiers = new[] { Tier(5, 50) } })).StatusCode);
-        Assert.DoesNotContain((await Orders.Node(await other.Owner.Get(Path)))["items"]!.AsArray(), o => (string)o!["id"]! == id.ToString());
+        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Get($"{OffersUrl}/{id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Put($"{OffersUrl}/{id}", Write(other, version: 1))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Post($"{OffersUrl}/{id}/end", new { version = 1 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.Owner.Post($"{OffersUrl}/preview", new { brandId = s.Brand, scope = "all", tiers = new[] { Tier(5, 50) } })).StatusCode);
+        Assert.DoesNotContain((await Orders.Node(await other.Owner.Get(OffersUrl)))["items"]!.AsArray(), o => (string)o!["id"]! == id.ToString());
         Assert.Equal(1, f.WithDb(db => db.Offers.Single(o => o.Id == id).CurrentVersion));
         Assert.Equal(OfferStatus.Active, f.WithDb(db => db.Offers.Single(o => o.Id == id).Status));
     }
@@ -412,11 +412,11 @@ public class OfferSellerApiTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var s = await Shop(f);
         var id = await Standard(s);
         await Update(s, id, Write(s, tiers: [Tier(20, 85)], version: 1));
-        Assert.Equal(HttpStatusCode.Conflict, (await s.Owner.Put($"{Path}/{id}", Write(s, version: 1))).StatusCode);       // stale version
-        var ended = await Orders.Ok(s.Owner.Post($"{Path}/{id}/end", new { version = 2 }));
+        Assert.Equal(HttpStatusCode.Conflict, (await s.Owner.Put($"{OffersUrl}/{id}", Write(s, version: 1))).StatusCode);       // stale version
+        var ended = await Orders.Ok(s.Owner.Post($"{OffersUrl}/{id}/end", new { version = 2 }));
         Assert.Equal("ended", (string)ended["status"]!);
         Assert.Equal(3, ended["versions"]!.AsArray().Count);
-        var r = await s.Owner.Put($"{Path}/{id}", Write(s, version: 3));
+        var r = await s.Owner.Put($"{OffersUrl}/{id}", Write(s, version: 3));
         Assert.Equal(HttpStatusCode.Conflict, r.StatusCode); Assert.Equal("offer_ended", await Orders.Code(r));
         var types = f.WithDb(db => db.AuditEvents.Where(e => e.Detail != null && e.Detail.Contains($"offer={id}")).OrderBy(e => e.Id).Select(e => e.Type).ToList());
         Assert.Equal(new[] { "offer.created", "offer.updated", "offer.ended" }, types);
@@ -432,11 +432,11 @@ public class OfferSellerApiTests(OrdersFactory f) : IClassFixture<OrdersFactory>
     {
         var s = await Shop(f);
         await Standard(s);
-        var r = await s.Owner.Post(Path, Write(s, products: [s.CardB], name: "Gold only"));
+        var r = await s.Owner.Post(OffersUrl, Write(s, products: [s.CardB], name: "Gold only"));
         Assert.Equal(HttpStatusCode.Conflict, r.StatusCode); Assert.Equal("scope_conflict", await Orders.Code(r));
-        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(Path, Write(s, products: [s.CardB], name: "Gold only", status: "draft"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await s.Owner.Post(OffersUrl, Write(s, products: [s.CardB], name: "Gold only", status: "draft"))).StatusCode);
         // the issue's example: 10 cards $10.00 + free Wallet + free Pack, 20 cards $18.00, 25 cards $22.50
-        var pv = await Orders.Ok(s.Owner.Post($"{Path}/preview", Write(s)));
+        var pv = await Orders.Ok(s.Owner.Post($"{OffersUrl}/preview", Write(s)));
         var rows = pv["rows"]!.AsArray();
         Assert.Equal(new[] { 10, 20, 25 }, rows.Select(x => (int)x!["quantity"]!));
         Assert.Equal(new[] { 1000L, 1800L, 2250L }, rows.Select(x => (long)x!["totalCents"]!));
@@ -493,7 +493,7 @@ public class OfferFeedTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         Assert.Equal(2, (int)one["version"]!);
         Assert.Equal(HttpStatusCode.NotFound, (await Cat.SignedGet(f, $"{Feed}/{draft}")).StatusCode);
         // ending x puts an ended entry at the end of the feed
-        await Orders.Ok(s.Owner.Post($"{Path}/{x}/end", new { version = 2 }));
+        await Orders.Ok(s.Owner.Post($"{OffersUrl}/{x}/end", new { version = 2 }));
         var after = (await ReadAll(cursor)).Where(i => (string)i["sellerId"]! == s.Seller.ToString()).ToList();
         var last = after[^1];
         Assert.Equal(x.ToString(), (string)last["offerId"]!); Assert.False((bool)last["listed"]!); Assert.Equal("ended", (string)last["status"]!); Assert.Equal("ended", (string)last["reason"]!);
@@ -506,7 +506,7 @@ public class OfferFeedTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         var x = await Standard(s);
         await Update(s, x, Write(s, status: "draft", version: 1));     // paused
         await Update(s, x, Write(s, version: 2));                      // active again
-        await Orders.Ok(s.Owner.Post($"{Path}/{x}/end", new { version = 3 }));
+        await Orders.Ok(s.Owner.Post($"{OffersUrl}/{x}/end", new { version = 3 }));
         var msgs = f.WithDb(db => db.Outbox.AsNoTracking().Where(m => m.AggregateId == x.ToString()).OrderBy(m => m.OrderKey).ToList());
         Assert.Equal(new[] { "offer.updated", "offer.ended", "offer.updated", "offer.ended" }, msgs.Select(m => m.EventType));
         Assert.All(msgs, m => Assert.Equal("offer:" + x.ToString("N"), m.SequenceScope));
@@ -531,7 +531,7 @@ public class OfferDemoTests(DemoFactory f) : IClassFixture<DemoFactory>
     {
         var (api, seller) = await ProdApi.Approved(f);
         Assert.Equal(HttpStatusCode.Created, (await api.Post("/api/v1/seller/demo-data")).StatusCode);
-        var list = (await Orders.Node(await api.Get(Path)))["items"]!.AsArray();
+        var list = (await Orders.Node(await api.Get(OffersUrl)))["items"]!.AsArray();
         var offer = Assert.Single(list)!;
         Assert.True((bool)offer["demo"]!); Assert.Equal("active", (string)offer["state"]!);
         Assert.Equal(2, offer["tiers"]!.AsArray().Count); Assert.Equal(1, (int)offer["giftCount"]!);
@@ -541,8 +541,8 @@ public class OfferDemoTests(DemoFactory f) : IClassFixture<DemoFactory>
         Assert.Equal(1, f.WithDb(db => db.DemoRecords.Count(r => r.SellerId == seller && r.Kind == "offer")));
         Assert.Empty(f.WithDb(db => db.Outbox.Where(m => m.AggregateId == id).ToList()));                 // demo data sends no events
         Assert.Equal(HttpStatusCode.OK, (await api.Delete("/api/v1/seller/demo-data")).StatusCode);
-        Assert.Empty((await Orders.Node(await api.Get(Path)))["items"]!.AsArray());
-        Assert.Equal(HttpStatusCode.NotFound, (await api.Get($"{Path}/{id}")).StatusCode);
+        Assert.Empty((await Orders.Node(await api.Get(OffersUrl)))["items"]!.AsArray());
+        Assert.Equal(HttpStatusCode.NotFound, (await api.Get($"{OffersUrl}/{id}")).StatusCode);
         var gone = await Cat.GetOk(f, $"{Feed}/{id}");
         Assert.False((bool)gone["listed"]!); Assert.Equal("deleted", (string)gone["reason"]!);
         Assert.Equal(0, f.WithDb(db => db.OfferVersions.Count(v => v.OfferId == Guid.Parse(id))));

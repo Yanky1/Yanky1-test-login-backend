@@ -10,7 +10,7 @@ public record CardShop(ApiFactory F, Api Owner, Guid Seller, Guid Brand, Guid Ca
 /// <summary>C18 quantity offers: helpers for the seller API, signed orders that carry offers, and the feed.</summary>
 public static class OfferKit
 {
-    public const string Path = "/api/v1/seller/offers", Feed = "/api/internal/v1/catalog/offers", OrdersPath = "/api/internal/v1/orders";
+    public const string OffersUrl = "/api/v1/seller/offers", Feed = "/api/internal/v1/catalog/offers", OrdersPath = "/api/internal/v1/orders";
 
     public static async Task<Guid> Product(Api api, Guid brand, string title, double price, int stock = 200, double? sale = null)
     {
@@ -44,7 +44,7 @@ public static class OfferKit
 
     public static async Task<JsonNode> Create(CardShop s, object body, Api? as_ = null)
     {
-        var r = await (as_ ?? s.Owner).Post(Path, body);
+        var r = await (as_ ?? s.Owner).Post(OffersUrl, body);
         Assert.True(r.StatusCode == HttpStatusCode.Created, $"{(int)r.StatusCode} {await r.Content.ReadAsStringAsync()}");
         return await Orders.Node(r);
     }
@@ -53,7 +53,7 @@ public static class OfferKit
 
     public static async Task<JsonNode> Update(CardShop s, Guid id, object body)
     {
-        var r = await s.Owner.Put($"{Path}/{id}", body);
+        var r = await s.Owner.Put($"{OffersUrl}/{id}", body);
         Assert.True(r.StatusCode == HttpStatusCode.OK, $"{(int)r.StatusCode} {await r.Content.ReadAsStringAsync()}");
         return await Orders.Node(r);
     }
