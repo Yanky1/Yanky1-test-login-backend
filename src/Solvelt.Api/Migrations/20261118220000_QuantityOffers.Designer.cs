@@ -1472,6 +1472,11 @@ namespace Solvelt.Api.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasMaxLength(24)
@@ -5797,9 +5802,6 @@ namespace Solvelt.Api.Migrations
 
                     b.Property<int>("CurrentVersion")
                         .HasColumnType("integer");
-
-                    b.Property<DateTime?>("DeletedAt")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("EndedAt")
                         .HasColumnType("timestamp with time zone");

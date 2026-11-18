@@ -6,12 +6,20 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Solvelt.Api.Migrations
 {
     /// <inheritdoc />
-    /// <remarks>C18 quantity offers (workstream W): offers + immutable offer versions, offer/gift fields on order lines, the giftUnavailable flag on seller orders. Additive only.</remarks>
+    /// <remarks>C18 quantity offers (workstream W): offers + immutable offer versions, offer/gift fields on order lines, the giftUnavailable flag on seller orders, and catalog_tombstones.Kind (listing | offer; existing rows are listings). Additive only.</remarks>
     public partial class QuantityOffers : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.AddColumn<string>(
+                name: "Kind",
+                table: "catalog_tombstones",
+                type: "character varying(10)",
+                maxLength: 10,
+                nullable: false,
+                defaultValue: "listing");
+
             migrationBuilder.AddColumn<bool>(
                 name: "GiftUnavailable",
                 table: "seller_orders",
@@ -60,8 +68,7 @@ namespace Solvelt.Api.Migrations
                     CreatedBy = table.Column<Guid>(type: "uuid", nullable: false),
                     UpdatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     EndedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    EndedReason = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
-                    DeletedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
+                    EndedReason = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -123,6 +130,10 @@ namespace Solvelt.Api.Migrations
 
             migrationBuilder.DropTable(
                 name: "offers");
+
+            migrationBuilder.DropColumn(
+                name: "Kind",
+                table: "catalog_tombstones");
 
             migrationBuilder.DropColumn(
                 name: "GiftUnavailable",

@@ -28,7 +28,7 @@ public static class OfferEndpoints
     /// <summary>The offers the caller may see: their account, brands in their scope, never removed ones.</summary>
     private static IQueryable<Offer> OffersFor(AppDbContext db, AccountAccess a)
     {
-        var q = db.Offers.AsNoTracking().Where(o => o.SellerId == a.SellerId && o.DeletedAt == null);
+        var q = db.Offers.AsNoTracking().Where(o => o.SellerId == a.SellerId);
         if (a.AllBrands || a.Role >= AccountRole.Admin) return q;
         var ids = a.BrandIds.ToList();
         return q.Where(o => ids.Contains(o.BrandId));
@@ -199,10 +199,16 @@ public static class OfferEndpoints
             var take = limit ?? Solvelt.Api.Catalog.CatalogEndpoints.DefaultLimit;
             // feed versions come from the catalog counter, taken under its row lock: the version order is the commit order, so the cursor never skips a change
             var rows = await db.Offers.AsNoTracking().Where(o => o.EverListed && o.FeedVersion > cursor).OrderBy(o => o.FeedVersion).Take(take + 1).ToListAsync(ctx.RequestAborted);
-            var more = rows.Count > take;
-            if (more) rows.RemoveAt(take);
-            var items = await svc.FeedDocsAsync(rows, ctx.RequestAborted);
-            return Results.Json(new { items, nextCursor = (rows.Count > 0 ? rows[^1].FeedVersion : cursor).ToString(System.Globalization.CultureInfo.InvariantCulture), hasMore = more }, OrderJson.Opts);
+            // removed offers (demo data) live on as tombstones of kind "offer" with their own feed versions: merged into the same order
+            var gone = await db.CatalogTombstones.AsNoTracking().Where(t => t.Kind == TombstoneKinds.Offer && t.Version > cursor).OrderBy(t => t.Version).Take(take + 1).ToListAsync(ctx.RequestAborted);
+            var page = rows.Select(o => (V: o.FeedVersion, O: (Offer?)o, T: (CatalogTombstone?)null)).Concat(gone.Select(t => (V: t.Version, O: (Offer?)null, T: (CatalogTombstone?)t)))
+                .OrderBy(x => x.V).Take(take + 1).ToList();
+            var more = page.Count > take;
+            if (more) page.RemoveAt(take);
+            var docs = await svc.FeedDocsAsync(page.Where(x => x.O is not null).Select(x => x.O!).ToList(), ctx.RequestAborted);
+            var byId = new Queue<object>(docs);
+            var items = page.Select(x => x.T is { } t ? OfferService.Tombstone(t) : byId.Dequeue()).ToList();
+            return Results.Json(new { items, nextCursor = (page.Count > 0 ? page[^1].V : cursor).ToString(System.Globalization.CultureInfo.InvariantCulture), hasMore = more }, OrderJson.Opts);
         });
 
         g.MapGet("/{offerId:guid}", async (Guid offerId, HttpContext ctx, InboundVerifier verifier, AppDbContext db, OfferService svc) =>
@@ -210,7 +216,11 @@ public static class OfferEndpoints
             var v = await verifier.VerifyAsync(ctx.Request, ctx.RequestAborted);
             if (!v.Ok) return InternalEndpoints.Err(v.Status, v.Code, v.Message);
             var o = await db.Offers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == offerId && x.EverListed);
-            if (o is null) return InternalEndpoints.Err(404, "not_found", "Unknown offer.");
+            if (o is null)
+            {
+                var t = await db.CatalogTombstones.AsNoTracking().FirstOrDefaultAsync(x => x.ListingId == offerId && x.Kind == TombstoneKinds.Offer);
+                return t is null ? InternalEndpoints.Err(404, "not_found", "Unknown offer.") : Results.Json(OfferService.Tombstone(t), OrderJson.Opts);
+            }
             return Results.Json((await svc.FeedDocsAsync([o], ctx.RequestAborted))[0], OrderJson.Opts);
         });
     }

@@ -242,5 +242,9 @@ public class CatalogTombstone
     public long Version { get; set; }
     public string Reason { get; set; } = "deleted";
     public DateTime CreatedAt { get; set; }
+    /// <summary><c>listing</c> (a deleted listing: <see cref="ListingId"/> is the product id) or <c>offer</c> (a removed quantity offer, C18: <see cref="ListingId"/> is the offer id). Each feed reads only its own kind.</summary>
+    public string Kind { get; set; } = TombstoneKinds.Listing;
 }
+
+public static class TombstoneKinds { public const string Listing = "listing", Offer = "offer"; }
 

@@ -236,7 +236,7 @@ public class OfferIntakeTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         // a version that never existed / was not active
         await Check("version_not_active", Join([Line(s, s.CardA, 10, offer: offer)], Gifts(s, offer)), [Ref(offer, 7)]);
         // the order ignores an offer that is active (and was for the whole grace window: it was created before the window started)
-        f.Time.Advance(TimeSpan.FromMinutes(20));
+        await Advance(s, 20);
         await Check("offer_missing", [Line(s, s.CardA, 20)], null);
         // a line names an offer that is not declared, or an unknown offer
         await Check("unknown_offer", Join([Line(s, s.CardA, 10, offer: Guid.NewGuid())], Gifts(s, offer)), [Ref(offer, 1)]);
@@ -321,14 +321,14 @@ public class OfferGraceTests(OfferGraceFactory f) : IClassFixture<OfferGraceFact
     {
         var s = await Shop(f);
         var offer = await Standard(s);
-        f.Time.Advance(TimeSpan.FromMinutes(30));
+        await Advance(s, 30);
         var v2 = await Update(s, offer, Write(s, tiers: [Tier(20, 85)], version: 1));
         Assert.Equal(2, (int)v2["version"]!);
-        f.Time.Advance(TimeSpan.FromMinutes(5));
+        await Advance(s, 5);
         // a cart priced with version 1 just before the edit still goes through, and the order keeps version 1
         var (old, _) = await Accepted(f, Order(f, Join([Line(s, s.CardA, 20, discount: 200, offer: offer)], Gifts(s, offer)), [Ref(offer, 1)]));
         var (cur, _) = await Accepted(f, Order(f, Join([Line(s, s.CardA, 20, discount: 300, offer: offer)], Gifts(s, offer)), [Ref(offer, 2)]));
-        f.Time.Advance(TimeSpan.FromMinutes(11));                                                     // 16 minutes after the edit
+        await Advance(s, 11);                                                     // 16 minutes after the edit
         var mid = Orders.Mid();
         var n = await Mismatch(f, Order(f, Join([Line(s, s.CardA, 20, discount: 200, offer: offer)], Gifts(s, offer)), [Ref(offer, 1)], mid), "version_not_active", mid);
         Assert.Contains(n["errors"]!.AsArray(), e => (string)e!["kind"]! == "version_not_active" && e["expected"]!["offerVersions"]!.AsArray().Select(x => (int)x!).SequenceEqual(new[] { 2 }));
@@ -346,17 +346,17 @@ public class OfferGraceTests(OfferGraceFactory f) : IClassFixture<OfferGraceFact
     {
         var s = await Shop(f);
         var offer = await Standard(s);
-        f.Time.Advance(TimeSpan.FromMinutes(5));
+        await Advance(s, 5);
         // the cart was priced before the offer existed: accepted without it
         await Accepted(f, Order(f, [Line(s, s.CardA, 20)], null));
-        f.Time.Advance(TimeSpan.FromMinutes(11));
+        await Advance(s, 11);
         var mid = Orders.Mid();
         await Mismatch(f, Order(f, [Line(s, s.CardA, 20)], null, mid), "offer_missing", mid);
         await Orders.Ok(s.Owner.Post($"{OffersUrl}/{offer}/end", new { version = 1 }));
-        f.Time.Advance(TimeSpan.FromMinutes(1));
+        await Advance(s, 1);
         await Accepted(f, Order(f, [Line(s, s.CardA, 20)], null));                                    // ended: no longer required
         await Accepted(f, Order(f, Join([Line(s, s.CardA, 20, discount: 200, offer: offer)], Gifts(s, offer)), [Ref(offer, 1)]));   // ... but still honoured within the grace
-        f.Time.Advance(TimeSpan.FromMinutes(15));
+        await Advance(s, 15);
         var mid2 = Orders.Mid();
         await Mismatch(f, Order(f, Join([Line(s, s.CardA, 20, discount: 200, offer: offer)], Gifts(s, offer)), [Ref(offer, 1)], mid2), "version_not_active", mid2);
     }
@@ -546,5 +546,6 @@ public class OfferDemoTests(DemoFactory f) : IClassFixture<DemoFactory>
         var gone = await Cat.GetOk(f, $"{Feed}/{id}");
         Assert.False((bool)gone["listed"]!); Assert.Equal("deleted", (string)gone["reason"]!);
         Assert.Equal(0, f.WithDb(db => db.OfferVersions.Count(v => v.OfferId == Guid.Parse(id))));
+        Assert.Equal(0, f.WithDb(db => db.Offers.Count(o => o.Id == Guid.Parse(id))));                      // removed for good: only the feed tombstone remains
     }
 }

@@ -203,7 +203,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
     private async Task<Offer?> ConflictAsync(Guid sellerId, Guid brandId, Guid? self, OfferDraft d)
     {
         if (d.Status != OfferStatus.Active) return null;
-        var others = await db.Offers.AsNoTracking().Where(o => o.SellerId == sellerId && o.BrandId == brandId && o.Status == OfferStatus.Active && o.DeletedAt == null && o.Id != self).ToListAsync();
+        var others = await db.Offers.AsNoTracking().Where(o => o.SellerId == sellerId && o.BrandId == brandId && o.Status == OfferStatus.Active && o.Id != self).ToListAsync();
         if (others.Count == 0) return null;
         var oids = others.Select(o => o.Id).ToList();
         var cur = await db.OfferVersions.AsNoTracking().Where(v => oids.Contains(v.OfferId) && v.SupersededAt == null).ToListAsync();
@@ -277,26 +277,22 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
         return new(200, "ok", "", offer);
     }
 
-    /// <summary>Removes demo offers (inside the demo remover's transaction): the offer is ended with reason <c>deleted</c> (feed entry + event), its versions are deleted, the stub stays for the feed.</summary>
-    public async Task RemoveForDemoAsync(Guid sellerId, IReadOnlyCollection<Guid> offerIds, Guid actor)
+    /// <summary>
+    /// Removes demo offers for good (inside the demo remover's transaction): offer and versions are deleted; an offer that was ever in the feed leaves a
+    /// <c>catalog_tombstones</c> row of kind <c>offer</c> with a new feed version, so the feed reports it as removed (<c>reason: deleted</c>), like a deleted listing. No event (demo data).
+    /// </summary>
+    public async Task RemoveForDemoAsync(Guid sellerId, IReadOnlyCollection<Guid> offerIds)
     {
         if (offerIds.Count == 0) return;
         var now = time.UtcNow();
-        var offers = await db.Offers.Where(o => o.SellerId == sellerId && offerIds.Contains(o.Id) && o.DeletedAt == null).ToListAsync();
-        foreach (var offer in offers)
-        {
-            var expected = offer.CurrentVersion;
-            if (offer.Status != OfferStatus.Ended)
-            {
-                await db.OfferVersions.Where(v => v.OfferId == offer.Id && v.Version == expected).ExecuteUpdateAsync(s => s.SetProperty(v => v.SupersededAt, (DateTime?)now));
-                offer.CurrentVersion = expected + 1;
-            }
-            offer.Status = OfferStatus.Ended; offer.EndedAt ??= now; offer.EndedReason = "deleted"; offer.DeletedAt = now; offer.UpdatedAt = now;
-            await FeedAsync(offer, OfferStatus.Ended, offer.CurrentVersion, "deleted");
-        }
+        var offers = await db.Offers.AsNoTracking().Where(o => o.SellerId == sellerId && offerIds.Contains(o.Id)).ToListAsync();
+        foreach (var offer in offers.Where(o => o.EverListed))
+            db.CatalogTombstones.Add(new CatalogTombstone { ListingId = offer.Id, SellerId = offer.SellerId, Kind = TombstoneKinds.Offer, Reason = "deleted", CreatedAt = now,
+                Version = await Solvelt.Api.Catalog.CatalogTracking.AllocateAsync(db, 1, CancellationToken.None) });
         await db.SaveChangesAsync();
         var ids = offers.Select(o => o.Id).ToList();
         await db.OfferVersions.Where(v => ids.Contains(v.OfferId)).ExecuteDeleteAsync();
+        await db.Offers.Where(o => ids.Contains(o.Id)).ExecuteDeleteAsync();
     }
 
     private async Task EndInTxAsync(Offer offer, int expected, DateTime now, Guid userId, string reason)
@@ -329,7 +325,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
     }
 
     private async Task<bool> ClaimAsync(Guid id, Guid sellerId, int expected) =>
-        await db.Offers.Where(o => o.Id == id && o.SellerId == sellerId && o.CurrentVersion == expected && o.DeletedAt == null)
+        await db.Offers.Where(o => o.Id == id && o.SellerId == sellerId && o.CurrentVersion == expected)
             .ExecuteUpdateAsync(s => s.SetProperty(o => o.CurrentVersion, expected + 1)) == 1;
 
     private static OfferVersion NewVersion(Guid offerId, int version, OfferDraft d, DateTime now, Guid userId) => new()
@@ -355,6 +351,10 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
         _ when v?.ActiveTo is { } t && t <= now => "expired",
         _ => "active"
     };
+
+    /// <summary>The feed entry of a removed offer (demo data): no content, like a deleted listing's tombstone.</summary>
+    public static object Tombstone(CatalogTombstone t) =>
+        new { offerId = t.ListingId, version = (int?)null, feedVersion = t.Version, listed = false, status = "ended", reason = t.Reason, sellerId = t.SellerId, brandId = (Guid?)null };
 
     /// <summary>The catalog-feed document of an offer (docs/CATALOG.md section 11): the full document while its current version is active, else an ended entry.</summary>
     public async Task<List<object>> FeedDocsAsync(IReadOnlyList<Offer> offers, CancellationToken ct = default)

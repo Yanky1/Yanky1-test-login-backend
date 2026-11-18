@@ -73,8 +73,8 @@ public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit,
         await db.Bookings.Where(b => b.SellerId == sellerId && bookingIds.Contains(b.Id)).ExecuteDeleteAsync();   // events cascade
         await db.QuoteRequests.Where(q => q.SellerId == sellerId && quoteIds.Contains(q.Id)).ExecuteDeleteAsync();
 
-        // quantity offers (C18): ended with reason "deleted" (a feed entry, like the listings' tombstones; demo offers send no events), versions deleted
-        await offers.RemoveForDemoAsync(sellerId, Ids("offer"), actor);
+        // quantity offers (C18): deleted with their versions; the feed gets an offer tombstone (reason "deleted"), like deleted listings; demo offers send no events
+        await offers.RemoveForDemoAsync(sellerId, Ids("offer"));
         db.ChangeTracker.Clear();
 
         // catalogue: removed through the change tracker so the catalog feed gets its tombstones (CatalogTracking)

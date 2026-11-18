@@ -27,10 +27,8 @@ public class Offer
     public Guid CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
     public DateTime? EndedAt { get; set; }
-    /// <summary>ended (the seller ended it) | deleted (removed with the demo data).</summary>
+    /// <summary>ended (the seller ended it). A removed offer (demo data) is deleted and leaves a <c>catalog_tombstones</c> row of kind <c>offer</c> for the feed.</summary>
     public string? EndedReason { get; set; }
-    /// <summary>Set when the offer was removed (demo data): hidden from the seller API, kept as an ended entry of the feed.</summary>
-    public DateTime? DeletedAt { get; set; }
 }
 
 /// <summary>One immutable version of an offer. Never edited after it is written, except <see cref="SupersededAt"/>, set once when the next version replaces it.</summary>

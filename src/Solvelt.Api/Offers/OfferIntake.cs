@@ -57,7 +57,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         if (groups.Count == 0 && declaredIds.Count == 0 && giftLines.Count == 0) return plan;
 
         // every offer that could matter: the declared ones (any seller: a foreign one is reported) and those of the sellers in the order
-        var offers = await db.Offers.AsNoTracking().Where(o => o.DeletedAt == null && (declaredIds.Contains(o.Id) || sellerIds.Contains(o.SellerId))).ToListAsync(ct);
+        var offers = await db.Offers.AsNoTracking().Where(o => declaredIds.Contains(o.Id) || sellerIds.Contains(o.SellerId)).ToListAsync(ct);
         offers = offers.Where(o => declaredIds.Contains(o.Id) || groups.Contains((o.SellerId, o.BrandId))).ToList();
         var oids = offers.Select(o => o.Id).ToList();
         var versions = oids.Count == 0 ? new List<OfferVersionView>() : (await db.OfferVersions.AsNoTracking().Where(v => oids.Contains(v.OfferId) && v.CreatedAt <= t).ToListAsync(ct))

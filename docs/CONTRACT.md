@@ -62,7 +62,7 @@ GET /api/internal/v1/catalog/offers?since=0&limit=2
 * `productIds` = the **visible** listings inside the scope when the document was built. For `category` and `all` scopes a listing that becomes visible (or changes category) later does not create a new offer version: apply rule C18.1-1 to the listing document (`brand.brandId`, `category.path`) or re-read the offer.
 * `activeFrom` / `activeTo` are sent raw; `activeNow` is evaluated when the document is built (like a listing's sale window): evaluate the dates yourself if you cache the document. Their passing does not create a feed entry.
 * `gifts[].available` is a snapshot (active, and stock minus reservations covers `quantity`, or backorders allowed); the gift's own listing availability in the listing feed is authoritative.
-* `reason` on `listed: false` entries: `ended` (the seller ended it), `paused` (set back to draft; it can come back as a new version), `deleted` (demo data removed).
+* `reason` on `listed: false` entries: `ended` (the seller ended it), `paused` (set back to draft; it can come back as a new version), `deleted` (demo data removed: the offer is gone for good; this tombstone carries `version: null` and `brandId: null`, like a deleted listing's tombstone).
 * `demo: true` marks the test tool's demo offer (filter it like demo listings).
 * Unknown or never-active id: `404 not_found`. Unsigned/forged: the usual `401` codes.
 

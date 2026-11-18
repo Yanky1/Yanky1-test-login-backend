@@ -66,7 +66,7 @@ public static class CatalogEndpoints
             var rows = await db.Products.AsNoTracking().Where(p => p.CatalogVersion > cursor && (p.CatalogListed || p.CatalogEverListed))
                 .OrderBy(p => p.CatalogVersion).Take(take + 1).ToListAsync(ctx.RequestAborted);
             // deleted listings live on as tombstones with their own versions: merge them into the same version order
-            var gone = await db.CatalogTombstones.AsNoTracking().Where(t => t.Version > cursor).OrderBy(t => t.Version).Take(take + 1).ToListAsync(ctx.RequestAborted);
+            var gone = await db.CatalogTombstones.AsNoTracking().Where(t => t.Version > cursor && t.Kind == TombstoneKinds.Listing).OrderBy(t => t.Version).Take(take + 1).ToListAsync(ctx.RequestAborted);
             var page = rows.Select(r => new FeedEntry(r.CatalogVersion, r, null)).Concat(gone.Select(t => new FeedEntry(t.Version, null, t))).OrderBy(x => x.Version).Take(take + 1).ToList();
             var more = page.Count > take;
             if (more) page.RemoveAt(take);

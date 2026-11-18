@@ -112,6 +112,16 @@ public static class OfferKit
         return n;
     }
 
+    /// <summary>Moves the fake clock in steps of at most 5 minutes with a seller request in between, so the seller session (20 min idle timeout) stays alive.</summary>
+    public static async Task Advance(CardShop s, int minutes)
+    {
+        for (var left = minutes; left > 0; left -= 5)
+        {
+            s.F.Time.Advance(TimeSpan.FromMinutes(Math.Min(5, left)));
+            Assert.Equal(HttpStatusCode.OK, (await s.Owner.Get(OffersUrl)).StatusCode);
+        }
+    }
+
     public static (int Stock, int Reserved) Stock(ApiFactory f, Guid product) =>
         f.WithDb(db => { var p = db.Products.AsNoTracking().First(x => x.Id == product); return (p.Stock, p.Reserved); });
 
