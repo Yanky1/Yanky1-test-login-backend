@@ -11,22 +11,26 @@ namespace Solvelt.Api.Orders;
 
 public record IngestBuyer(string? DisplayName, string? RelayEmail, string? Phone);
 public record IngestAddress(string? Name, string? Line1, string? Line2, string? City, string? Region, string? PostalCode, string? Country, double? Lat = null, double? Lng = null);
+/// <remarks>C18 (quantity offers, docs/CONTRACT.md): <c>offerId</c> names the offer that priced the line (its tier discount is <c>discountCents</c>); a free gift line has <c>isGift: true</c>,
+/// price 0 and <c>giftOfOfferId</c>.</remarks>
 public record IngestLine(string? MarketplaceLineId, Guid SellerId, Guid BrandId, Guid? ProductId, Guid? VariantId, string? Sku, int Quantity,
-    long UnitPriceCents, long DiscountCents, long TaxCents);
+    long UnitPriceCents, long DiscountCents, long TaxCents, Guid? OfferId = null, bool IsGift = false, Guid? GiftOfOfferId = null);
 public record IngestShipping(Guid SellerId, Guid BrandId, long AmountCents, string? Speed = null, string? Method = null, long? TaxCents = null);
 /// <summary>Additive: the buyer chose local delivery from this seller (and brand) for this date and window (see docs/LOCAL-DELIVERY.md).</summary>
 public record IngestDelivery(Guid SellerId, Guid BrandId, string? Method, Guid? WindowId, DateOnly? Date);
 public record IngestOrder(string? MarketplaceOrderId, DateTime? PlacedAt, string? Currency, IngestBuyer? Buyer, IngestAddress? ShippingAddress,
-    string? ShippingMethod, string? ShippingSpeed, string? GiftMessage, List<IngestLine>? Lines, List<IngestShipping>? Shipping, List<IngestDelivery>? Deliveries = null);
+    string? ShippingMethod, string? ShippingSpeed, string? GiftMessage, List<IngestLine>? Lines, List<IngestShipping>? Shipping, List<IngestDelivery>? Deliveries = null,
+    List<Solvelt.Api.Offers.IngestOfferRef>? Offers = null);
 
 public record LineError(int Index, string Code, string Message);
-public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineError> Errors)
+public record IngestResult(bool Created, List<SellerOrder> Orders, List<LineError> Errors, Solvelt.Api.Offers.OfferMismatch? Mismatch = null)
 {
     public bool Ok => Errors.Count == 0;
 }
 
 /// <summary>Creates seller orders from a marketplace order: validation, splitting per (account, brand), stock reservation, SLA dates, fees, number.</summary>
-public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier, InflightHolds inflight, Solvelt.Api.Delivery.DeliveryService delivery)
+public class OrderIngestService(AppDbContext db, IInventoryService inventory, TimeProvider time, IOptions<OrderOptions> opt, OrderNotifier notifier, InflightHolds inflight, Solvelt.Api.Delivery.DeliveryService delivery,
+    Solvelt.Api.Offers.OfferIntake offerIntake)
 {
     private static readonly Dictionary<string, int> Transit = new() { ["standard"] = 5, ["expedited"] = 2, ["overnight"] = 1 };
     /// <summary>Upper bound for any single money field (10,000,000.00): keeps every sum far inside <c>long</c> (100 lines x 10,000 units).</summary>
@@ -70,6 +74,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
         if (!Speeds.Contains(speed)) Err(-1, "shippingSpeed", "shippingSpeed must be standard, expedited or overnight.");
         if (req.GiftMessage is { Length: > 500 }) Err(-1, "giftMessage", "giftMessage is too long.");
         if (req.Lines is null or { Count: 0 } or { Count: > 100 }) Err(-1, "lines", "Between 1 and 100 lines are required.");
+        if (req.Offers is { Count: > 20 }) Err(-1, "offers", "At most 20 offers are accepted.");
         if (errors.Count > 0) return new(false, [], errors);
 
         var mid = req.MarketplaceOrderId!.Trim();
@@ -104,6 +109,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
 
         // resolve + validate lines
         var resolved = new List<(IngestLine L, Product P, ProductVariant? V, int Index)>();
+        var giftInactive = new HashSet<int>();   // C18: a gift product that is no longer active is "unavailable", it never rejects the order
         var sellers = new Dictionary<Guid, SellerStatus?>();
         for (var i = 0; i < req.Lines!.Count; i++)
         {
@@ -130,7 +136,11 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                 .FirstOrDefaultAsync(x => x.Id == pid && x.SellerId == l.SellerId && x.BrandId == l.BrandId, ct);
             if (prod is null) { Err(i, "product", "The product does not belong to that seller account and brand."); continue; }
             if (prod.Type == ListingType.Service) { Err(i, "not_a_product", "Services are booked, not ordered."); continue; }
-            if (prod.Status != ProductStatus.Active) { Err(i, "product_inactive", "The product is not active."); continue; }
+            if (prod.Status != ProductStatus.Active)
+            {
+                if (!Solvelt.Api.Offers.OfferIntake.IsGiftLine(l)) { Err(i, "product_inactive", "The product is not active."); continue; }
+                giftInactive.Add(i);
+            }
             ProductVariant? variant = null;
             if (prod.HasVariants)
             {
@@ -142,6 +152,11 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
             resolved.Add((l, prod, variant, i));
         }
         if (errors.Count > 0) return new(false, [], errors);
+
+        // C18: recompute every offer the order names (or should name) from the exact version; any difference rejects the whole order with the expected figures
+        var plan = await offerIntake.CheckAsync(placed, resolved.Select(r => new Solvelt.Api.Offers.IntakeLine(r.Index, r.L, r.P)).ToList(), req.Offers ?? [], ct);
+        if (plan.Mismatch is { } mismatch)
+            return new(false, [], [new LineError(-1, "offer_mismatch", "The offer pricing does not match the offer versions.")], mismatch);
 
         // reserve stock (single atomic UPDATE per line; a shortage never fails the order, it flags it)
         var reservedLog = new List<(Guid SellerId, Guid ProductId, Guid? VariantId, int Qty)>();
@@ -168,14 +183,18 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                 var handling = g.Max(r => r.P.HandlingDays ?? sellerHandling ?? o.DefaultHandlingDays);
                 order.ShipByAt = placed.AddDays(handling);
                 order.DeliverByAt = order.ShipByAt.AddDays(Transit[gSpeed]);
-                foreach (var (l, prod, variant, _) in g)
+                foreach (var (l, prod, variant, idx) in g)
                 {
+                    var isGift = plan.Gifts.TryGetValue(idx, out var giftOf);
                     var line = new OrderLine
                     {
                         OrderId = order.Id, MarketplaceLineId = l.MarketplaceLineId?.Trim(), ProductId = prod.Id, VariantId = variant?.Id,
                         Title = prod.Title, Sku = variant?.Sku ?? prod.Sku, OptionsText = OptionsText(prod, variant),
-                        UnitPriceCents = l.UnitPriceCents, Quantity = l.Quantity, DiscountCents = l.DiscountCents, TaxCents = l.TaxCents
+                        UnitPriceCents = l.UnitPriceCents, Quantity = l.Quantity, DiscountCents = l.DiscountCents, TaxCents = l.TaxCents,
+                        IsGift = isGift, GiftOfOfferId = isGift ? giftOf.OfferId : null, OfferVersion = isGift ? giftOf.Version : null
                     };
+                    if (plan.Lines.TryGetValue(idx, out var pricedBy)) { line.OfferId = pricedBy.OfferId; line.OfferVersion = pricedBy.Version; }
+                    if (isGift && giftInactive.Contains(idx)) { order.GiftUnavailable = true; continue; }   // the gift product was deactivated: the order goes through without it
                     var img = prod.Images.Where(x => variant != null && x.VariantId == variant.Id).OrderBy(x => x.SortOrder).FirstOrDefault()
                               ?? prod.Images.Where(x => x.VariantId == null).OrderByDescending(x => x.IsMain).ThenBy(x => x.SortOrder).FirstOrDefault();
                     if (img is not null) { line.ImageKey = img.StorageKey; line.ImageContentType = img.ContentType; }
@@ -183,14 +202,17 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     var r = await inventory.ReserveAsync(prod.SellerId, prod.Id, variant?.Id, l.Quantity, CancellationToken.None);
                     if (!r.Ok) holds.Add(prod.Id, variant?.Id, -l.Quantity);
                     if (r.Ok) { line.ReservedQty = l.Quantity; reservedLog.Add((prod.SellerId, prod.Id, variant?.Id, l.Quantity)); }
+                    else if (isGift) { order.GiftUnavailable = true; continue; }   // C18: a gift out of stock never fails or oversells the order: it is left out and flagged
                     else order.Oversold = true;
                     order.Lines.Add(line);
                 }
+                if (plan.GiftUnavailable.Contains(g.Key)) order.GiftUnavailable = true;   // the marketplace already knew the gift was out of stock
                 if (ad is { Lat: { } alat, Lng: { } alng } && Solvelt.Api.Delivery.Geo.ValidLatLng(alat, alng)) { order.ShipLat = alat; order.ShipLng = alng; }
                 OrderSupport.Recalculate(order, await Solvelt.Api.Admin.PlatformSettings.FeeAsync(db, o.FeeBasisPoints));
                 order.Number = await OrderSupport.NextNumberAsync(db, now);
                 db.AddEvent(order.Id, "order.placed", Party.Buyer, null, "Order placed", now);
                 if (order.Oversold) db.AddEvent(order.Id, "order.oversold", Party.System, null, "Not enough stock for every item: needs attention", now);
+                if (order.GiftUnavailable) db.AddEvent(order.Id, "order.gift_unavailable", Party.System, null, "Free gift unavailable: the order was placed without it", now);
                 db.Orders.Add(order);
                 orders.Add(order);
                 if (req.Deliveries?.FirstOrDefault(x => x.SellerId == g.Key.SellerId && x.BrandId == g.Key.BrandId) is { } dl)

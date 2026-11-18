@@ -42,7 +42,7 @@ public static class InternalEndpoints
         catch (JsonException) { return (null, Err(400, "invalid_json", "The request body is not valid JSON of the expected shape.")); }
     }
 
-    private static object OrderDto(SellerOrder o) => new { sellerOrderId = o.Id, number = o.Number, sellerId = o.SellerId, brandId = o.BrandId, status = o.Status.ToString(), oversold = o.Oversold, totalCents = o.TotalCents, feeCents = o.FeeCents, netCents = o.NetCents };
+    private static object OrderDto(SellerOrder o) => new { sellerOrderId = o.Id, number = o.Number, sellerId = o.SellerId, brandId = o.BrandId, status = o.Status.ToString(), oversold = o.Oversold, giftUnavailable = o.GiftUnavailable, totalCents = o.TotalCents, feeCents = o.FeeCents, netCents = o.NetCents };
 
     public static void MapInternalEndpoints(this WebApplication app)
     {
@@ -53,6 +53,8 @@ public static class InternalEndpoints
             var (req, err) = await Signed<IngestOrder>(ctx, verifier);
             if (err is not null) return err;
             var r = await svc.CreateAsync(req!, ctx.RequestAborted);
+            if (r.Mismatch is { } m)   // C18: the body carries every problem and the figures the portal expected (docs/CONTRACT.md)
+                return Results.Json(new { type = "about:blank", title = "The offer pricing does not match; nothing was created.", status = 422, code = "offer_mismatch", errors = m.Errors, expected = new { offers = m.Expected } }, OrderJson.Opts, statusCode: 422);
             if (!r.Ok) return Err(422, "invalid_order", "The order was rejected; nothing was created.", r.Errors);
             return Results.Json(new { created = r.Created, orders = r.Orders.Select(OrderDto) }, OrderJson.Opts, statusCode: r.Created ? 201 : 200);
         });

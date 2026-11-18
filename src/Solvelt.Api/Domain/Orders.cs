@@ -69,6 +69,8 @@ public class SellerOrder
 
     // flags
     public bool Oversold { get; set; }
+    /// <summary>C18: a free gift the buyer earned could not be included (out of stock at the marketplace or at intake); the order went through without it.</summary>
+    public bool GiftUnavailable { get; set; }
     public bool CancelRequested { get; set; }
     /// <summary>Set by a tracking exception (failure / return to sender); cleared when tracking recovers or the seller dismisses it.</summary>
     public bool NeedsAttention { get; set; }
@@ -117,6 +119,13 @@ public class OrderLine
     public int ReturnedQty { get; set; }
     /// <summary>Units currently held in stock for this line (0 when the order was oversold or the hold was released/consumed).</summary>
     public int ReservedQty { get; set; }
+    // ---- quantity offers (C18) ----
+    /// <summary>The offer that priced this line (its tier discount is in <see cref="DiscountCents"/>) and the exact version it was priced with; null when no offer applied.</summary>
+    public Guid? OfferId { get; set; }
+    public int? OfferVersion { get; set; }
+    /// <summary>A free gift of an offer: unit price 0, refunds 0, shipped and packed like any line, counts against the gift product's stock.</summary>
+    public bool IsGift { get; set; }
+    public Guid? GiftOfOfferId { get; set; }
 }
 
 public class Shipment

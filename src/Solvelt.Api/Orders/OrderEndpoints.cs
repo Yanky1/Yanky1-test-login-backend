@@ -381,7 +381,9 @@ public static class OrderEndpoints
             giftMessage = o.GiftMessage, isGift = !string.IsNullOrEmpty(o.GiftMessage), showPrices = string.IsNullOrEmpty(o.GiftMessage), currency = o.Currency,
             shippingSpeed = o.ShippingSpeed, deliverByAt = o.DeliverByAt,
             shipping = string.IsNullOrEmpty(o.GiftMessage) ? new { shippingCents = o.ShippingCents, shippingTaxCents = o.ShippingTaxCents } : null,   // priced like the lines: hidden on a gift
-            lines = o.Lines.Select(l => new { title = l.Title, sku = l.Sku, options = l.OptionsText, quantity = l.Quantity, unshipped = OrderSupport.Unshipped(l), unitPriceCents = l.UnitPriceCents })
+            giftUnavailable = o.GiftUnavailable,
+            lines = o.Lines.Select(l => new { title = l.Title, sku = l.Sku, options = l.OptionsText, quantity = l.Quantity, unshipped = OrderSupport.Unshipped(l), unitPriceCents = l.UnitPriceCents,
+                discountCents = l.DiscountCents, isGift = l.IsGift })
         }).ToList();
     }
 

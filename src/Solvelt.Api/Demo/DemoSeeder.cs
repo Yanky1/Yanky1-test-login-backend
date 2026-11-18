@@ -21,7 +21,7 @@ public record DemoCounts(int Products, int Services, int Orders, int Bookings, i
 /// </summary>
 public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IFileStorage storage, OrderIngestService ingest, OrderActions actions, BuyerEventService buyer,
     MessageService messages, PaymentIngestService payments, ReleaseService release, TransferService transfers, BookingService bookings, QuoteService quotes, CalendarService cal,
-    IPaymentProvider provider, CategoryService categories, IAuditLog audit, Solvelt.Api.Reviews.ReviewEngine reviewEngine)
+    IPaymentProvider provider, CategoryService categories, IAuditLog audit, Solvelt.Api.Reviews.ReviewEngine reviewEngine, Solvelt.Api.Offers.OfferService offerService)
 {
     private static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
 
@@ -60,6 +60,7 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             await BookingsAsync();
             await MessagesAsync(orders);
             await ReviewsAsync();
+            await OfferAsync();
             await PaymentsAsync(orders);
             batch = await db.DemoBatches.FirstAsync(b => b.Id == batchId);
             batch.Completed = true;
@@ -486,6 +487,26 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             }
             db.ChangeTracker.Clear();
         }
+    }
+
+    // ---- quantity offer (C18) --------------------------------------------------------------------------------------------------------
+    /// <summary>
+    /// One active quantity offer on two demo products (candles and prints, mixing designs): from 3 items $22.00 each, from 6 items $20.00 each, and the tote free from 4 items.
+    /// Created after the demo orders (their placed-at times predate the offer, so they are priced without it) through the same service as the seller API; scope "products" never
+    /// collides with an offer the account already has. Like other demo data it sends no outbox event; it is in the offers feed (flagged demo: true), so a buyer site can be tested.
+    /// </summary>
+    private async Task OfferAsync()
+    {
+        db.ChangeTracker.Clear();
+        var candle = products.First(p => p.Sku!.StartsWith("DEMO-CANDLE", StringComparison.Ordinal));
+        var prints = products.First(p => p.Sku!.StartsWith("DEMO-PRINT", StringComparison.Ordinal));
+        var tote = products.First(p => p.Sku!.StartsWith("DEMO-TOTE", StringComparison.Ordinal));
+        var draft = new Solvelt.Api.Offers.OfferDraft("Demo: candles and prints, buy more and save", Solvelt.Api.Offers.OfferStatus.Active, Solvelt.Api.Offers.OfferScope.Products,
+            [candle.Id, prints.Id], [new(3, 2200), new(6, 2000)], [new(4, tote.Id, 1)], null, null);
+        var r = await offerService.CreateAsync(a, brand.Id, draft);
+        if (r.Status >= 400) throw new InvalidOperationException("Demo offer failed: " + r.Code + " " + r.Message);
+        Reg("offer", r.Offer!.Id);
+        await db.SaveChangesAsync();
     }
 
     // ---- payments ------------------------------------------------------------------------------------------------------------------

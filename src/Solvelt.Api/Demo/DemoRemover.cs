@@ -10,7 +10,7 @@ namespace Solvelt.Api.Demo;
 /// touched: every delete is keyed by the ids the fill registered. The ledger is append-only for the application; the demo journals are the one deliberate exception (set-based
 /// delete, see docs/DECISIONS.md), because demo money never existed and leaving it would put fake balances on a real account.
 /// </summary>
-public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit)
+public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit, Solvelt.Api.Offers.OfferService offers)
 {
     public async Task<DemoCounts> CountsAsync(Guid sellerId)
     {
@@ -72,6 +72,10 @@ public class DemoRemover(AppDbContext db, IFileStorage storage, IAuditLog audit)
         await db.BookingMessages.Where(m => bookingIds.Contains(m.BookingId)).ExecuteDeleteAsync();
         await db.Bookings.Where(b => b.SellerId == sellerId && bookingIds.Contains(b.Id)).ExecuteDeleteAsync();   // events cascade
         await db.QuoteRequests.Where(q => q.SellerId == sellerId && quoteIds.Contains(q.Id)).ExecuteDeleteAsync();
+
+        // quantity offers (C18): ended with reason "deleted" (a feed entry, like the listings' tombstones; demo offers send no events), versions deleted
+        await offers.RemoveForDemoAsync(sellerId, Ids("offer"), actor);
+        db.ChangeTracker.Clear();
 
         // catalogue: removed through the change tracker so the catalog feed gets its tombstones (CatalogTracking)
         await db.Questions.Where(q => q.SellerId == sellerId && productIds.Contains(q.ProductId)).ExecuteDeleteAsync();

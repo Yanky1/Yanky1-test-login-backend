@@ -91,7 +91,7 @@ public static class OrderViews
         return new
         {
             id = o.Id, number = o.Number, marketplaceOrderId = o.MarketplaceOrderId, brandId = o.BrandId, brandName = brand, placedAt = o.PlacedAt, status = o.Status.ToString(),
-            heldFrom = o.HeldFrom?.ToString(), currency = o.Currency, version = o.Version, late = IsLate(o, now), oversold = o.Oversold, cancelRequested = o.CancelRequested,
+            heldFrom = o.HeldFrom?.ToString(), currency = o.Currency, version = o.Version, late = IsLate(o, now), oversold = o.Oversold, cancelRequested = o.CancelRequested, giftUnavailable = o.GiftUnavailable,
             returnOpen = ReturnOpen(o.Status), redacted = o.PiiRedactedAt != null, shipByAt = o.ShipByAt, deliverByAt = o.DeliverByAt, shippingMethod = o.ShippingMethod,
             shippingSpeed = o.ShippingSpeed, giftMessage = o.GiftMessage, cancelReason = o.CancelReason, cancelledBy = o.CancelledBy?.ToString(), shippedLate = o.ShippedLate,
             buyer = new { name = o.BuyerName, relayEmail = o.BuyerRelayEmail, phone = o.BuyerPhone },
@@ -106,7 +106,8 @@ public static class OrderViews
                 id = l.Id, productId = l.ProductId, variantId = l.VariantId, title = l.Title, sku = l.Sku, options = l.OptionsText, hasImage = l.ImageKey != null,
                 unitPriceCents = l.UnitPriceCents, quantity = l.Quantity, discountCents = l.DiscountCents, taxCents = l.TaxCents, lineTotalCents = OrderSupport.LineNet(l),
                 shippedQty = l.ShippedQty, cancelledQty = l.CancelledQty, refundedQty = l.RefundedQty, returnedQty = l.ReturnedQty, unshippedQty = OrderSupport.Unshipped(l),
-                reservedQty = l.ReservedQty, stockShort = o.Oversold && l.ReservedQty == 0 && l.ShippedQty == 0 && l.CancelledQty == 0
+                reservedQty = l.ReservedQty, stockShort = o.Oversold && !l.IsGift && l.ReservedQty == 0 && l.ShippedQty == 0 && l.CancelledQty == 0,
+                isGift = l.IsGift, giftOfOfferId = l.GiftOfOfferId, offerId = l.OfferId, offerVersion = l.OfferVersion
             }),
             shipments = o.Shipments.OrderBy(s => s.ShippedAt).Select(s => new
             {

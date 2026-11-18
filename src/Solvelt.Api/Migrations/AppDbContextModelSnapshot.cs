@@ -2742,6 +2742,9 @@ namespace Solvelt.Api.Migrations
                     b.Property<long>("DiscountCents")
                         .HasColumnType("bigint");
 
+                    b.Property<Guid?>("GiftOfOfferId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ImageContentType")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
@@ -2750,9 +2753,18 @@ namespace Solvelt.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<bool>("IsGift")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("MarketplaceLineId")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("OfferId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("OfferVersion")
+                        .HasColumnType("integer");
 
                     b.Property<string>("OptionsText")
                         .HasMaxLength(300)
@@ -4705,6 +4717,9 @@ namespace Solvelt.Api.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<bool>("GiftUnavailable")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("HeldFrom")
                         .HasMaxLength(24)
                         .HasColumnType("character varying(24)");
@@ -5762,6 +5777,127 @@ namespace Solvelt.Api.Migrations
                     b.ToTable("working_hours", (string)null);
                 });
 
+            modelBuilder.Entity("Solvelt.Api.Offers.Offer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BrandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("CurrentVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("EndedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EndedReason")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<bool>("EverListed")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("FeedVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("SellerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FeedVersion");
+
+                    b.HasIndex("SellerId", "BrandId", "Status");
+
+                    b.ToTable("offers", (string)null);
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Offers.OfferVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ActiveFrom")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ActiveTo")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("GiftsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("OfferId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<string>("ScopeIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<DateTime?>("SupersededAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TiersJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OfferId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("offer_versions", (string)null);
+                });
+
             modelBuilder.Entity("Solvelt.Api.Reviews.Review", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6371,6 +6507,15 @@ namespace Solvelt.Api.Migrations
                     b.HasOne("Solvelt.Api.Domain.AccountMembership", null)
                         .WithMany()
                         .HasForeignKey("MembershipId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Solvelt.Api.Offers.OfferVersion", b =>
+                {
+                    b.HasOne("Solvelt.Api.Offers.Offer", null)
+                        .WithMany()
+                        .HasForeignKey("OfferId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

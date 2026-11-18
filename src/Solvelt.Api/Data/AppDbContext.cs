@@ -52,6 +52,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
     public DbSet<ProductQuestion> Questions => Set<ProductQuestion>();
     public DbSet<Solvelt.Api.Reviews.Review> Reviews => Set<Solvelt.Api.Reviews.Review>();
     public DbSet<Solvelt.Api.Reviews.ReviewReply> ReviewReplies => Set<Solvelt.Api.Reviews.ReviewReply>();
+    public DbSet<Solvelt.Api.Offers.Offer> Offers => Set<Solvelt.Api.Offers.Offer>();
+    public DbSet<Solvelt.Api.Offers.OfferVersion> OfferVersions => Set<Solvelt.Api.Offers.OfferVersion>();
     public DbSet<SkuClaim> SkuClaims => Set<SkuClaim>();
     public DbSet<CatalogCounter> CatalogCounters => Set<CatalogCounter>();
     public DbSet<CatalogRefreshRequest> CatalogRefreshRequests => Set<CatalogRefreshRequest>();
@@ -229,6 +231,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider? 
         b.ConfigureShipping();
         b.ConfigureDemo();
         b.ConfigureReviews();
+        Solvelt.Api.Offers.OfferModelConfig.ConfigureOffers(b);
     }
 
     public static void Seed(AppDbContext db)
