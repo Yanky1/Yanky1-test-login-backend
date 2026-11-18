@@ -217,3 +217,21 @@ details, so they bump the version immediately like any other listing edit. A rep
 ## 10. Demo listings (`demo`)
 
 Every listing document (feed item and `GET /listings/{id}`) has `demo: boolean`. It is `true` for the products and services created by the seller portal's test tool ("Fill with demo data", only available when the portal runs with `Demo:Enabled`, never in Production). Demo listings meet the same publish rules as real ones (a category, a photo, a price or quote model), so they are listed like any other, so a buyer site can be tested end to end; filter on `demo` to hide them. Demo orders, bookings and messages never produce marketplace events. Removing the demo data deletes the listings and the feed shows tombstones (`reason: "deleted"`).
+
+## 11. Quantity offers (C18)
+
+Seller quantity offers (price tiers by minimum quantity, free gifts from a minimum quantity) have their own signed feed next to the listings, with the same cursor rules (versions from the same counter, commit order, `nextCursor`/`hasMore`, limit 1..200):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /catalog/offers?since=<cursor>&limit=<1..200>` | offers that are (or were) active, in `feedVersion` order; ended/paused ones as `listed: false` entries |
+| `GET /catalog/offers/{offerId}` | one offer document (`404 not_found` for an offer never active) |
+
+```json
+{ "offerId": "6f1c...", "version": 2, "feedVersion": 1902, "listed": true, "status": "active", "sellerId": "5d2a...", "brandId": "a71e...", "name": "Blitz cards bundle", "currency": "USD",
+  "scope": { "kind": "products", "categoryIds": [], "productIds": ["0a5d...", "1b6e..."] }, "productIds": ["0a5d...", "1b6e..."],
+  "tiers": [ { "minQuantity": 20, "unitPriceCents": 90 } ],
+  "gifts": [ { "minQuantity": 10, "productId": "c3f0...", "quantity": 1, "title": "Card wallet", "available": true } ],
+  "activeFrom": null, "activeTo": null, "activeNow": true, "demo": false, "updatedAt": "2026-11-18T21:30:00Z" }
+```
+Events `offer.updated` / `offer.ended` (sequence scope `offer:{offerId}`), the eligibility and pricing rules, the order fields and the `422 offer_mismatch` body: `docs/CONTRACT.md` (C18). Listing documents and their versions are unchanged by offers: to match a listing to a `category`/`all` offer use the listing's `brand.brandId` and `category.path` (a category scope includes descendants).
