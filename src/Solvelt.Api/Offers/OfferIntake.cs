@@ -62,7 +62,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         var oids = offers.Select(o => o.Id).ToList();
         var versions = oids.Count == 0 ? new List<OfferVersionView>() : (await db.OfferVersions.AsNoTracking().Where(v => oids.Contains(v.OfferId) && v.CreatedAt <= t).ToListAsync(ct))
             .Select(OfferVersionView.Of).ToList();
-        bool Acceptable(OfferVersionView v) => v.ActiveInterval is { } iv && iv.From <= t && iv.To > tg;
+        bool Acceptable(OfferVersionView v) => v.ActiveInterval is { } iv && iv.From <= t && iv.To > (Mut.On("M3") ? t : tg);
         var tree = await CategoryTree.LoadAsync(db, ct);
 
         // 1. the declared offers and their versions
@@ -84,7 +84,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         }
 
         // 2. offers that applied during the whole grace window but were not named: their current version is expected (offer_missing on the lines it covers)
-        foreach (var o in offers.Where(x => !inEffect.ContainsKey(x.Id) && !declaredIds.Contains(x.Id)))
+        foreach (var o in offers.Where(x => !Mut.On("M16") && !inEffect.ContainsKey(x.Id) && !declaredIds.Contains(x.Id)))
         {
             var mine = versions.Where(x => x.Row.OfferId == o.Id && x.ActiveInterval is not null).OrderBy(x => x.ActiveInterval!.Value.From).ToList();
             var cur = tg;
@@ -108,7 +108,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         foreach (var x in regular)
         {
             var best = inEffect.Values.Where(e => OfferService.Eligible(e.Offer, e.V, x.P, tree))
-                .OrderBy(e => OfferPricing.Rank(e.V.Row.Scope)).ThenBy(e => e.Offer.CreatedAt).ThenBy(e => e.Offer.Id).FirstOrDefault();
+                .OrderBy(e => Mut.On("M20") ? -OfferPricing.Rank(e.V.Row.Scope) : OfferPricing.Rank(e.V.Row.Scope)).ThenBy(e => e.Offer.CreatedAt).ThenBy(e => e.Offer.Id).FirstOrDefault();
             if (best is not null) assigned[x.Index] = best;
             var said = x.L.OfferId;
             if (said == best?.Offer.Id) continue;
@@ -119,7 +119,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         }
 
         // 4. tiers: units are counted across all lines an offer prices, mixing products; the step reached applies to every one of them
-        var units = inEffect.Keys.ToDictionary(k => k, k => regular.Where(x => assigned.TryGetValue(x.Index, out var e) && e.Offer.Id == k).Sum(x => x.L.Quantity));
+        var units = inEffect.Keys.ToDictionary(k => k, k => regular.Where(x => Mut.On("M4") ? x.L.OfferId == k : assigned.TryGetValue(x.Index, out var e) && e.Offer.Id == k).Sum(x => x.L.Quantity));
         var expected = new List<object>();
         foreach (var e in inEffect.Values)
         {
@@ -154,7 +154,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
                 if (!declaredIds.Contains(of.Value)) Err(x.Index, "unknown_offer", of, "The gift line names an offer that is not in offers[].");
                 continue;   // a declared offer with a bad version was reported above
             }
-            if (x.L.UnitPriceCents != 0 || x.L.DiscountCents != 0 || x.L.TaxCents != 0)
+            if (!Mut.On("M15") && (x.L.UnitPriceCents != 0 || x.L.DiscountCents != 0 || x.L.TaxCents != 0))
                 Err(x.Index, "gift_price", of, "A gift line is free: unitPriceCents, discountCents and taxCents must be 0.", new { unitPriceCents = 0, discountCents = 0, taxCents = 0 },
                     new { unitPriceCents = x.L.UnitPriceCents, discountCents = x.L.DiscountCents, taxCents = x.L.TaxCents });
             if (x.L.VariantId is not null) { Err(x.Index, "gift_not_earned", of, "Gift products have no variations."); continue; }
@@ -175,7 +175,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
                     Err(index, "gift_missing", offerId, $"The buyer earned {g.Quantity} of this gift; send them all or set giftUnavailable.", new { productId, quantity = g.Quantity }, new { productId, quantity = qty });
             }
             if (e.GiftUnavailable) { if (earned.Count > 0) plan.GiftUnavailable.Add((e.Offer.SellerId, e.Offer.BrandId)); continue; }
-            foreach (var g in earned.Where(z => !sent.ContainsKey((e.Offer.Id, z.ProductId))))
+            foreach (var g in earned.Where(z => !Mut.On("M13") && !sent.ContainsKey((e.Offer.Id, z.ProductId))))
                 Err(-1, "gift_missing", e.Offer.Id, $"The buyer earned a free gift ({g.Quantity} x product {g.ProductId}); add it as a $0 gift line or set giftUnavailable.",
                     new { productId = g.ProductId, quantity = g.Quantity }, new { productId = g.ProductId, quantity = 0 });
         }

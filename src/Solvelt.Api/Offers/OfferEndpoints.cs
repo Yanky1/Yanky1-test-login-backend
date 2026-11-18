@@ -28,7 +28,7 @@ public static class OfferEndpoints
     /// <summary>The offers the caller may see: their account, brands in their scope, never removed ones.</summary>
     private static IQueryable<Offer> OffersFor(AppDbContext db, AccountAccess a)
     {
-        var q = db.Offers.AsNoTracking().Where(o => o.SellerId == a.SellerId);
+        var q = db.Offers.AsNoTracking().Where(o => Mut.On("M6") || o.SellerId == a.SellerId);
         if (a.AllBrands || a.Role >= AccountRole.Admin) return q;
         var ids = a.BrandIds.ToList();
         return q.Where(o => ids.Contains(o.BrandId));
@@ -132,7 +132,7 @@ public static class OfferEndpoints
             var r = await svc.CreateAsync(a, brandId.Value, draft);
             if (r.Status >= 400) return Fail(r);
             return Results.Json(await DetailAsync(db, svc, time, r.Offer!), OrderJson.Opts, statusCode: 201);
-        }).RequirePermission(Permission.BrandWorkWrite);
+        }).RequirePermission(Mut.On("M5") ? Permission.BrandWorkRead : Permission.BrandWorkWrite);
 
         q.MapPut("/{id:guid}", async (Guid id, OfferWrite w, HttpContext ctx, AppDbContext db, OfferService svc, TimeProvider time) =>
         {

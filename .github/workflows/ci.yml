@@ -1,20 +1,22 @@
 name: CI
+# THROWAWAY (branch mutation/quantity-offers-c18-guards, never merged): proves each C18 guard test fails when its guarded line is reverted (SOLVELT_MUT=Mn, src/Solvelt.Api/Mut.cs).
 on:
-  push: { branches: [main] }
-  pull_request:
+  push: { branches: ['mutation/**'] }
 jobs:
-  build-test:
+  mutations:
     runs-on: ubuntu-latest
-    timeout-minutes: 75   # a hung test must turn the job red, not hold it for the 6 h default
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: 10.0.x }
       - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - run: dotnet build tests/Solvelt.Api.Evals -c Release   # opt-in real-API evals: compile only, never run in CI
-      - run: dotnet build tests/Solvelt.Api.StripeTests -c Release   # opt-in Stripe test-mode tests: compile only, never run in CI
-      - run: dotnet build tests/Solvelt.Api.ShippoTests -c Release   # opt-in Shippo test-mode tests: compile only, never run in CI
-      - run: dotnet build tests/Solvelt.Api.PostgresTests -c Release   # opt-in PostgreSQL migration tests (SOLVELT_PG_ADMIN): compile only, never run in CI
-      - run: dotnet test --no-build -c Release --logger "trx;LogFileName=results.trx"
-      - run: dotnet list package --vulnerable --include-transitive 2>&1 | tee vuln.txt; ! grep -q "has the following vulnerable packages" vuln.txt
+      - run: dotnet build --no-restore -c Release tests/Solvelt.Api.Tests
+      - name: baseline and one run per mutation
+        run: |
+          set +e
+          F="FullyQualifiedName~Solvelt.Api.Tests.Offer"
+          run() { SOLVELT_MUT=$1 dotnet test tests/Solvelt.Api.Tests --no-build -c Release --filter "$F" --logger "console;verbosity=normal" > "$1.txt" 2>&1; local code=$?; echo "== MUT $1 exit=$code $(grep -E '^\s*(Passed|Failed)!|Total tests' "$1.txt" | tail -1 | tr -s ' ')"; grep -oE '^\s+Failed [A-Za-z0-9_.]+' "$1.txt" | sed 's/^ *Failed /   FAILED /' | sort -u; }
+          run NONE
+          for m in M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18 M19 M20 M21 M22; do run $m; done
+          exit 0

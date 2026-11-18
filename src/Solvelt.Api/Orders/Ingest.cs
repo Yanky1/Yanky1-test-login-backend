@@ -193,7 +193,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                         UnitPriceCents = l.UnitPriceCents, Quantity = l.Quantity, DiscountCents = l.DiscountCents, TaxCents = l.TaxCents,
                         IsGift = isGift, GiftOfOfferId = isGift ? giftOf.OfferId : null, OfferVersion = isGift ? giftOf.Version : null
                     };
-                    if (plan.Lines.TryGetValue(idx, out var pricedBy)) { line.OfferId = pricedBy.OfferId; line.OfferVersion = pricedBy.Version; }
+                    if (plan.Lines.TryGetValue(idx, out var pricedBy)) { line.OfferId = pricedBy.OfferId; if (!Mut.On("M12")) line.OfferVersion = pricedBy.Version; }
                     if (isGift && giftInactive.Contains(idx)) { order.GiftUnavailable = true; continue; }   // the gift product was deactivated: the order goes through without it
                     var img = prod.Images.Where(x => variant != null && x.VariantId == variant.Id).OrderBy(x => x.SortOrder).FirstOrDefault()
                               ?? prod.Images.Where(x => x.VariantId == null).OrderByDescending(x => x.IsMain).ThenBy(x => x.SortOrder).FirstOrDefault();
@@ -202,7 +202,7 @@ public class OrderIngestService(AppDbContext db, IInventoryService inventory, Ti
                     var r = await inventory.ReserveAsync(prod.SellerId, prod.Id, variant?.Id, l.Quantity, CancellationToken.None);
                     if (!r.Ok) holds.Add(prod.Id, variant?.Id, -l.Quantity);
                     if (r.Ok) { line.ReservedQty = l.Quantity; reservedLog.Add((prod.SellerId, prod.Id, variant?.Id, l.Quantity)); }
-                    else if (isGift) { order.GiftUnavailable = true; continue; }   // C18: a gift out of stock never fails or oversells the order: it is left out and flagged
+                    else if (isGift && !Mut.On("M2")) { order.GiftUnavailable = true; continue; }   // C18: a gift out of stock never fails or oversells the order: it is left out and flagged
                     else order.Oversold = true;
                     order.Lines.Add(line);
                 }

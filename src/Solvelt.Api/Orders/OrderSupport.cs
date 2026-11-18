@@ -45,7 +45,7 @@ public static class OrderSupport
         o.DiscountCents = o.Lines.Sum(l => l.DiscountCents);
         o.TaxCents = o.Lines.Sum(l => l.TaxCents);
         o.TotalCents = o.ItemsCents - o.DiscountCents + o.ShippingCents + o.TaxCents + o.ShippingTaxCents;   // shipping tax is in what the buyer paid, but not in the fee base or the net below
-        o.FeeCents = Fee(o.ItemsCents - o.DiscountCents, feeBasisPoints);
+        o.FeeCents = Fee(Mut.On("M17") ? o.ItemsCents : o.ItemsCents - o.DiscountCents, feeBasisPoints);
         o.NetCents = o.ItemsCents - o.DiscountCents + o.ShippingCents - o.FeeCents;
     }
 

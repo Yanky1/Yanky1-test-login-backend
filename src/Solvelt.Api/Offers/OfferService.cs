@@ -34,7 +34,7 @@ public static class OfferPricing
 
     /// <summary>A tier never raises a price: the unit price is min(the line's price, the tier price); the discount is the difference times the quantity.</summary>
     public static long LineDiscount(long unitPriceCents, int quantity, OfferTier? tier) =>
-        tier is null ? 0 : Math.Max(0, unitPriceCents - tier.UnitPriceCents) * quantity;
+        tier is null ? 0 : (Mut.On("M1") ? (unitPriceCents - tier.UnitPriceCents) : Math.Max(0, unitPriceCents - tier.UnitPriceCents)) * quantity;
 
     /// <summary>The gifts earned by <paramref name="units"/> eligible units (once per order, never stacked).</summary>
     public static List<OfferGift> GiftsFor(IReadOnlyList<OfferGift> gifts, int units) => gifts.Where(g => g.MinQuantity <= units).ToList();
@@ -171,14 +171,14 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
         }
 
         var tiers = (w.Tiers ?? []).OrderBy(t => t.MinQuantity).ToList();
-        if (tiers.Count > OfferPricing.MaxTiers) Err("tiers", $"At most {OfferPricing.MaxTiers} price steps.");
+        if (tiers.Count > OfferPricing.MaxTiers + (Mut.On("M18") ? 1 : 0)) Err("tiers", $"At most {OfferPricing.MaxTiers} price steps.");
         for (var i = 0; i < tiers.Count; i++)
         {
             var t = tiers[i];
             if (t.MinQuantity is < 1 or > OfferPricing.MaxMinQuantity) { Err("tiers", $"Minimum quantities must be between 1 and {OfferPricing.MaxMinQuantity}."); break; }
             if (t.UnitPriceCents is <= 0 or > OrderIngestService.MaxCents) { Err("tiers", "Each price must be more than $0.00."); break; }
             if (i > 0 && t.MinQuantity == tiers[i - 1].MinQuantity) { Err("tiers", "Each step needs a different minimum quantity."); break; }
-            if (i > 0 && t.UnitPriceCents >= tiers[i - 1].UnitPriceCents) { Err("tiers", "A step with a higher minimum quantity must have a lower price each."); break; }
+            if (!Mut.On("M8") && i > 0 && t.UnitPriceCents >= tiers[i - 1].UnitPriceCents) { Err("tiers", "A step with a higher minimum quantity must have a lower price each."); break; }
         }
         var gifts = w.Gifts ?? [];
         if (gifts.Count > OfferPricing.MaxGifts) Err("gifts", $"At most {OfferPricing.MaxGifts} gifts.");
@@ -188,7 +188,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
             if (gifts.Any(g => g.Quantity is < 1 or > OfferPricing.MaxGiftQuantity)) Err("gifts", $"A gift quantity must be between 1 and {OfferPricing.MaxGiftQuantity}.");
             if (gifts.Select(g => g.ProductId).Distinct().Count() != gifts.Count) Err("gifts", "Each gift product can be added once.");
             var gids = gifts.Select(g => g.ProductId).Distinct().ToList();
-            var ok = await db.Products.AsNoTracking().CountAsync(p => gids.Contains(p.Id) && p.SellerId == sellerId && p.BrandId == brandId
+            var ok = await db.Products.AsNoTracking().CountAsync(p => gids.Contains(p.Id) && (Mut.On("M9") || (p.SellerId == sellerId && p.BrandId == brandId))
                 && p.Type == ListingType.Product && p.Status == ProductStatus.Active && !p.HasVariants && p.ModeratedAt == null);
             if (ok != gids.Count) Err("gifts", "A gift must be an active physical product of this brand, without variations.");
         }
@@ -222,7 +222,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
     // ---- writes --------------------------------------------------------------------------------------------------------------------
     public async Task<OfferResult> CreateAsync(AccountAccess a, Guid brandId, OfferDraft d)
     {
-        if (await ConflictAsync(a.SellerId, brandId, null, d) is { } c) return Conflict(c);
+        if (!Mut.On("M19") && await ConflictAsync(a.SellerId, brandId, null, d) is { } c) return Conflict(c);
         var now = time.UtcNow();
         var offer = new Offer { SellerId = a.SellerId, BrandId = brandId, Name = d.Name, Status = d.Status, CurrentVersion = 1, CreatedAt = now, CreatedBy = a.UserId, UpdatedAt = now };
         await using (var tx = await db.Database.BeginTransactionAsync())
@@ -255,7 +255,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
             await db.SaveChangesAsync();
             await tx.CommitAsync();
         }
-        await audit.WriteAsync("offer.updated", a.UserId, null, $"seller={a.SellerId};offer={offer.Id};version={next};status={OfferPricing.StatusName(d.Status)}");
+        if (!Mut.On("M7")) await audit.WriteAsync("offer.updated", a.UserId, null, $"seller={a.SellerId};offer={offer.Id};version={next};status={OfferPricing.StatusName(d.Status)}");
         return new(200, "ok", "", offer);
     }
 
@@ -286,7 +286,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
         if (offerIds.Count == 0) return;
         var now = time.UtcNow();
         var offers = await db.Offers.AsNoTracking().Where(o => o.SellerId == sellerId && offerIds.Contains(o.Id)).ToListAsync();
-        foreach (var offer in offers.Where(o => o.EverListed))
+        foreach (var offer in offers.Where(o => o.EverListed && !Mut.On("M22")))
             db.CatalogTombstones.Add(new CatalogTombstone { ListingId = offer.Id, SellerId = offer.SellerId, Kind = TombstoneKinds.Offer, Reason = "deleted", CreatedAt = now,
                 Version = await Solvelt.Api.Catalog.CatalogTracking.AllocateAsync(db, 1, CancellationToken.None) });
         await db.SaveChangesAsync();
@@ -317,11 +317,11 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
     {
         if (status != OfferStatus.Active && !offer.EverListed) return;
         if (status == OfferStatus.Active) offer.EverListed = true;
-        offer.FeedVersion = await Solvelt.Api.Catalog.CatalogTracking.AllocateAsync(db, 1, CancellationToken.None);   // takes the counter row lock until commit: feed order = commit order
+        if (!Mut.On("M10") || version == 1) offer.FeedVersion = await Solvelt.Api.Catalog.CatalogTracking.AllocateAsync(db, 1, CancellationToken.None);   // takes the counter row lock until commit: feed order = commit order
         if (status == OfferStatus.Active)
-            outbox.Enqueue("offer.updated", offer.SellerId, offer.Id.ToString(), new { offerId = offer.Id, version, feedVersion = offer.FeedVersion, sellerId = offer.SellerId, brandId = offer.BrandId }, scope: Scope(offer.Id));
+            outbox.Enqueue("offer.updated", offer.SellerId, offer.Id.ToString(), new { offerId = offer.Id, version, feedVersion = offer.FeedVersion, sellerId = offer.SellerId, brandId = offer.BrandId }, scope: Mut.On("M11") ? null : Scope(offer.Id));
         else
-            outbox.Enqueue("offer.ended", offer.SellerId, offer.Id.ToString(), new { offerId = offer.Id, version, feedVersion = offer.FeedVersion, sellerId = offer.SellerId, brandId = offer.BrandId, reason }, scope: Scope(offer.Id));
+            outbox.Enqueue("offer.ended", offer.SellerId, offer.Id.ToString(), new { offerId = offer.Id, version, feedVersion = offer.FeedVersion, sellerId = offer.SellerId, brandId = offer.BrandId, reason }, scope: Mut.On("M11") ? null : Scope(offer.Id));
     }
 
     private async Task<bool> ClaimAsync(Guid id, Guid sellerId, int expected) =>
@@ -427,7 +427,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
         foreach (var q in qs)
         {
             var tier = OfferPricing.TierFor(d.Tiers, q);
-            long? each = unit is { } u ? (tier is null ? u : Math.Min(u, tier.UnitPriceCents)) : tier?.UnitPriceCents;
+            long? each = unit is { } u ? (tier is null ? u : Mut.On("M14") ? tier.UnitPriceCents : Math.Min(u, tier.UnitPriceCents)) : tier?.UnitPriceCents;
             long? total = each is { } e ? e * q : null;
             long? discount = unit is { } u2 ? OfferPricing.LineDiscount(u2, q, tier) : null;
             var earned = OfferPricing.GiftsFor(d.Gifts, q);

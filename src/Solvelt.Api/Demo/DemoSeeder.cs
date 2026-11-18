@@ -60,7 +60,7 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             await BookingsAsync();
             await MessagesAsync(orders);
             await ReviewsAsync();
-            await OfferAsync();
+            if (!Mut.On("M21")) await OfferAsync();
             await PaymentsAsync(orders);
             batch = await db.DemoBatches.FirstAsync(b => b.Id == batchId);
             batch.Completed = true;
