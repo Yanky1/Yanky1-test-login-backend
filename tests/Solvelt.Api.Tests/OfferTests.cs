@@ -549,3 +549,85 @@ public class OfferDemoTests(DemoFactory f) : IClassFixture<DemoFactory>
         Assert.Equal(0, f.WithDb(db => db.Offers.Count(o => o.Id == Guid.Parse(id))));                      // removed for good: only the feed tombstone remains
     }
 }
+
+/// <summary>
+/// C18 seller and brand exclusion under the category and all scopes (a products-scope offer hides it behind its id list), and multi-step tiers end to end.
+/// Brands belong to exactly one seller, so "same brand" implies "same seller"; the other-seller tests guard the pair, the other-brand tests guard the brand on its own.
+/// </summary>
+public class OfferScopeTests(OrdersFactory f) : IClassFixture<OrdersFactory>
+{
+    /// <summary>A category (kitchen-dining, where every test product lives) or all-products offer of the shop's default brand: from 20, $0.90 each; wallet + pack free from 10.</summary>
+    private static async Task<Guid> WideOffer(CardShop s, string scope)
+    {
+        Guid[]? cats = scope == "category" ? [await ProdApi.CategoryId(s.Owner, "kitchen-dining")] : null;
+        return Guid.Parse((string)(await Create(s, Write(s, scope: scope, products: [], categories: cats, name: "Wide " + scope)))["id"]!);
+    }
+
+    [Theory]
+    [InlineData("category")]
+    [InlineData("all")]
+    public async Task Another_sellers_product_in_scope_gets_no_discount_and_does_not_count_toward_the_tier_or_the_gift(string scope)
+    {
+        var s = await Shop(f);
+        var other = await Shop(f);                                   // same category, another seller
+        var offer = await WideOffer(s, scope);
+        // 9 of this seller's cards + 11 of the other seller's: 9 eligible units, so no tier and no gift (20 would earn both)
+        var r = await Send(f, Order(f, [Line(s, s.CardA, 9, offer: offer), Line(other, other.CardA, 11, seller: other.Seller, brand: other.Brand)], [Ref(offer, 1)]));
+        Assert.True(r.StatusCode == HttpStatusCode.Created, await r.Content.ReadAsStringAsync());
+        var orders = (await Orders.Node(r))["orders"]!.AsArray();
+        Assert.Equal(900, (long)orders.Single(o => (string)o!["sellerId"]! == s.Seller.ToString())!["totalCents"]!);
+        var theirs = Guid.Parse((string)orders.Single(o => (string)o!["sellerId"]! == other.Seller.ToString())!["sellerOrderId"]!);
+        var line = LineOf(await Orders.Detail(other.Owner, theirs), other.CardA);
+        Assert.Equal(0, (long)line["discountCents"]!); Assert.Null(line["offerId"]);
+        // discounting the other seller's line with this offer is refused
+        var mid = Orders.Mid();
+        var n = await Mismatch(f, Order(f, Join([Line(s, s.CardA, 9, discount: 90, offer: offer), Line(other, other.CardA, 11, discount: 110, offer: offer, seller: other.Seller, brand: other.Brand)], Gifts(s, offer)), [Ref(offer, 1)], mid), "not_eligible", mid);
+        Assert.Contains(n["errors"]!.AsArray(), e => (string)e!["kind"]! == "not_eligible" && (int)e["index"]! == 1);
+        Assert.Equal(9, (int)n["expected"]!["offers"]![0]!["eligibleUnits"]!);
+    }
+
+    [Theory]
+    [InlineData("category")]
+    [InlineData("all")]
+    public async Task The_same_sellers_product_under_another_brand_is_outside_a_brand_scoped_offer(string scope)
+    {
+        var s = await Shop(f);
+        var offer = await WideOffer(s, scope);                       // created while the shop has one brand: the offer is on s.Brand
+        var brand2 = await TeamHelpers.NewBrand(s.Owner, "Second line " + Guid.NewGuid().ToString("N")[..6]);
+        var card2 = await Product(s.Owner, brand2, "Plastic prayer card, other brand", 1.00);
+        // 9 + 11 cards of one seller, but the 11 are another brand: 9 eligible units, no tier, no gift
+        var r = await Send(f, Order(f, [Line(s, s.CardA, 9, offer: offer), Line(s, card2, 11, brand: brand2)], [Ref(offer, 1)]));
+        Assert.True(r.StatusCode == HttpStatusCode.Created, await r.Content.ReadAsStringAsync());
+        var orders = (await Orders.Node(r))["orders"]!.AsArray();
+        Assert.Equal(2, orders.Count);
+        var other = Guid.Parse((string)orders.Single(o => (string)o!["brandId"]! == brand2.ToString())!["sellerOrderId"]!);
+        var line = LineOf(await Orders.Detail(s.Owner, other), card2);
+        Assert.Equal(0, (long)line["discountCents"]!); Assert.Null(line["offerId"]);
+        Assert.All(orders, o => Assert.Equal((string)o!["brandId"]! == brand2.ToString() ? 1100L : 900L, (long)o!["totalCents"]!));
+        // discounting the other brand's line with this offer is refused
+        var mid = Orders.Mid();
+        var n = await Mismatch(f, Order(f, Join([Line(s, s.CardA, 9, discount: 90, offer: offer), Line(s, card2, 11, discount: 110, offer: offer, brand: brand2)], Gifts(s, offer)), [Ref(offer, 1)], mid), "not_eligible", mid);
+        Assert.Contains(n["errors"]!.AsArray(), e => (string)e!["kind"]! == "not_eligible" && (int)e["index"]! == 1);
+    }
+
+    [Fact]
+    public async Task With_several_steps_the_highest_step_reached_prices_every_unit()
+    {
+        var s = await Shop(f);
+        var offer = Guid.Parse((string)(await Create(s, Write(s, tiers: [Tier(10, 95), Tier(20, 90)], gifts: [])))["id"]!);
+        // 25 units: the 20-step ($0.90) applies to all 25, not the 10-step
+        var (big, _) = await Accepted(f, Order(f, [Line(s, s.CardA, 15, discount: 150, offer: offer), Line(s, s.CardB, 10, discount: 100, offer: offer)], [Ref(offer, 1)]));
+        Assert.Equal(2250, (long)(await Orders.Detail(s.Owner, big))["money"]!["totalCents"]!);
+        // 15 units: the 10-step ($0.95)
+        var (small, _) = await Accepted(f, Order(f, [Line(s, s.CardA, 15, discount: 75, offer: offer)], [Ref(offer, 1)]));
+        Assert.Equal(1425, (long)(await Orders.Detail(s.Owner, small))["money"]!["totalCents"]!);
+        // and the wrong step is refused either way, with the step expected
+        var mid = Orders.Mid();
+        var n = await Mismatch(f, Order(f, [Line(s, s.CardA, 15, discount: 150, offer: offer)], [Ref(offer, 1)], mid), "discount", mid);
+        Assert.Equal(10, (int)n["expected"]!["offers"]![0]!["tier"]!["minQuantity"]!); Assert.Equal(95, (long)n["expected"]!["offers"]![0]!["tier"]!["unitPriceCents"]!);
+        var mid2 = Orders.Mid();
+        var n2 = await Mismatch(f, Order(f, [Line(s, s.CardA, 15, discount: 75, offer: offer), Line(s, s.CardB, 10, discount: 50, offer: offer)], [Ref(offer, 1)], mid2), "discount", mid2);
+        Assert.Equal(20, (int)n2["expected"]!["offers"]![0]!["tier"]!["minQuantity"]!);
+        Assert.Equal(new[] { 150L, 100L }, n2["expected"]!["offers"]![0]!["lines"]!.AsArray().Select(l => (long)l!["discountCents"]!));
+    }
+}
