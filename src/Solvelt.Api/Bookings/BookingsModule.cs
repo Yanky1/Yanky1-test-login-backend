@@ -58,7 +58,7 @@ public class BookingMaintenance(AppDbContext db, BookingService svc, Mailer mail
         {
             b.BuyerName = "Redacted"; b.BuyerEmail = null; b.BuyerPhone = null; b.AddressJson = null; b.PostalCode = null; b.IntakeAnswersJson = "[]"; b.PiiRedactedAt = now;
             db.BookingEvents.Add(new BookingEvent { BookingId = b.Id, At = now, Type = "booking.redacted", Actor = "system", Text = "Customer details removed" });
-            foreach (var m in await db.BookingMessages.Where(x => x.BookingId == b.Id).ToListAsync(ct)) m.Text = "[message removed]";
+            foreach (var m in await db.BookingMessages.Where(x => x.BookingId == b.Id).ToListAsync(ct)) if (!Mut.On("M30")) m.Text = "[message removed]";
             // free text that can carry buyer data: reasons, timeline texts, delivered outbound payloads (messages, cancellation reasons)
             b.CancelReason = null; b.DeclineReason = null;
             var bid = b.Id; var bidText = b.Id.ToString();
