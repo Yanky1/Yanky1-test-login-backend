@@ -631,3 +631,63 @@ public class OfferScopeTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         Assert.Equal(new[] { 150L, 100L }, n2["expected"]!["offers"]![0]!["lines"]!.AsArray().Select(l => (long)l!["discountCents"]!));
     }
 }
+
+/// <summary>C18.1-2 ties and the feed's createdAt: the marketplace must be able to pick the same offer for a line as the portal does.</summary>
+public class OfferTieBreakTests(OrdersFactory f) : IClassFixture<OrdersFactory>
+{
+    /// <summary>kitchen-dining (every test product's category) and its parent: two category offers of one brand that both cover the same cards.</summary>
+    private static async Task<(Guid Kitchen, Guid Parent)> Cats(CardShop s)
+    {
+        var all = JsonNode.Parse(await (await s.Owner.Get("/api/v1/categories")).Content.ReadAsStringAsync())!.AsArray();
+        var k = all.First(c => (string)c!["slug"]! == "kitchen-dining")!;
+        return (Guid.Parse((string)k["id"]!), Guid.Parse((string)k["parentId"]!));
+    }
+
+    private static async Task<Guid> CategoryOffer(CardShop s, Guid category, long cents, string name) =>
+        Guid.Parse((string)(await Create(s, Write(s, scope: "category", products: [], categories: [category], gifts: [], tiers: [Tier(5, cents)], name: name)))["id"]!);
+
+    /// <summary>Both offers named in offers[]; the line names the loser: the portal answers not_eligible and expects the winner.</summary>
+    private async Task AssertWinner(CardShop s, Guid win, Guid lose)
+    {
+        var mid = Orders.Mid();
+        var n = await Mismatch(f, Order(f, [Line(s, s.CardA, 5, offer: lose)], [Ref(lose, 1), Ref(win, 1)], mid), "not_eligible", mid);
+        Assert.Contains(n["errors"]!.AsArray(), e => (string)e!["kind"]! == "not_eligible" && (int)e["index"]! == 0 && (string)e["expected"]!["offerId"]! == win.ToString());
+    }
+
+    [Fact]
+    public async Task The_feed_item_carries_the_offers_immutable_createdAt_in_utc()
+    {
+        var s = await Shop(f);
+        var x = await Standard(s);
+        var created = f.WithDb(db => db.Offers.AsNoTracking().Single(o => o.Id == x).CreatedAt);
+        var at = (string)(await Cat.GetOk(f, $"{Feed}/{x}"))["createdAt"]!;
+        Assert.EndsWith("Z", at);
+        Assert.Equal(created.Ticks, DateTime.Parse(at, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal).Ticks);
+        await Advance(s, 2);
+        await Update(s, x, Write(s, tiers: [Tier(20, 88)], version: 1));
+        Assert.Equal(at, (string)(await Cat.GetOk(f, $"{Feed}/{x}"))["createdAt"]!);   // an edit makes a new version, never a new createdAt
+    }
+
+    [Fact]
+    public async Task Equally_specific_offers_tie_to_the_older_offer_then_the_lower_offerId_string()
+    {
+        // the older offer wins, even when its id string is the higher one (so only createdAt can decide)
+        var s = await Shop(f);
+        var (kitchen, parent) = await Cats(s);
+        var x = await CategoryOffer(s, parent, 95, "Home and kitchen");
+        var y = await CategoryOffer(s, kitchen, 90, "Kitchen");
+        var (older, newer) = string.CompareOrdinal(x.ToString("D"), y.ToString("D")) > 0 ? (x, y) : (y, x);
+        f.WithDb(db => { var o = db.Offers.Single(q => q.Id == older); o.CreatedAt = db.Offers.Single(q => q.Id == newer).CreatedAt.AddMinutes(-1); return db.SaveChanges(); });
+        await AssertWinner(s, older, newer);
+
+        // equal createdAt: the lower offerId, compared as its lowercase hyphenated string (ordinal)
+        var t = await Shop(f);
+        var (k2, p2) = await Cats(t);
+        var a = await CategoryOffer(t, p2, 95, "Home and kitchen");
+        var b = await CategoryOffer(t, k2, 90, "Kitchen");
+        f.WithDb(db => { var at = db.Offers.Single(o => o.Id == a).CreatedAt; db.Offers.Single(o => o.Id == b).CreatedAt = at; return db.SaveChanges(); });
+        Assert.Equal((string)(await Cat.GetOk(f, $"{Feed}/{a}"))["createdAt"]!, (string)(await Cat.GetOk(f, $"{Feed}/{b}"))["createdAt"]!);
+        var (win, lose) = string.CompareOrdinal(a.ToString("D"), b.ToString("D")) < 0 ? (a, b) : (b, a);
+        await AssertWinner(t, win, lose);
+    }
+}

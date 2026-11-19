@@ -108,7 +108,7 @@ public class OfferIntake(AppDbContext db, IOptions<OfferOptions> opt)
         foreach (var x in regular)
         {
             var best = inEffect.Values.Where(e => OfferService.Eligible(e.Offer, e.V, x.P, tree))
-                .OrderBy(e => OfferPricing.Rank(e.V.Row.Scope)).ThenBy(e => e.Offer.CreatedAt).ThenBy(e => e.Offer.Id).FirstOrDefault();
+                .OrderBy(e => OfferPricing.Rank(e.V.Row.Scope)).ThenBy(e => e.Offer.CreatedAt).ThenBy(e => e.Offer.Id.ToString("D"), StringComparer.Ordinal).FirstOrDefault();   // C18.1-2 tie-break, reproducible from the feed
             if (best is not null) assigned[x.Index] = best;
             var said = x.L.OfferId;
             if (said == best?.Offer.Id) continue;

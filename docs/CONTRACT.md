@@ -24,7 +24,7 @@ All money is integer cents. Nothing here changes orders that carry no offer.
 ### C18.1 Rules (normative)
 
 1. **Eligibility.** An offer belongs to one seller and **one brand**. A line is eligible when its product is a physical product of that brand inside the offer's scope: `products` (the listed ids), `category` (a listing whose category is one of `scope.categoryIds` or a descendant of one), `all` (every product of the brand). Gift lines never count as eligible units. Lines of other sellers or brands never count.
-2. **One offer per line, no stacking.** When several active offers of the brand could price a line, the most specific scope wins: `products`, then `category`, then `all` (ties: the older offer). A line is priced by at most one offer.
+2. **One offer per line, no stacking.** When several active offers of the brand could price a line, the most specific scope wins: `products`, then `category`, then `all` (ties: the older offer, by the feed's `createdAt`; on equal `createdAt`, the lower `offerId` compared as its lowercase hyphenated 36-character string, ordinal). A line is priced by at most one offer.
 3. **Eligible units** of an offer = the sum of the quantities of the lines it prices.
 4. **Tier:** the step with the highest `minQuantity <= eligible units`; none below the first step.
 5. **A tier never raises a price.** For each line priced by the offer: `discountCents = max(0, unitPriceCents - tier.unitPriceCents) x quantity` (`0` without a tier). `unitPriceCents` is the price you charge for the line before the offer, sale price included; a sale price below the tier stays, the tier does not stack on top of it.
@@ -51,9 +51,9 @@ GET /api/internal/v1/catalog/offers?since=0&limit=2
       "tiers": [ { "minQuantity": 20, "unitPriceCents": 90 }, { "minQuantity": 50, "unitPriceCents": 80 } ],
       "gifts": [ { "minQuantity": 10, "productId": "c3f0...", "quantity": 1, "title": "Card wallet", "available": true },
                  { "minQuantity": 10, "productId": "d401...", "quantity": 1, "title": "Card pack", "available": true } ],
-      "activeFrom": null, "activeTo": null, "activeNow": true, "demo": false, "updatedAt": "2026-11-18T21:30:00Z"
+      "activeFrom": null, "activeTo": null, "activeNow": true, "demo": false, "createdAt": "2026-11-18T21:05:12.4310000Z", "updatedAt": "2026-11-18T21:30:00Z"
     },
-    { "offerId": "93be...", "version": 4, "feedVersion": 1907, "listed": false, "status": "ended", "reason": "ended", "sellerId": "5d2a...", "brandId": "a71e..." }
+    { "offerId": "93be...", "version": 4, "feedVersion": 1907, "listed": false, "status": "ended", "reason": "ended", "sellerId": "5d2a...", "brandId": "a71e...", "createdAt": "2026-11-10T09:00:00Z" }
   ],
   "nextCursor": "1907",
   "hasMore": false
@@ -63,6 +63,7 @@ GET /api/internal/v1/catalog/offers?since=0&limit=2
 * `activeFrom` / `activeTo` are sent raw; `activeNow` is evaluated when the document is built (like a listing's sale window): evaluate the dates yourself if you cache the document. Their passing does not create a feed entry.
 * `gifts[].available` is a snapshot (active, and stock minus reservations covers `quantity`, or backorders allowed); the gift's own listing availability in the listing feed is authoritative.
 * `reason` on `listed: false` entries: `ended` (the seller ended it), `paused` (set back to draft; it can come back as a new version), `deleted` (demo data removed: the offer is gone for good; this tombstone carries `version: null` and `brandId: null`, like a deleted listing's tombstone).
+* `createdAt` (ISO-8601 UTC, full stored precision) is when the offer was first created; it never changes (an edit makes a new `version`). It is the first tie-break of C18.1-2: compare it exactly as sent. Demo tombstones (`reason: deleted`) do not carry it.
 * `demo: true` marks the test tool's demo offer (filter it like demo listings).
 * Unknown or never-active id: `404 not_found`. Unsigned/forged: the usual `401` codes.
 

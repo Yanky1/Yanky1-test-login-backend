@@ -232,6 +232,6 @@ Seller quantity offers (price tiers by minimum quantity, free gifts from a minim
   "scope": { "kind": "products", "categoryIds": [], "productIds": ["0a5d...", "1b6e..."] }, "productIds": ["0a5d...", "1b6e..."],
   "tiers": [ { "minQuantity": 20, "unitPriceCents": 90 } ],
   "gifts": [ { "minQuantity": 10, "productId": "c3f0...", "quantity": 1, "title": "Card wallet", "available": true } ],
-  "activeFrom": null, "activeTo": null, "activeNow": true, "demo": false, "updatedAt": "2026-11-18T21:30:00Z" }
+  "activeFrom": null, "activeTo": null, "activeNow": true, "demo": false, "createdAt": "2026-11-18T21:05:12.4310000Z", "updatedAt": "2026-11-18T21:30:00Z" }
 ```
 Events `offer.updated` / `offer.ended` (sequence scope `offer:{offerId}`), the eligibility and pricing rules, the order fields and the `422 offer_mismatch` body: `docs/CONTRACT.md` (C18). Listing documents and their versions are unchanged by offers: to match a listing to a `category`/`all` offer use the listing's `brand.brandId` and `category.path` (a category scope includes descendants).

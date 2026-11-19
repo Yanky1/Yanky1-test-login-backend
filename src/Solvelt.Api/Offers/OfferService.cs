@@ -370,7 +370,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
             if (o.Status != OfferStatus.Active || !versions.TryGetValue(o.Id, out var row))
             {
                 docs.Add(new { offerId = o.Id, version = o.CurrentVersion, feedVersion = o.FeedVersion, listed = false, status = o.Status == OfferStatus.Ended ? "ended" : "inactive",
-                    reason = o.Status == OfferStatus.Ended ? o.EndedReason ?? "ended" : "paused", sellerId = o.SellerId, brandId = o.BrandId });
+                    reason = o.Status == OfferStatus.Ended ? o.EndedReason ?? "ended" : "paused", sellerId = o.SellerId, brandId = o.BrandId, createdAt = OrderSupport.Utc(o.CreatedAt) });
                 continue;
             }
             var v = OfferVersionView.Of(row);
@@ -392,7 +392,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
                 }),
                 activeFrom = v.Row.ActiveFrom, activeTo = v.Row.ActiveTo,
                 activeNow = (v.Row.ActiveFrom is null || v.Row.ActiveFrom <= now) && (v.Row.ActiveTo is null || now < v.Row.ActiveTo),
-                demo = demo.Contains(o.Id), updatedAt = o.UpdatedAt
+                demo = demo.Contains(o.Id), createdAt = OrderSupport.Utc(o.CreatedAt), updatedAt = o.UpdatedAt
             });
         }
         return docs;
