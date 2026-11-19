@@ -30,7 +30,7 @@ public static class OfferPricing
 
     /// <summary>The highest step reached by <paramref name="units"/> eligible units, or null below the first step.</summary>
     public static OfferTier? TierFor(IReadOnlyList<OfferTier> tiers, int units) =>
-        tiers.Where(t => t.MinQuantity <= units).OrderByDescending(t => t.MinQuantity).FirstOrDefault();
+        Mut.On("M25") ? tiers.Where(t => t.MinQuantity <= units).OrderBy(t => t.MinQuantity).FirstOrDefault() : tiers.Where(t => t.MinQuantity <= units).OrderByDescending(t => t.MinQuantity).FirstOrDefault();
 
     /// <summary>A tier never raises a price: the unit price is min(the line's price, the tier price); the discount is the difference times the quantity.</summary>
     public static long LineDiscount(long unitPriceCents, int quantity, OfferTier? tier) =>
@@ -110,7 +110,7 @@ public class OfferService(AppDbContext db, Outbox outbox, TimeProvider time, IAu
     // ---- eligibility ---------------------------------------------------------------------------------------------------------------
     /// <summary>Whether a product is eligible for a version of an offer: a physical product of the offer's seller and brand, inside the scope.</summary>
     public static bool Eligible(Offer o, OfferVersionView v, Product p, CategoryTree tree) =>
-        p.SellerId == o.SellerId && p.BrandId == o.BrandId && p.Type == ListingType.Product && v.Row.Scope switch
+        (Mut.On("M23") || ((Mut.On("M26") || p.SellerId == o.SellerId) && (Mut.On("M24") || p.BrandId == o.BrandId))) && p.Type == ListingType.Product && v.Row.Scope switch
         {
             OfferScope.Products => v.ScopeIds.Contains(p.Id),
             OfferScope.Category => p.CategoryId is { } c && tree.Expand(v.ScopeIds).Contains(c),
