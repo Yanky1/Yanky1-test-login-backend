@@ -63,12 +63,12 @@ public class BookingMessagingTests : IClassFixture<SvcFactory>
     {
         var b = await Svc.NewBiz(_f);
         var (mid, id, start) = await Svc.Book(b);
-        await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = "M-" + Guid.NewGuid().ToString("N")[..8], text = "My door code is 1234" });
+        await Svc.Post(b, $"/bookings/{mid}/messages", new { messageId = "M-" + Guid.NewGuid().ToString("N")[..8], text = "My door code is redact-me-ZQX" });   // a marker that cannot occur in a timestamp or an id (it was "1234", which a timestamp could contain)
         await Svc.Act(b.Owner, id, "cancel", new { reason = "x" });
         _f.Time.Advance(TimeSpan.FromDays(31));
         Assert.Equal(HttpStatusCode.OK, (await _f.NewClient().PostAsync("/api/dev/bookings/maintenance/run", null)).StatusCode);
         var thread = await ProdApi.Node(await b.Owner.Get($"/api/v1/seller/bookings/{id}/messages"));
-        Assert.DoesNotContain("1234", thread.ToJsonString());
+        Assert.DoesNotContain("redact-me-ZQX", thread.ToJsonString());
         Assert.Equal(HttpStatusCode.Conflict, (await b.Owner.Post($"/api/v1/seller/bookings/{id}/messages", new { text = "late" })).StatusCode);
         _ = start;
     }
