@@ -152,7 +152,7 @@ Marketplace (signed like the orders API, `/api/internal/v1`):
                   { "speed": "overnight", "enabled": true, "method": "weight", "baseCents": 1500, "perKgCents": 300 } ] } ] } ] }
 ```
 
-  Weight-based price = `baseCents + ceil(weightGrams / 1000) * perKgCents`; free when the items subtotal reaches the threshold. No street address leaves the portal.
+  Weight-based price = `baseCents + ceil(weightGrams / 1000) * perKgCents`; free when the items subtotal reaches the threshold, where the items subtotal is items minus offer discounts (C18 `discountCents`), the same base local delivery and the platform fee use. No street address leaves the portal.
 * `POST returns/{marketplaceReturnId}/label-link` - a fresh short-lived link to the return label (the first one expires).
 
 Staff (`/api/v1/admin/shipping`, permission matrix `ShippingView` for all staff, `ShippingRetry` for Support and Super admin): `sellers/{id}/shipments`, `sellers/{id}/labels`, `refunds?state=pending|failed`, `exceptions`,
