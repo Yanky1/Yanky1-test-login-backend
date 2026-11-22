@@ -53,7 +53,7 @@ public class LedgerService(AppDbContext db, TimeProvider time)
 
     /// <summary>Adds a balanced journal (not saved). Returns null when the idempotency key was already posted. Throws when the entries do not sum to zero.</summary>
     public async Task<LedgerJournal?> PostAsync(Guid sellerId, string currency, string type, string key, string memo, IEnumerable<Posting> postings,
-        Guid? orderId = null, Guid? bookingId = null, string? sourceRef = null, Guid? actor = null, string? reason = null)
+        Guid? orderId = null, Guid? bookingId = null, string? sourceRef = null, Guid? actor = null, string? reason = null, string? provider = null)
     {
         var list = postings.Where(p => p.AmountCents != 0).ToList();
         if (list.Count == 0) return null;
@@ -63,7 +63,7 @@ public class LedgerService(AppDbContext db, TimeProvider time)
         var j = new LedgerJournal
         {
             SellerId = sellerId, Currency = currency, Type = type, IdempotencyKey = key, OrderId = orderId, BookingId = bookingId, SourceRef = sourceRef,
-            Memo = memo.Length > 300 ? memo[..300] : memo, ActorUserId = actor, Reason = reason, CreatedAt = now
+            Memo = memo.Length > 300 ? memo[..300] : memo, ActorUserId = actor, Reason = reason, Provider = provider, CreatedAt = now
         };
         foreach (var p in list)
             j.Entries.Add(new LedgerEntry { SellerId = sellerId, Currency = currency, Account = p.Account, AmountCents = p.AmountCents, Kind = p.Kind, OrderId = orderId, BookingId = bookingId, CreatedAt = now });
@@ -97,5 +97,8 @@ public class LedgerService(AppDbContext db, TimeProvider time)
         await db.LedgerEntries.Where(e => e.Account == LedgerAccount.Pending && (orderId != null ? e.OrderId == orderId : e.BookingId == bookingId)).SumAsync(e => (long?)e.AmountCents) ?? 0;
 
     public async Task<long> SumAsync(Guid? orderId, Guid? bookingId, LedgerAccount account, string kind) =>
-        await db.LedgerEntries.Where(e => e.Account == account && e.Kind == kind && (orderId != null ? e.OrderId == orderId : e.BookingId == bookingId)).SumAsync(e => (long?)e.AmountCents) ?? 0;
+        await SumAsync(orderId, bookingId, [account], kind);
+
+    public async Task<long> SumAsync(Guid? orderId, Guid? bookingId, LedgerAccount[] accounts, string kind) =>
+        await db.LedgerEntries.Where(e => accounts.Contains(e.Account) && e.Kind == kind && (orderId != null ? e.OrderId == orderId : e.BookingId == bookingId)).SumAsync(e => (long?)e.AmountCents) ?? 0;
 }

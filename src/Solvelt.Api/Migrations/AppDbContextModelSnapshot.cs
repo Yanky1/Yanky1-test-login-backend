@@ -2297,6 +2297,10 @@ namespace Solvelt.Api.Migrations
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Provider")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
                     b.Property<string>("Reason")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -3106,6 +3110,13 @@ namespace Solvelt.Api.Migrations
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("stripe");
+
                     b.Property<string>("Reason")
                         .HasColumnType("text");
 
@@ -3126,11 +3137,11 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("SellerId");
 
-                    b.HasIndex("ExternalId", "BookingId")
+                    b.HasIndex("Provider", "ExternalId", "BookingId")
                         .IsUnique()
                         .HasFilter("\"BookingId\" IS NOT NULL");
 
-                    b.HasIndex("ExternalId", "OrderId")
+                    b.HasIndex("Provider", "ExternalId", "OrderId")
                         .IsUnique()
                         .HasFilter("\"OrderId\" IS NOT NULL");
 
@@ -3250,6 +3261,13 @@ namespace Solvelt.Api.Migrations
                     b.Property<string>("MarketplaceOrderId")
                         .HasColumnType("text");
 
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("stripe");
+
                     b.Property<string>("Ref")
                         .IsRequired()
                         .HasColumnType("text");
@@ -3260,10 +3278,10 @@ namespace Solvelt.Api.Migrations
 
                     b.HasIndex("MarketplaceOrderId");
 
-                    b.HasIndex("Ref");
-
                     b.HasIndex("EventId", "Ref")
                         .IsUnique();
+
+                    b.HasIndex("Provider", "Ref");
 
                     b.ToTable("payment_references", (string)null);
                 });

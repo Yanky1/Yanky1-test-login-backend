@@ -31,6 +31,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (string.IsNullOrWhiteSpace(ev.EventId) || ev.EventId.Length > 100) return IngestResult.Err(422, "invalid_event", "eventId is required (at most 100 characters).");
         if (ev.Data.ValueKind != JsonValueKind.Object) return IngestResult.Err(422, "invalid_event", "data must be an object.");
         if (await db.ProcessedPaymentEvents.AnyAsync(p => p.Source == "marketplace" && p.EventId == ev.EventId)) return IngestResult.Ok(duplicate: true);
+        // C19: which provider holds the buyer's money. Checked before anything else in data; absent = stripe, so every event sent before C19 is unchanged.
+        var isMoneyEvent = ev.Type is "payment.captured" or "refund.processed" or "dispute.created" or "dispute.updated" or "dispute.closed";
+        if (!TryProvider(ev.Data, out var provider) && isMoneyEvent)
+            return IngestResult.Err(422, "invalid_provider", "provider must be \"stripe\" or \"sola\" (absent means stripe).");
         IngestResult r;
         // refunds and disputes read balances (pending left, existing debits) and write against them: serializable, so a release committing at the same moment can not
         // leave an order's Pending negative; on PostgreSQL the loser gets a serialization failure -> 409 and the sender retries
@@ -42,9 +46,9 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             if (hooks.InHandler is { } ih) await ih(ev.Type ?? "");
             r = ev.Type switch
             {
-                "payment.captured" => await CapturedAsync(ev),
-                "refund.processed" => await RefundAsync(ev),
-                "dispute.created" or "dispute.updated" or "dispute.closed" => await DisputeAsync(ev),
+                "payment.captured" => await CapturedAsync(ev, provider),
+                "refund.processed" => await RefundAsync(ev, provider),
+                "dispute.created" or "dispute.updated" or "dispute.closed" => await DisputeAsync(ev, provider),
                 _ => IngestResult.Err(422, "unknown_type", "Unknown event type.")
             };
             if (r.Status != 200) { db.ChangeTracker.Clear(); return r; }
@@ -92,6 +96,33 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     // ---- payment.captured ------------------------------------------------------------------------------------------------------
     public record CapturedData(string? Kind, string? MarketplaceOrderId, string? SellerOrderNumber, string? MarketplaceBookingId, string? PaymentRef, string? Currency, long? AmountCents, DateTime? CapturedAt);
 
+    /// <summary>C19 provider of a money event: absent / null = stripe; a string is trimmed and lower-cased and must be stripe or sola. False = 422 invalid_provider.</summary>
+    public static bool TryProvider(JsonElement data, out string provider)
+    {
+        provider = PaymentProviders.Stripe;
+        if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty("provider", out var p) || p.ValueKind == JsonValueKind.Null) return true;
+        if (p.ValueKind != JsonValueKind.String) return false;
+        var v = (p.GetString() ?? "").Trim().ToLowerInvariant();
+        if (v is not (PaymentProviders.Stripe or PaymentProviders.Sola)) return false;
+        provider = v;
+        return true;
+    }
+
+    private static IngestResult ProviderMismatch(string sale) =>
+        IngestResult.Err(422, "provider_mismatch", $"This seller order's payment was recorded with provider \"{sale}\": send its refunds and disputes with that provider.");
+    private static IngestResult ProviderNotSupported() =>
+        IngestResult.Err(422, "provider_not_supported", "Sola is used for phone orders only: bookings and booking fees are not paid through Sola.");
+
+    /// <summary>The provider of the recorded sale of a seller order / booking (null = no sale yet). Journals written before C19 carry no provider: Stripe.</summary>
+    private async Task<string?> SaleProviderAsync(Guid? orderId, Guid? bookingId)
+    {
+        var key = "sale:" + (orderId ?? bookingId);
+        var local = db.ChangeTracker.Entries<LedgerJournal>().FirstOrDefault(e => e.Entity.IdempotencyKey == key && e.State == EntityState.Added)?.Entity;
+        if (local is not null) return local.Provider ?? PaymentProviders.Stripe;
+        var j = await db.LedgerJournals.AsNoTracking().Where(x => x.IdempotencyKey == key).Select(x => new { x.Provider }).FirstOrDefaultAsync();
+        return j is null ? null : j.Provider ?? PaymentProviders.Stripe;
+    }
+
     private static bool ValidCurrency(string? c) => c is { Length: 3 } && c.All(char.IsAsciiLetterUpper);
 
     /// <summary>An event's currency: absent stays absent (null); otherwise trimmed and upper-cased ("eur" is EUR, so it is compared with the sale's currency like any other).
@@ -103,14 +134,19 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     }
     private static IngestResult BadCurrency() => IngestResult.Err(422, "invalid_currency", "currency must be a 3-letter ISO 4217 code (for example USD).");
 
-    private async Task<IngestResult> CapturedAsync(MarketplacePaymentEvent ev)
+    private async Task<IngestResult> CapturedAsync(MarketplacePaymentEvent ev, string provider)
     {
         var d = ev.Data.Deserialize<CapturedData>(J)!;
         if (!NormalizeCurrency(d.Currency, out var capCur)) return BadCurrency();
         d = d with { Currency = capCur };
         var kind = d.Kind ?? "order";
         if (!CaptureKinds.Contains(kind)) return IngestResult.Err(422, "invalid_kind", "kind must be one of " + string.Join(", ", CaptureKinds) + ".");
-        if (string.IsNullOrWhiteSpace(d.PaymentRef) || d.PaymentRef.Length > 120) return IngestResult.Err(422, "invalid_payment_ref", "paymentRef (Stripe charge or payment intent id) is required.");
+        var sola = provider == PaymentProviders.Sola;
+        if (sola && kind != "order") return ProviderNotSupported();
+        // Stripe keeps its pre-C19 limit (120) so no event that worked before is refused; a Sola xRefNum is at most 100 characters (C19.1-2)
+        if (string.IsNullOrWhiteSpace(d.PaymentRef) || d.PaymentRef.Length > (sola ? 100 : 120))
+            return IngestResult.Err(422, "invalid_payment_ref", sola ? "paymentRef (the Sola xRefNum) is required, at most 100 characters." : "paymentRef (Stripe charge or payment intent id) is required.");
+        var counter = PaymentProviders.Counter(provider);
         var now = time.UtcNow();
         var results = new List<object>();
         if (kind == "order")
@@ -119,16 +155,20 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             var orders = await FindOrders(d.MarketplaceOrderId, d.SellerOrderNumber);
             if (orders.Count == 0) return IngestResult.Err(404, "order_not_found", "No such order (yet). Retry after the order was ingested.");
             if (ValidCurrency(d.Currency) && orders.Any(o => o.Currency != d.Currency)) return IngestResult.Err(422, "currency_mismatch", "The currency does not match the order.");
+            // one provider per sale (C19.1-5): a capture of an order already recorded with the other provider is refused, nothing is stored
+            foreach (var o in orders)
+                if (await SaleProviderAsync(o.Id, null) is { } had && had != provider) return ProviderMismatch(had);
             foreach (var o in orders)
             {
                 var items = o.ItemsCents - o.DiscountCents;
-                var j = await ledger.PostAsync(o.SellerId, o.Currency, "sale", $"sale:{o.Id}", $"Sale {o.Number}", [
-                    new(LedgerAccount.Platform, -(items + o.ShippingCents), "sale"),
+                // the seller-side entries are identical for every provider (C19.1-9); only the counter account that holds the buyer money differs
+                var j = await ledger.PostAsync(o.SellerId, o.Currency, "sale", $"sale:{o.Id}", sola ? $"Sale {o.Number} (phone order, Sola)" : $"Sale {o.Number}", [
+                    new(counter, -(items + o.ShippingCents), "sale"),
                     new(LedgerAccount.Pending, items, "items"), new(LedgerAccount.Pending, o.ShippingCents, "shipping"),
-                    new(LedgerAccount.Pending, -o.FeeCents, "fee"), new(LedgerAccount.Fees, o.FeeCents, "fee")], orderId: o.Id, sourceRef: d.PaymentRef);
+                    new(LedgerAccount.Pending, -o.FeeCents, "fee"), new(LedgerAccount.Fees, o.FeeCents, "fee")], orderId: o.Id, sourceRef: d.PaymentRef, provider: provider);
                 results.Add(new { sellerOrderId = o.Id, number = o.Number, recorded = j is not null });
             }
-            AddRef(ev, d, "order", now);
+            AddRef(ev, d, "order", now, provider);
         }
         else
         {
@@ -142,7 +182,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
                 var fee = LedgerService.RoundHalfUp(b.TotalCents * bps, 10_000);
                 var j = await ledger.PostAsync(b.SellerId, d.Currency!, "sale", $"sale:{b.Id}", $"Booking {b.Number}", [
                     new(LedgerAccount.Platform, -b.TotalCents, "sale"), new(LedgerAccount.Pending, b.TotalCents, "items"),
-                    new(LedgerAccount.Pending, -fee, "fee"), new(LedgerAccount.Fees, fee, "fee")], bookingId: b.Id, sourceRef: d.PaymentRef);
+                    new(LedgerAccount.Pending, -fee, "fee"), new(LedgerAccount.Fees, fee, "fee")], bookingId: b.Id, sourceRef: d.PaymentRef, provider: provider);
                 results.Add(new { bookingId = b.Id, number = b.Number, recorded = j is not null });
             }
             else
@@ -162,18 +202,18 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
                 var fee = LedgerService.RoundHalfUp(amount * bps, 10_000);
                 await ledger.PostAsync(b.SellerId, d.Currency!, type, $"{kind}:{ev.EventId}", $"{label} {b.Number}", [
                     new(LedgerAccount.Platform, -amount, kind), new(LedgerAccount.Pending, amount, "items"),
-                    new(LedgerAccount.Pending, -fee, "fee"), new(LedgerAccount.Fees, fee, "fee")], bookingId: b.Id, sourceRef: d.PaymentRef);
+                    new(LedgerAccount.Pending, -fee, "fee"), new(LedgerAccount.Fees, fee, "fee")], bookingId: b.Id, sourceRef: d.PaymentRef, provider: provider);
                 results.Add(new { bookingId = b.Id, number = b.Number, recorded = true });
             }
-            AddRef(ev, d, kind, now);
+            AddRef(ev, d, kind, now, provider);
         }
-        return IngestResult.Ok(new { results });
+        return IngestResult.Ok(new { provider, results });
     }
 
-    private void AddRef(MarketplacePaymentEvent ev, CapturedData d, string kind, DateTime now) =>
+    private void AddRef(MarketplacePaymentEvent ev, CapturedData d, string kind, DateTime now, string provider) =>
         db.PaymentReferences.Add(new PaymentReference
         {
-            Kind = kind, MarketplaceOrderId = d.MarketplaceOrderId, MarketplaceBookingId = d.MarketplaceBookingId, Ref = d.PaymentRef!,
+            Kind = kind, Provider = provider, MarketplaceOrderId = d.MarketplaceOrderId, MarketplaceBookingId = d.MarketplaceBookingId, Ref = d.PaymentRef!,
             Currency = ValidCurrency(d.Currency) ? d.Currency! : "USD", CapturedAt = d.CapturedAt ?? now, EventId = ev.EventId!
         });
 
@@ -187,12 +227,13 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     // ---- refund.processed ------------------------------------------------------------------------------------------------------
     public record RefundData(string? RefundId, string? MarketplaceOrderId, string? SellerOrderNumber, string? MarketplaceBookingId, long? AmountCents, long? ShippingCents, string? Currency, string? Reason);
 
-    private async Task<IngestResult> RefundAsync(MarketplacePaymentEvent ev)
+    private async Task<IngestResult> RefundAsync(MarketplacePaymentEvent ev, string provider)
     {
         var d = ev.Data.Deserialize<RefundData>(J)!;
         if (!NormalizeCurrency(d.Currency, out var refCur)) return BadCurrency();
         d = d with { Currency = refCur };
         if (string.IsNullOrWhiteSpace(d.RefundId) || d.RefundId.Length > 100) return IngestResult.Err(422, "invalid_event", "refundId is required.");
+        if (provider == PaymentProviders.Sola && !string.IsNullOrWhiteSpace(d.MarketplaceBookingId)) return ProviderNotSupported();
         long items = d.AmountCents ?? 0, ship = d.ShippingCents ?? 0;
         if (items < 0 || ship < 0 || items > MaxCents || ship > MaxCents || items + ship == 0) return IngestResult.Err(422, "invalid_amount", "amountCents / shippingCents must be non-negative integers, at least one above zero.");
 
@@ -217,15 +258,18 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
 
         var sale = await db.LedgerJournals.AsNoTracking().FirstOrDefaultAsync(j => j.IdempotencyKey == "sale:" + (orderId ?? bookingId));
         if (sale is null) return IngestResult.Err(409, "sale_not_recorded", "The payment for this order/booking has not been recorded yet (send payment.captured first). Retry later.");
-        var key = $"refund:{d.RefundId}";
-        if (await ledger.ExistsAsync(key)) return IngestResult.Ok(new { recorded = false });
+        if ((sale.Provider ?? PaymentProviders.Stripe) is var saleProvider && saleProvider != provider) return ProviderMismatch(saleProvider);
+        // refund ids are unique per provider (C19.1-4): a Sola refund id never collides with a Stripe one
+        var key = $"{PaymentProviders.KeyPrefix(provider)}refund:{d.RefundId}";
+        if (await ledger.ExistsAsync(key)) return IngestResult.Ok(new { provider, recorded = false });
 
         var saleEntries = await db.LedgerEntries.AsNoTracking().Where(e => e.JournalId == sale.Id).ToListAsync();
         long saleItems = saleEntries.Where(e => e.Account == LedgerAccount.Pending && e.Kind == "items").Sum(e => e.AmountCents);
         long saleShip = saleEntries.Where(e => e.Account == LedgerAccount.Pending && e.Kind == "shipping").Sum(e => e.AmountCents);
         long saleFee = saleEntries.Where(e => e.Account == LedgerAccount.Fees).Sum(e => e.AmountCents);
-        long doneItems = await ledger.SumAsync(orderId, bookingId, LedgerAccount.Platform, "refund_items");
-        long doneShip = await ledger.SumAsync(orderId, bookingId, LedgerAccount.Platform, "refund_shipping");
+        LedgerAccount[] counters = [LedgerAccount.Platform, LedgerAccount.PlatformSola];
+        long doneItems = await ledger.SumAsync(orderId, bookingId, counters, "refund_items");
+        long doneShip = await ledger.SumAsync(orderId, bookingId, counters, "refund_shipping");
         long doneFee = -await ledger.SumAsync(orderId, bookingId, LedgerAccount.Fees, "fee_refund");
         if (doneItems + items > saleItems || doneShip + ship > saleShip)
             return IngestResult.Err(422, "exceeds_sale", $"The refund exceeds what was sold (items left {saleItems - doneItems}, shipping left {saleShip - doneShip}).");
@@ -237,22 +281,25 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         await TrackNegativeAsync(seller, currency);
         var pendingLeft = Math.Max(0, await ledger.PendingForAsync(orderId, bookingId));
         var fromPending = Math.Min(pendingLeft, debit);
-        await ledger.PostAsync(seller, currency, "refund", key, $"Refund {number}", [
-            new(LedgerAccount.Platform, items, "refund_items"), new(LedgerAccount.Platform, ship, "refund_shipping"), new(LedgerAccount.Fees, -feeBack, "fee_refund"),
-            new(LedgerAccount.Pending, -fromPending, "refund"), new(LedgerAccount.Available, -(debit - fromPending), "refund")], orderId, bookingId, d.RefundId);
-        return IngestResult.Ok(new { recorded = true, debitCents = debit, feeRefundedCents = feeBack, fromPendingCents = fromPending });
+        var counter = PaymentProviders.Counter(provider);
+        await ledger.PostAsync(seller, currency, "refund", key, provider == PaymentProviders.Sola ? $"Refund {number} (phone order, Sola)" : $"Refund {number}", [
+            new(counter, items, "refund_items"), new(counter, ship, "refund_shipping"), new(LedgerAccount.Fees, -feeBack, "fee_refund"),
+            new(LedgerAccount.Pending, -fromPending, "refund"), new(LedgerAccount.Available, -(debit - fromPending), "refund")], orderId, bookingId, d.RefundId, provider: provider);
+        return IngestResult.Ok(new { provider, recorded = true, debitCents = debit, feeRefundedCents = feeBack, fromPendingCents = fromPending });
     }
 
     // ---- dispute.* -------------------------------------------------------------------------------------------------------------
     public record DisputeData(string? DisputeId, string? MarketplaceOrderId, string? SellerOrderNumber, string? MarketplaceBookingId, long? AmountCents, long? FeeCents,
         string? Currency, string? Reason, string? Status, DateTime? EvidenceDueBy, DateTime? CreatedAt);
 
-    private async Task<IngestResult> DisputeAsync(MarketplacePaymentEvent ev)
+    private async Task<IngestResult> DisputeAsync(MarketplacePaymentEvent ev, string provider)
     {
         var d = ev.Data.Deserialize<DisputeData>(J)!;
         if (!NormalizeCurrency(d.Currency, out var dispCur)) return BadCurrency();
         d = d with { Currency = dispCur };
         if (string.IsNullOrWhiteSpace(d.DisputeId) || d.DisputeId.Length > 100) return IngestResult.Err(422, "invalid_event", "disputeId is required.");
+        if (provider == PaymentProviders.Sola && !string.IsNullOrWhiteSpace(d.MarketplaceBookingId)) return ProviderNotSupported();
+        // dispute rows are keyed per provider (C19.1-4): a Sola chargeback reference never matches a Stripe dp_ id, whatever the characters
         // One Stripe dispute can span several seller orders: the key is (disputeId, seller order) and every event carries that seller order's share.
         PaymentDispute? existing; Guid seller; string currency; Guid? orderId = null, bookingId = null; long? sale = null;
         if (!string.IsNullOrWhiteSpace(d.MarketplaceOrderId))
@@ -263,14 +310,15 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
             var o = orders[0];
             if (ValidCurrency(d.Currency) && d.Currency != o.Currency) return IngestResult.Err(422, "currency_mismatch", "The currency does not match the order.");
             seller = o.SellerId; currency = o.Currency; orderId = o.Id; sale = o.ItemsCents - o.DiscountCents + o.ShippingCents;
-            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.OrderId == o.Id);
+            if (await SaleProviderAsync(o.Id, null) is { } had && had != provider) return ProviderMismatch(had);
+            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.Provider == provider && x.ExternalId == d.DisputeId && x.OrderId == o.Id);
         }
         else if (!string.IsNullOrWhiteSpace(d.MarketplaceBookingId))
         {
             var b = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == d.MarketplaceBookingId);
             if (b is null) return IngestResult.Err(404, "booking_not_found", "No such booking.");
             seller = b.SellerId; bookingId = b.Id;
-            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.ExternalId == d.DisputeId && x.BookingId == b.Id);
+            existing = await db.PaymentDisputes.FirstOrDefaultAsync(x => x.Provider == provider && x.ExternalId == d.DisputeId && x.BookingId == b.Id);
             // the currency the booking was captured in decides (like refunds); only a booking without a recorded sale takes the event's
             var bookedIn = await db.LedgerJournals.AsNoTracking().Where(j => j.BookingId == b.Id).Select(j => j.Currency).FirstOrDefaultAsync();
             currency = existing?.Currency ?? bookedIn ?? (ValidCurrency(d.Currency) ? d.Currency! : "USD");
@@ -279,7 +327,7 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         else
         {
             // no order reference: accepted only as a status update of a dispute that is already known by id alone
-            var rows = await db.PaymentDisputes.Where(x => x.ExternalId == d.DisputeId).Take(2).ToListAsync();
+            var rows = await db.PaymentDisputes.Where(x => x.Provider == provider && x.ExternalId == d.DisputeId).Take(2).ToListAsync();
             if (rows.Count > 1) return IngestResult.Err(422, "seller_order_required", "The dispute covers several seller orders: send marketplaceOrderId and sellerOrderNumber.");
             if (rows.Count == 0) return IngestResult.Err(422, "invalid_event", "marketplaceOrderId or marketplaceBookingId is required.");
             existing = rows[0]; seller = existing.SellerId; currency = existing.Currency; orderId = existing.OrderId; bookingId = existing.BookingId;
@@ -295,9 +343,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         if (status is not ("needs_response" or "under_review" or "won" or "lost" or "warning_closed" or "inquiry" or "inquiry_review")) return IngestResult.Err(422, "invalid_status", "Unknown dispute status.");
         var now = time.UtcNow();
         var evAt = d.CreatedAt ?? now;
-        await ApplyDisputeAsync(existing, d.DisputeId, seller, currency, orderId, bookingId, amount, fee, status, d.Reason, d.EvidenceDueBy, evAt, now);
-        await SyncUnallocatedAsync(d.DisputeId, now);   // a Stripe dispute that waited for its allocation is linked / cleared once the shares add up
-        return IngestResult.Ok(new { disputeId = d.DisputeId, status, sellerOrderId = orderId });
+        await ApplyDisputeAsync(existing, d.DisputeId, seller, currency, orderId, bookingId, amount, fee, status, d.Reason, d.EvidenceDueBy, evAt, now, provider);
+        // a Stripe dispute that waited for its allocation is linked / cleared once the shares add up (Stripe only: Sola disputes never have an unallocated Stripe item)
+        if (provider == PaymentProviders.Stripe) await SyncUnallocatedAsync(d.DisputeId, now);
+        return IngestResult.Ok(new { provider, disputeId = d.DisputeId, status, sellerOrderId = orderId });
     }
 
     /// <summary>The status / evidence part of a dispute update: event-time ordered, and a closed dispute is never reopened.</summary>
@@ -316,18 +365,18 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     /// <summary>Shared by the marketplace events and the Stripe charge.dispute.* webhooks (single-seller charges). Order independent: the debit is posted whatever event comes first,
     /// and under one idempotency key per (dispute, seller order), so the two sources can never debit twice.</summary>
     public async Task ApplyDisputeAsync(PaymentDispute? row, string externalId, Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string status,
-        string? reason, DateTime? evidenceDue, DateTime eventAt, DateTime now)
+        string? reason, DateTime? evidenceDue, DateTime eventAt, DateTime now, string provider = PaymentProviders.Stripe)
     {
         var isNew = row is null;
-        row ??= db.PaymentDisputes.Local.FirstOrDefault(x => x.ExternalId == externalId && x.OrderId == orderId && x.BookingId == bookingId);
+        row ??= db.PaymentDisputes.Local.FirstOrDefault(x => x.Provider == provider && x.ExternalId == externalId && x.OrderId == orderId && x.BookingId == bookingId);
         if (row is null)
         {
-            row = new PaymentDispute { SellerId = seller, ExternalId = externalId, OrderId = orderId, BookingId = bookingId, Currency = currency, AmountCents = amount, FeeCents = fee, CreatedAt = now, EventAt = DateTime.MinValue };
+            row = new PaymentDispute { SellerId = seller, Provider = provider, ExternalId = externalId, OrderId = orderId, BookingId = bookingId, Currency = currency, AmountCents = amount, FeeCents = fee, CreatedAt = now, EventAt = DateTime.MinValue };
             db.PaymentDisputes.Add(row);
         }
         ApplyDisputeStatus(row, status, reason, evidenceDue, eventAt, now);
         // a multi-seller Stripe event that arrived before this allocation only recorded its state: a newer Stripe state (won, lost, ...) applies to the new row too
-        if (isNew && await db.UnallocatedDisputes.AsNoTracking().FirstOrDefaultAsync(x => x.ExternalId == externalId) is { } waiting)
+        if (isNew && provider == PaymentProviders.Stripe && await db.UnallocatedDisputes.AsNoTracking().FirstOrDefaultAsync(x => x.ExternalId == externalId) is { } waiting)
             ApplyDisputeStatus(row, waiting.Status, waiting.Reason, waiting.EvidenceDueBy, waiting.EventAt, now);
         // An inquiry (Stripe warning_*) moves no money at Stripe, so nothing is debited for it or for its warning_closed; the debit + fee are posted once,
         // the first time the dispute reaches a state in which money moves (escalation to needs_response, or a marketplace event that is already past that).
@@ -335,28 +384,33 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         var sfx = "";
         if (moves)
         {
-            sfx = await KeySuffixAsync(externalId, orderId, bookingId);
-            if (isNew || !await ledger.ExistsAsync($"dispute:{externalId}{sfx}")) await TrackNegativeAsync(seller, currency);
-            await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, sfx, row.Status);
+            sfx = await KeySuffixAsync(externalId, orderId, bookingId, provider);
+            var pfx = PaymentProviders.KeyPrefix(provider);
+            if (isNew || !await ledger.ExistsAsync($"{pfx}dispute:{externalId}{sfx}")) await TrackNegativeAsync(seller, currency);
+            await PostDisputeDebitAsync(seller, currency, orderId, bookingId, amount, fee, externalId, sfx, row.Status, provider);
         }
-        if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, externalId + sfx, amount, currency, row.EvidenceDueBy));
-        if (row.Status == "inquiry" && isNew) _inquiryMails.Add((seller, externalId + ":" + (orderId ?? bookingId), amount, currency, row.EvidenceDueBy));
+        var mailId = PaymentProviders.KeyPrefix(provider) + externalId;
+        if (moves && (isNew || row.Status == "needs_response")) _disputeMails.Add((seller, mailId + sfx, amount, currency, row.EvidenceDueBy, provider));
+        if (row.Status == "inquiry" && isNew) _inquiryMails.Add((seller, mailId + ":" + (orderId ?? bookingId), amount, currency, row.EvidenceDueBy, provider));
     }
 
     /// <summary>Rows booked before the key became (dispute, seller order) keep their original idempotency keys ("dispute:{id}"), so a replay never posts twice.</summary>
-    private async Task<string> KeySuffixAsync(string dp, Guid? orderId, Guid? bookingId)
+    private async Task<string> KeySuffixAsync(string dp, Guid? orderId, Guid? bookingId, string provider)
     {
+        if (provider != PaymentProviders.Stripe) return ":" + (orderId ?? bookingId);   // legacy keys exist only for Stripe disputes booked before C10
         var legacy = $"dispute:{dp}";
         var old = await db.LedgerJournals.AsNoTracking().AnyAsync(j => j.IdempotencyKey == legacy && j.OrderId == orderId && j.BookingId == bookingId);
         return old ? "" : ":" + (orderId ?? bookingId);
     }
 
-    private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string sfx, string status)
+    private async Task PostDisputeDebitAsync(Guid seller, string currency, Guid? orderId, Guid? bookingId, long amount, long fee, string externalId, string sfx, string status, string provider)
     {
-        await ledger.PostAsync(seller, currency, "dispute", $"dispute:{externalId}{sfx}", "Dispute", [new(LedgerAccount.Platform, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, externalId);
-        await ledger.PostAsync(seller, currency, "dispute_fee", $"dispute-fee:{externalId}{sfx}", "Dispute fee", [new(LedgerAccount.Platform, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId);
+        // Sola: the chargeback and its fee come out of the Sola settlement (PlatformSola) and a won chargeback goes back there; the seller side is the same as for Stripe
+        var c = PaymentProviders.Counter(provider); var pfx = PaymentProviders.KeyPrefix(provider); var tag = provider == PaymentProviders.Sola ? " (phone order, Sola)" : "";
+        await ledger.PostAsync(seller, currency, "dispute", $"{pfx}dispute:{externalId}{sfx}", "Dispute" + tag, [new(c, amount, "dispute"), new(LedgerAccount.Available, -amount, "dispute")], orderId, bookingId, externalId, provider: provider);
+        await ledger.PostAsync(seller, currency, "dispute_fee", $"{pfx}dispute-fee:{externalId}{sfx}", "Dispute fee" + tag, [new(c, fee, "dispute_fee"), new(LedgerAccount.Available, -fee, "dispute_fee")], orderId, bookingId, externalId, provider: provider);
         if (status == "won")
-            await ledger.PostAsync(seller, currency, "dispute_won", $"dispute-won:{externalId}{sfx}", "Dispute won", [new(LedgerAccount.Platform, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId);
+            await ledger.PostAsync(seller, currency, "dispute_won", $"{pfx}dispute-won:{externalId}{sfx}", "Dispute won" + tag, [new(c, -amount, "dispute_won"), new(LedgerAccount.Available, amount, "dispute_won")], orderId, bookingId, externalId, provider: provider);
     }
 
     /// <summary>One open reconciliation flag per (kind, dispute id): a replayed or updated event does not raise it again. The detail must contain "dispute {key} " (the id followed by a
@@ -374,9 +428,10 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
     // ---- Stripe disputes on a charge that covers several seller orders ----------------------------------------------------------
     private async Task<long> AllocatedAsync(string dp)
     {
-        var saved = await db.PaymentDisputes.AsNoTracking().Where(x => x.ExternalId == dp).Select(x => new { x.Id, x.AmountCents }).ToListAsync();
+        // Stripe rows only: an unallocated item is a Stripe dispute, and a Sola chargeback with the same characters is another dispute (C19.1-4)
+        var saved = await db.PaymentDisputes.AsNoTracking().Where(x => x.Provider == PaymentProviders.Stripe && x.ExternalId == dp).Select(x => new { x.Id, x.AmountCents }).ToListAsync();
         var ids = saved.Select(x => x.Id).ToHashSet();
-        return saved.Sum(x => x.AmountCents) + db.PaymentDisputes.Local.Where(x => x.ExternalId == dp && !ids.Contains(x.Id)).Sum(x => x.AmountCents);
+        return saved.Sum(x => x.AmountCents) + db.PaymentDisputes.Local.Where(x => x.Provider == PaymentProviders.Stripe && x.ExternalId == dp && !ids.Contains(x.Id)).Sum(x => x.AmountCents);
     }
 
     /// <summary>Records what Stripe says about a multi-seller dispute WITHOUT moving money: status and evidence date go to every allocated row, and an open "unallocated" item
@@ -431,19 +486,26 @@ public class PaymentIngestService(AppDbContext db, LedgerService ledger, Platfor
         }
     }
 
-    private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _disputeMails = [];
+    private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due, string Provider)> _disputeMails = [];
 
-    private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due)> _inquiryMails = [];
+    private readonly List<(Guid Seller, string Id, long Amount, string Currency, DateTime? Due, string Provider)> _inquiryMails = [];
+
+    /// <summary>Sola disputes have no evidence flow in the portal (C19.1-10): Solvelt staff answer the chargeback.</summary>
+    private static string HowToRespond(string provider) => provider == PaymentProviders.Sola
+        ? " This was a phone order paid through Sola: Solvelt handles the response to the card network and will contact you if it needs anything from you."
+        : " Respond through your Stripe Express dashboard.";
 
     public async Task FlushDisputeMailsAsync()
     {
-        foreach (var (seller, id, amount, cur, due) in _inquiryMails.ToList())
+        foreach (var (seller, id, amount, cur, due, prov) in _inquiryMails.ToList())
             await notifier.NotifyAsync(seller, $"inquiry:{id}", "A buyer's bank asked about a payment", "A payment inquiry needs your response",
-                [$"The bank of a buyer is asking about a payment of {PaymentNotifier.Money(amount, cur)}. No money has been taken from your balance, but you should respond" + (due is { } dd ? $" by {dd:yyyy-MM-dd}" : "") + " to avoid a formal dispute. Respond through your Stripe Express dashboard."]);
+                [$"The bank of a buyer is asking about a payment of {PaymentNotifier.Money(amount, cur)}. No money has been taken from your balance" + (prov == PaymentProviders.Sola
+                    ? "." + HowToRespond(prov)
+                    : ", but you should respond" + (due is { } dd ? $" by {dd:yyyy-MM-dd}" : "") + " to avoid a formal dispute." + HowToRespond(prov))]);
         _inquiryMails.Clear();
-        foreach (var (seller, id, amount, cur, due) in _disputeMails.ToList())
+        foreach (var (seller, id, amount, cur, due, prov) in _disputeMails.ToList())
             await notifier.NotifyAsync(seller, $"dispute:{id}", "A buyer opened a dispute", "A payment was disputed",
-                [$"A buyer disputed a payment of {PaymentNotifier.Money(amount, cur)}. The amount and the dispute fee were debited from your balance." + (due is { } dd ? $" Evidence is due by {dd:yyyy-MM-dd}." : "") + " Respond through your Stripe Express dashboard."]);
+                [$"A buyer disputed a payment of {PaymentNotifier.Money(amount, cur)}. The amount and the dispute fee were debited from your balance." + (due is { } dd && prov != PaymentProviders.Sola ? $" Evidence is due by {dd:yyyy-MM-dd}." : "") + HowToRespond(prov)]);
         _disputeMails.Clear();
     }
 

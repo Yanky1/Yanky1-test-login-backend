@@ -33,6 +33,16 @@ public class PaymentOptions
     public bool AllowLiveKeysOutsideProduction { get; set; }
     /// <summary>With a live Stripe key the platform AND the Connect webhook secret are required at startup (Stripe signs each endpoint with its own secret). Set to accept a single secret on purpose (Stripe CLI, one shared secret).</summary>
     public bool AllowSingleWebhookSecret { get; set; }
+    /// <summary>C19: Sola-paid phone orders (section "Payments:Sola").</summary>
+    public SolaOptions Sola { get; set; } = new();
+}
+
+/// <summary>Configuration section "Payments:Sola" (C19). The portal never calls Sola and has no Sola keys: only this treasury switch.</summary>
+public class SolaOptions
+{
+    /// <summary>Owner switch, default false: transfers to sellers are NOT held by the unfunded Sola balance (a seller's payout must not depend on Solvelt's treasury timing).
+    /// True: no new transfer batch is created in a currency while its unfunded Sola balance is above zero (funds stay Available; nothing is lost).</summary>
+    public bool HoldTransfersWhenUnfunded { get; set; }
 }
 
 /// <summary>Configuration section "Stripe". Secret key + webhook secret; no key = deterministic fake provider (dev/tests).</summary>

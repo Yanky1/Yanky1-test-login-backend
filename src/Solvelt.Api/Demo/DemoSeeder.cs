@@ -521,8 +521,13 @@ public class DemoSeeder(AppDbContext db, TimeProvider time, DemoContext demo, IF
             Reg("payment_event", Guid.Empty, eventId);
             await db.SaveChangesAsync();   // services clear the change tracker: never leave a registry row pending
         }
+        // C19: one paid order (not the refunded one) is a phone order paid through Sola; its paymentRef stands for a Sola xRefNum. Everything else is Stripe.
+        var solaOrder = orders.FirstOrDefault(o => o.Paid && o.State != "refunded");
         foreach (var o in orders.Where(o => o.Paid))
-            await Event("payment.captured", new { kind = "order", marketplaceOrderId = o.Mid, sellerOrderNumber = o.Number, paymentRef = "ch_demo_" + tag + o.Number.GetHashCode().ToString("x"), currency = "USD" }, "cap-" + o.Number);
+            if (o == solaOrder)
+                await Event("payment.captured", new { kind = "order", provider = PaymentProviders.Sola, marketplaceOrderId = o.Mid, sellerOrderNumber = o.Number, paymentRef = "demo-sola-" + tag + o.Number.GetHashCode().ToString("x"), currency = "USD" }, "cap-" + o.Number);
+            else
+                await Event("payment.captured", new { kind = "order", marketplaceOrderId = o.Mid, sellerOrderNumber = o.Number, paymentRef = "ch_demo_" + tag + o.Number.GetHashCode().ToString("x"), currency = "USD" }, "cap-" + o.Number);
         // the refunded order: the marketplace refunds the full amount
         var refunded = orders.First(o => o.State == "refunded");
         db.ChangeTracker.Clear();
