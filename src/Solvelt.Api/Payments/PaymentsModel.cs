@@ -16,6 +16,7 @@ public static class PaymentsModelConfig
             e.HasIndex(x => x.OrderId); e.HasIndex(x => x.BookingId);
             e.Property(x => x.Type).HasMaxLength(32); e.Property(x => x.IdempotencyKey).HasMaxLength(200); e.Property(x => x.Currency).HasMaxLength(3);
             e.Property(x => x.Memo).HasMaxLength(300); e.Property(x => x.SourceRef).HasMaxLength(120); e.Property(x => x.Reason).HasMaxLength(500);
+            e.Property(x => x.Provider).HasMaxLength(8);
             e.HasMany(x => x.Entries).WithOne().HasForeignKey(x => x.JournalId).OnDelete(DeleteBehavior.Restrict);
         });
         b.Entity<LedgerEntry>(e =>
@@ -45,9 +46,10 @@ public static class PaymentsModelConfig
         b.Entity<PaymentDispute>(e =>
         {
             e.ToTable("payment_disputes"); e.HasIndex(x => x.ExternalId); e.HasIndex(x => x.SellerId);
-            // one row per (dispute, seller order); a booking dispute is one row per (dispute, booking)
-            e.HasIndex(x => new { x.ExternalId, x.OrderId }).IsUnique().HasFilter("\"OrderId\" IS NOT NULL");
-            e.HasIndex(x => new { x.ExternalId, x.BookingId }).IsUnique().HasFilter("\"BookingId\" IS NOT NULL");
+            // one row per (provider, dispute, seller order); a booking dispute is one row per (provider, dispute, booking). Ids never match across providers (C19).
+            e.HasIndex(x => new { x.Provider, x.ExternalId, x.OrderId }).IsUnique().HasFilter("\"OrderId\" IS NOT NULL");
+            e.HasIndex(x => new { x.Provider, x.ExternalId, x.BookingId }).IsUnique().HasFilter("\"BookingId\" IS NOT NULL");
+            e.Property(x => x.Provider).HasMaxLength(8).HasDefaultValue(PaymentProviders.Stripe);
             e.Property(x => x.Status).HasMaxLength(16); e.Property(x => x.Currency).HasMaxLength(3);
         });
         b.Entity<UnallocatedDispute>(e =>
@@ -58,7 +60,8 @@ public static class PaymentsModelConfig
         });
         b.Entity<PaymentReference>(e =>
         {
-            e.ToTable("payment_references"); e.HasIndex(x => x.Ref); e.HasIndex(x => x.MarketplaceOrderId); e.HasIndex(x => x.MarketplaceBookingId);
+            e.ToTable("payment_references"); e.HasIndex(x => new { x.Provider, x.Ref });
+            e.Property(x => x.Provider).HasMaxLength(8).HasDefaultValue(PaymentProviders.Stripe); e.HasIndex(x => x.MarketplaceOrderId); e.HasIndex(x => x.MarketplaceBookingId);
             e.HasIndex(x => new { x.EventId, x.Ref }).IsUnique();
         });
         b.Entity<ProcessedPaymentEvent>(e =>

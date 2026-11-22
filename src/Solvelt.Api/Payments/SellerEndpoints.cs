@@ -25,6 +25,12 @@ public static class SellerPaymentEndpoints
     public static string TransferState(TransferStatus s) => s switch { TransferStatus.Pending => "scheduled", TransferStatus.Created => "sent", TransferStatus.Failed => "failed", _ => "reversed" };
 
     /// <summary>What a journal did to the seller's balance (pending + available + reserved). Releases and payouts are movements and show 0.</summary>
+    private static readonly string[] BuyerMoneyTypes = ["sale", "policy_fee", "extra_charge", "refund", "dispute", "dispute_fee", "dispute_won"];
+
+    /// <summary>C19: the provider that holds the buyer money of a sale / refund / dispute row ("stripe" or "sola"); null for other rows (releases, transfers, labels, ...).
+    /// Journals written before C19 carry no provider: they are Stripe.</summary>
+    public static string? ProviderOf(LedgerJournal j) => j.Provider ?? (BuyerMoneyTypes.Contains(j.Type) ? PaymentProviders.Stripe : null);
+
     public static long OwedDelta(LedgerJournal j) => j.Entries.Where(e => OwedAccounts.Contains(e.Account)).Sum(e => e.AmountCents);
 
     private static async Task<object> Rows(AppDbContext db, List<LedgerJournal> journals)
@@ -35,7 +41,7 @@ public static class SellerPaymentEndpoints
         var bookings = await db.Bookings.AsNoTracking().Where(b => bookingIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Number);
         return journals.Select(j => new
         {
-            id = j.Id, createdAt = j.CreatedAt, type = j.Type, memo = j.Memo, currency = j.Currency, amountCents = OwedDelta(j),
+            id = j.Id, createdAt = j.CreatedAt, type = j.Type, memo = j.Memo, currency = j.Currency, amountCents = OwedDelta(j), provider = ProviderOf(j),
             orderId = j.OrderId, orderNumber = j.OrderId is { } o && orders.TryGetValue(o, out var on) ? on : null,
             bookingId = j.BookingId, bookingNumber = j.BookingId is { } b && bookings.TryGetValue(b, out var bn) ? bn : null,
             lines = j.Entries.Where(e => SellerAccounts.Contains(e.Account)).OrderBy(e => e.Id).Select(e => new { account = e.Account.ToString().ToLowerInvariant(), kind = e.Kind, amountCents = e.AmountCents })
@@ -142,7 +148,9 @@ public static class SellerPaymentEndpoints
                     id = d.Id, createdAt = d.CreatedAt, amountCents = d.AmountCents, feeCents = d.FeeCents, currency = d.Currency, status = d.Status, reason = d.Reason,
                     evidenceDueBy = d.EvidenceDueBy, closedAt = d.ClosedAt, orderId = d.OrderId, orderNumber = d.OrderId is { } o && orders.TryGetValue(o, out var on) ? on : null,
                     bookingId = d.BookingId, bookingNumber = d.BookingId is { } b && bookings.TryGetValue(b, out var bn) ? bn : null,
-                    canRespond = d.Status is "needs_response" or "inquiry"   // answer in the Stripe Express dashboard (POST /seller/payments/dashboard-link, Owners)
+                    provider = d.Provider,
+                    // answer in the Stripe Express dashboard (POST /seller/payments/dashboard-link, Owners); Sola chargebacks are answered by Solvelt staff outside the portal (C19)
+                    canRespond = d.Provider == PaymentProviders.Stripe && (d.Status is "needs_response" or "inquiry")
                 })
             });
         });

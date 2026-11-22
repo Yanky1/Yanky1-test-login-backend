@@ -86,6 +86,9 @@ public static class OrderViews
         var returnShipments = await db.ReturnShipments.AsNoTracking().Where(r => r.OrderId == id).OrderBy(r => r.CreatedAt).ToListAsync();
         // a label the seller voided (refund asked or confirmed) is dead; a parcel whose tracking merely STOPPED (60 days, undelivered) still has a working label
         var deadLabels = (await db.ShippingLabels.AsNoTracking().Where(l => l.OrderId == id && l.Kind == LabelKind.Return && (l.Status == LabelStatus.Voided || l.Status == LabelStatus.Voiding)).Select(l => l.Id).ToListAsync()).ToHashSet();
+        // C19: which provider took the buyer's payment (null until the payment was recorded; journals from before C19 carry none and are Stripe)
+        var saleKey = "sale:" + id;
+        var paymentProvider = await db.LedgerJournals.AsNoTracking().Where(j => j.IdempotencyKey == saleKey).Select(j => j.Provider ?? "stripe").FirstOrDefaultAsync();
         var authors = notes.Select(n => n.AuthorId).Distinct().ToList();
         var names = await db.Users.AsNoTracking().Where(u => authors.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Email ?? "");
         return new
@@ -99,7 +102,8 @@ public static class OrderViews
             money = new
             {
                 itemsCents = o.ItemsCents, discountCents = o.DiscountCents, shippingCents = o.ShippingCents, shippingTaxCents = o.ShippingTaxCents, taxCents = o.TaxCents, totalCents = o.TotalCents,
-                feeCents = o.FeeCents, netCents = o.NetCents, refundedCents = o.RefundedCents, refundableCents = o.Status == OrderStatus.Cancelled ? 0 : o.TotalCents - o.RefundedCents
+                feeCents = o.FeeCents, netCents = o.NetCents, refundedCents = o.RefundedCents, refundableCents = o.Status == OrderStatus.Cancelled ? 0 : o.TotalCents - o.RefundedCents,
+                paymentProvider
             },
             lines = o.Lines.Select(l => new
             {

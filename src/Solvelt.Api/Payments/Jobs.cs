@@ -183,7 +183,7 @@ public record TransferSummary(int Created, int Sent, int Failed, int Paused, int
 /// The funds are moved Available -> Settled in the SAME transaction that creates the transfer row, so they can never be sent twice or spent twice.
 /// </summary>
 public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProvider provider, IOptions<PaymentOptions> opt, TimeProvider time,
-    PaymentNotifier notifier, JobLeaseService leases, PaymentTestHooks hooks, ILogger<TransferService> log)
+    PaymentNotifier notifier, JobLeaseService leases, PaymentTestHooks hooks, ILogger<TransferService> log, SolaTreasuryService treasury)
 {
     public const string JobName = "payments-transfers";
 
@@ -204,10 +204,14 @@ public class TransferService(AppDbContext db, LedgerService ledger, IPaymentProv
         var o = opt.Value; var now = time.UtcNow(); var day = now.Date;
         var sellers = await db.LedgerEntries.AsNoTracking().Where(e => e.Account == LedgerAccount.Available && (onlySeller == null || e.SellerId == onlySeller))
             .GroupBy(e => new { e.SellerId, e.Currency }).Select(g => new { g.Key.SellerId, g.Key.Currency, Sum = g.Sum(x => x.AmountCents) }).Where(x => x.Sum > 0).ToListAsync(ct);
+        // C19 owner switch Payments:Sola:HoldTransfersWhenUnfunded (default OFF: a seller's payout never waits for Solvelt's treasury). When on, no new batch is created in a currency
+        // whose unfunded Sola balance is above zero; the funds stay Available and go out on the first run after staff record the funding.
+        var held = sellers.Count > 0 ? await treasury.HeldCurrenciesAsync(ct) : [];
         foreach (var s in sellers)
         {
             await leases.EnsureAsync(ct);
             if (s.Sum < o.MinTransferCents) { skipped++; continue; }
+            if (held.Contains(s.Currency)) { paused++; continue; }
             var acct = await db.PayoutAccounts.AsNoTracking().FirstOrDefaultAsync(a => a.SellerId == s.SellerId, ct);
             var status = await db.Sellers.AsNoTracking().Where(x => x.Id == s.SellerId).Select(x => x.Status).FirstOrDefaultAsync(ct);
             if ((await PausedAsync(db, s.SellerId, acct, status)).Paused) { paused++; continue; }
@@ -374,10 +378,11 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
         // a multi-seller dispute that Stripe reports as won credits nobody by itself: the credit comes from the marketplace's per-seller-order "won" event. Flag it when that event is
         // still missing after a day, so a seller's credit is never silently lost.
         var wonBefore = now.AddHours(-24);
-        var wonRows = await db.PaymentDisputes.AsNoTracking().Where(d => d.Status == "won" && d.ClosedAt != null && d.ClosedAt <= wonBefore).ToListAsync(ct);
+        // Stripe disputes only: a Sola dispute's won status and its credit both come from the marketplace event, never from Stripe (C19)
+        var wonRows = await db.PaymentDisputes.AsNoTracking().Where(d => d.Provider == PaymentProviders.Stripe && d.Status == "won" && d.ClosedAt != null && d.ClosedAt <= wonBefore).ToListAsync(ct);
         foreach (var d in wonRows)
         {
-            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == d.ExternalId && j.OrderId == d.OrderId && j.BookingId == d.BookingId, ct)) continue;
+            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == d.ExternalId && j.OrderId == d.OrderId && j.BookingId == d.BookingId && (j.Provider == null || j.Provider == PaymentProviders.Stripe), ct)) continue;
             var key = $"{d.ExternalId} ({(d.OrderId ?? d.BookingId)})";
             if (await db.ReconciliationFlags.AnyAsync(f => f.Kind == "dispute_won_credit_missing" && f.Detail.Contains(key) && f.ResolvedAt == null, ct)) continue;
             db.ReconciliationFlags.Add(new ReconciliationFlag { SellerId = d.SellerId, Kind = "dispute_won_credit_missing", CreatedAt = now,
@@ -398,7 +403,7 @@ public class ReconciliationService(AppDbContext db, IPaymentProvider provider, T
             var m = System.Text.RegularExpressions.Regex.Match(fl.Detail, @"dispute (\S+) \(([0-9a-fA-F-]{36})\)");
             if (!m.Success || !Guid.TryParse(m.Groups[2].Value, out var scope)) continue;
             var dp = m.Groups[1].Value;
-            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == dp && (j.OrderId == scope || j.BookingId == scope), ct)) fl.ResolvedAt = now;
+            if (await db.LedgerJournals.AnyAsync(j => j.Type == "dispute_won" && j.SourceRef == dp && (j.OrderId == scope || j.BookingId == scope) && (j.Provider == null || j.Provider == PaymentProviders.Stripe), ct)) fl.ResolvedAt = now;
         }
         foreach (var fl in await db.ReconciliationFlags.Where(f => f.Kind == "dispute_won_unallocated" && f.ResolvedAt == null).ToListAsync(ct))
         {

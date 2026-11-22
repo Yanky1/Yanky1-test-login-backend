@@ -3,8 +3,20 @@ namespace Solvelt.Api.Domain;
 /// <summary>
 /// Ledger accounts. Every journal's entries sum to ZERO per currency (double entry). Seller-owned accounts hold what the platform owes the seller
 /// (positive = owed); <see cref="Platform"/> and <see cref="Fees"/> are the counter accounts.
+/// <see cref="PlatformSola"/> (C19) is the counter account of buyer money held at Sola (phone orders); <see cref="Platform"/> holds Stripe money (the balance transfers are paid from).
 /// </summary>
-public enum LedgerAccount { Platform, Fees, Pending, Available, Reserved, Settled, PaidOut }
+public enum LedgerAccount { Platform, Fees, Pending, Available, Reserved, Settled, PaidOut, PlatformSola }
+
+/// <summary>Payment providers that can hold the buyer's money (C19). Stored lower case; absent = stripe.</summary>
+public static class PaymentProviders
+{
+    public const string Stripe = "stripe";
+    public const string Sola = "sola";
+    /// <summary>The counter account that holds the buyer money of this provider.</summary>
+    public static LedgerAccount Counter(string provider) => provider == Sola ? LedgerAccount.PlatformSola : LedgerAccount.Platform;
+    /// <summary>Journal key prefix: Sola journals whose key could collide with a Stripe one (refund ids, dispute ids) are prefixed with "sola:".</summary>
+    public static string KeyPrefix(string provider) => provider == Sola ? "sola:" : "";
+}
 
 /// <summary>One balanced, append-only posting group. Never updated or deleted (corrections are new journals). <see cref="IdempotencyKey"/> is unique.</summary>
 public class LedgerJournal
@@ -22,6 +34,8 @@ public class LedgerJournal
     public string Memo { get; set; } = "";
     public Guid? ActorUserId { get; set; }
     public string? Reason { get; set; }
+    /// <summary>C19: the provider that holds the buyer money of a sale / refund / dispute journal ("stripe" or "sola"); null on other journals (and on journals written before C19, which are Stripe).</summary>
+    public string? Provider { get; set; }
     public DateTime CreatedAt { get; set; }
     public List<LedgerEntry> Entries { get; set; } = [];
 }
@@ -125,6 +139,8 @@ public class PaymentDispute
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid SellerId { get; set; }
+    /// <summary>C19: "stripe" (dp_ id) or "sola" (Sola chargeback reference). A dispute row is unique per (provider, id, seller order): ids never match across providers.</summary>
+    public string Provider { get; set; } = PaymentProviders.Stripe;
     public string ExternalId { get; set; } = "";
     /// <summary>The SELLER order this share of the dispute was booked against (a Stripe dispute can span several seller orders: the key is (ExternalId, OrderId)).</summary>
     public Guid? OrderId { get; set; }
@@ -172,6 +188,8 @@ public class PaymentReference
     public string Kind { get; set; } = "order";
     public string? MarketplaceOrderId { get; set; }
     public string? MarketplaceBookingId { get; set; }
+    /// <summary>C19: "stripe" (charge / payment intent id) or "sola" (xRefNum). Stripe webhooks only ever match Stripe references.</summary>
+    public string Provider { get; set; } = PaymentProviders.Stripe;
     public string Ref { get; set; } = "";
     public string Currency { get; set; } = "USD";
     public DateTime CapturedAt { get; set; }

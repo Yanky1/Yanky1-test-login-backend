@@ -9,6 +9,8 @@ namespace Solvelt.Api.Payments;
 
 public record HoldRequest(string? Reason);
 public record AdjustmentRequest(string? Direction, long? AmountCents, string? Currency, string? Reason, string? RequestId);
+/// <summary>C19: a move of money between the Sola settlement and the Stripe balance. direction: sola_to_stripe (default) or stripe_to_sola (correction).</summary>
+public record FundingRequest(string? Direction, long? AmountCents, string? Currency, string? Reference, string? Note, string? RequestId);
 
 /// <summary>Staff payment tools under the admin API (docs/PAYMENTS.md section 9): every write needs a reason and is audited; adjustments need Super admin + step-up.</summary>
 public static class PaymentAdminEndpoints
@@ -49,7 +51,7 @@ public static class PaymentAdminEndpoints
                 total = await q.CountAsync(), page = pg, pageSize = size,
                 items = rows.Select(j => new
                 {
-                    j.Id, j.CreatedAt, j.Type, j.Memo, j.Currency, j.IdempotencyKey, j.OrderId, j.BookingId, j.SourceRef, j.ActorUserId, j.Reason,
+                    j.Id, j.CreatedAt, j.Type, j.Memo, j.Currency, j.IdempotencyKey, j.OrderId, j.BookingId, j.SourceRef, j.ActorUserId, j.Reason, provider = SellerPaymentEndpoints.ProviderOf(j),
                     entries = j.Entries.OrderBy(e => e.Id).Select(e => new { account = e.Account.ToString(), e.Kind, amountCents = e.AmountCents })
                 })
             });
@@ -162,6 +164,62 @@ public static class PaymentAdminEndpoints
             return Results.Ok(new { total = await q.CountAsync(), page = pg, pageSize = size, items = rows.Select(u => new { u.Id, disputeId = u.ExternalId, u.MarketplaceOrderId, u.ChargeRef, u.Currency, stripeAmountCents = u.AmountCents, allocatedCents = u.AllocatedCents,
                 u.Status, u.Reason, u.EvidenceDueBy, u.FlagId, u.Note, u.CreatedAt, u.UpdatedAt, u.ResolvedAt }) });
         }, StaffPermission.PaymentsView);
+
+        // ---- C19 Sola treasury: transfers are paid from the Stripe balance; staff record each move of money from the Sola settlement to Stripe ----
+        p.AGet("/sola/treasury", async (int? page, int? pageSize, AppDbContext db, SolaTreasuryService treasury) =>
+        {
+            var (pg, size) = AdminHttp.Paging(page, pageSize);
+            var q = db.LedgerJournals.AsNoTracking().Where(j => j.Type == SolaTreasuryService.FundingType);
+            var rows = await q.Include(j => j.Entries).OrderByDescending(j => j.CreatedAt).ThenByDescending(j => j.Id).Skip((pg - 1) * size).Take(size).ToListAsync();
+            return Results.Ok(new
+            {
+                holdTransfersWhenUnfunded = treasury.HoldSwitch,
+                currencies = (await treasury.LinesAsync()).Select(l => new { currency = l.Currency, releasedCents = l.ReleasedCents, fundedCents = l.FundedCents, unfundedCents = l.UnfundedCents,
+                    overfundedCents = l.OverfundedCents, heldAtSolaCents = l.HeldAtSolaCents, transfersHeld = l.TransfersHeld }),
+                fundings = new
+                {
+                    total = await q.CountAsync(), page = pg, pageSize = size,
+                    items = rows.Select(j => new
+                    {
+                        id = j.Id, createdAt = j.CreatedAt, currency = j.Currency, reference = j.SourceRef, note = j.Reason, actorUserId = j.ActorUserId,
+                        requestId = j.IdempotencyKey.StartsWith("provider-funding:", StringComparison.Ordinal) ? j.IdempotencyKey["provider-funding:".Length..] : j.IdempotencyKey,
+                        // positive: moved from Sola to Stripe; negative: a correction back to Sola
+                        amountCents = j.Entries.Where(e => e.Account == LedgerAccount.PlatformSola).Sum(e => e.AmountCents)
+                    })
+                }
+            });
+        }, StaffPermission.PaymentsView);
+
+        p.APost("/sola/funding", async (FundingRequest r, HttpContext ctx, AppDbContext db, LedgerService ledger, SolaTreasuryService treasury, AdminAudit audit) =>
+        {
+            var dir = string.IsNullOrWhiteSpace(r.Direction) ? "sola_to_stripe" : r.Direction.Trim().ToLowerInvariant();
+            if (dir is not ("sola_to_stripe" or "stripe_to_sola")) return Validation.Invalid("direction", "Use sola_to_stripe or stripe_to_sola (a correction).");
+            if (r.AmountCents is not (> 0 and <= 1_000_000_000)) return Validation.Invalid("amountCents", "Use a positive integer number of cents (at most 1,000,000,000).");
+            if (r.Currency is not { Length: 3 } cur || !cur.All(char.IsAsciiLetterUpper)) return Validation.Invalid("currency", "Use an ISO 4217 code in upper case, e.g. USD.");
+            if (string.IsNullOrWhiteSpace(r.Reference) || r.Reference.Trim().Length > 100) return Validation.Invalid("reference", "Give the bank or Sola batch reference of the move (at most 100 characters).");
+            if (string.IsNullOrWhiteSpace(r.RequestId) || r.RequestId.Length > 80) return Validation.Invalid("requestId", "A request id (at most 80 characters) is required: it makes the request safe to repeat.");
+            if (AdminHttp.NeedReason(r.Note, out var note) is { } bad) return bad;
+            var amount = r.AmountCents.Value; var reference = r.Reference.Trim(); var signed = dir == "sola_to_stripe" ? amount : -amount;
+            // idempotent per request id: the same request again changes nothing; the same id with other figures is a mistake, not a repeat
+            var key = SolaTreasuryService.Key(r.RequestId);
+            if (await db.LedgerJournals.AsNoTracking().Include(j => j.Entries).FirstOrDefaultAsync(j => j.IdempotencyKey == key) is { } prior)
+            {
+                var same = prior.Currency == cur && prior.Entries.Where(e => e.Account == LedgerAccount.PlatformSola).Sum(e => e.AmountCents) == signed && prior.SourceRef == reference;
+                return same ? Results.Ok(new { recorded = false, journalId = prior.Id })
+                    : AdminHttp.Err(409, "request_id_reused", "This request id was already used for a different funding. Use a new request id.");
+            }
+            // a correction can not take back more than was funded in that currency
+            if (signed < 0 && (await treasury.LinesAsync()).FirstOrDefault(l => l.Currency == cur)?.FundedCents is var funded && (funded ?? 0) < amount)
+                return AdminHttp.Err(422, "exceeds_funded", $"Only {funded ?? 0} (minor units) were recorded as funded in {cur}.");
+            var before = (await treasury.LinesAsync()).FirstOrDefault(l => l.Currency == cur);
+            var j = await treasury.AddFundingAsync(dir, amount, cur, reference, note, r.RequestId, ctx.Staff().UserId);
+            if (j is null) return Results.Ok(new { recorded = false });
+            audit.Add(ctx.Staff(), "payments.provider_funding", "payments", null, note, new { unfundedCents = before?.UnfundedCents ?? 0, fundedCents = before?.FundedCents ?? 0 },
+                new { direction = dir, amountCents = amount, currency = cur, reference, requestId = r.RequestId, journalId = j.Id });
+            if (!await ledger.SaveAsync()) return Results.Ok(new { recorded = false });
+            var after = (await treasury.LinesAsync()).FirstOrDefault(l => l.Currency == cur);
+            return Results.Ok(new { recorded = true, journalId = j.Id, currency = cur, fundedCents = after?.FundedCents ?? 0, unfundedCents = after?.UnfundedCents ?? 0 });
+        }, StaffPermission.PaymentsAdjust);
 
         p.APost("/reconciliation/run", async (HttpContext ctx, ReconciliationService svc, AdminAudit audit) =>
         {

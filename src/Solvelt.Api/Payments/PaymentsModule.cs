@@ -44,6 +44,7 @@ public static class PaymentsModule
         builder.Services.AddScoped<JobLeaseService>();
         builder.Services.AddScoped<ReleaseService>();
         builder.Services.AddScoped<TransferService>();
+        builder.Services.AddScoped<SolaTreasuryService>();
         builder.Services.AddScoped<ReconciliationService>();
         if (!env.IsEnvironment("Testing") && p.RunBackgroundJobs) builder.Services.AddHostedService<PaymentsWorker>();
 

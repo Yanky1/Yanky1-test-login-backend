@@ -237,7 +237,8 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
     private async Task<string> DisputeEvent(JsonElement o, DateTime created)
     {
         var did = Str(o, "id"); if (did is null) return "invalid";
-        var rows = await db.PaymentDisputes.Where(d => d.ExternalId == did).ToListAsync();   // one row per seller order the marketplace allocated a share to
+        // Stripe rows and Stripe references ONLY (C19.1-4): a Sola chargeback or a Sola xRefNum with the same characters is never matched, changed or debited by a Stripe webhook
+        var rows = await db.PaymentDisputes.Where(d => d.Provider == PaymentProviders.Stripe && d.ExternalId == did).ToListAsync();   // one row per seller order the marketplace allocated a share to
         var amount = Long(o, "amount") ?? 0; var cur = (Str(o, "currency") ?? "usd").ToUpperInvariant();
         var raw = (Str(o, "status") ?? "needs_response").ToLowerInvariant();
         // Stripe inquiries (warning_*) are early warnings that move no money: kept as "inquiry" without a debit or fee
@@ -246,7 +247,7 @@ public class StripeWebhookService(AppDbContext db, LedgerService ledger, Payment
         var due = o.TryGetProperty("evidence_details", out var ev) ? Unix(ev, "due_by") : null;
         var charge = Str(o, "charge") ?? Str(o, "payment_intent");
         var refs = new[] { Str(o, "charge"), Str(o, "payment_intent") }.Where(x => !string.IsNullOrEmpty(x)).ToList();
-        var pr = await db.PaymentReferences.AsNoTracking().Where(r => refs.Contains(r.Ref)).OrderBy(r => r.CapturedAt).FirstOrDefaultAsync();
+        var pr = await db.PaymentReferences.AsNoTracking().Where(r => r.Provider == PaymentProviders.Stripe && refs.Contains(r.Ref)).OrderBy(r => r.CapturedAt).FirstOrDefaultAsync();
         List<SellerOrder> orders = []; Booking? booking = null;
         if (pr?.MarketplaceOrderId is { } mo) orders = await db.Orders.AsNoTracking().Where(x => x.MarketplaceOrderId == mo).ToListAsync();
         else if (pr?.MarketplaceBookingId is { } mb) booking = await db.Bookings.AsNoTracking().FirstOrDefaultAsync(x => x.MarketplaceBookingId == mb);
