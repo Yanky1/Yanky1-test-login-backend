@@ -1,4 +1,4 @@
-# Marketplace contract: index and C18 quantity offers
+# Marketplace contract: index, C18 quantity offers and C19 Sola-paid phone orders
 
 The seller portal and the buyer marketplace talk through the **signed internal API** (`/api/internal/v1`, signing in `docs/ORDERS.md` section 3.1) and the **signed outbox webhook** (`docs/ORDERS.md` section 3.4). Where each part lives:
 
@@ -10,6 +10,7 @@ The seller portal and the buyer marketplace talk through the **signed internal A
 | Payments, refunds, disputes | `docs/PAYMENTS.md` |
 | Reviews (C17) | `docs/REVIEWS.md` |
 | **Quantity offers (C18)** | **this file**, plus `docs/CATALOG.md` section 11 and `docs/ORDERS.md` section 3.2 |
+| **Sola-paid phone orders (C19)**: `provider` on money events | **this file**, plus `docs/PAYMENTS.md` sections 2, 6, 9, 10 and 12 |
 
 ---
 
@@ -161,3 +162,91 @@ Hand these to the marketplace workers (repos `solvelt-marketplace-api`, `solvelt
 - [ ] **Voice / phone assistant.** Quote totals with the same pricing function as the website (never its own maths), including the gifts, so the phone total equals the web total for the same cart.
 - [ ] **Refund display.** Show refunds with the amounts the portal reports; never re-price kept units after a partial refund (C18.1-9).
 - [ ] **Tests to mirror the portal's:** 20 mixed cards = $18.00; 25 = $22.50; 10-19 cards include the $0 gift lines; other sellers' cards don't count; a sale price below the tier stays; an edit within 15 minutes still accepts the old version.
+
+---
+
+## C19. Sola-paid phone orders: provider on money events
+
+Owner decision V-15 (2026-11-18): **Sola** (formerly Cardknox) takes the payment of **phone orders only**. Website checkout and seller payouts stay on Stripe Connect. A Sola payment settles into Solvelt's Sola merchant account, not into Stripe, so the portal must know which provider holds the buyer's money. Sellers are still paid only by Stripe Connect transfers, with the same amounts and the same timing as for a Stripe sale.
+
+The portal never calls Sola and has no Sola keys: everything about a Sola payment reaches it as a signed marketplace event on `POST /api/internal/v1/payment-events` (signing and responses as in `docs/PAYMENTS.md` section 6). Sandbox or test mode only until Ronald says otherwise; no real money.
+
+C19 is **additive**: an event without `provider` is a Stripe event and behaves exactly as before.
+
+### C19.1 Rules (normative)
+
+1. **`provider`** is an optional string on `payment.captured`, `refund.processed`, `dispute.created`, `dispute.updated` and `dispute.closed`: `"stripe"` or `"sola"`. Absent or `null` means `"stripe"`. It is trimmed and compared case-insensitively (`"Sola"` is `sola`). Any other value, or a value that is not a string, is `422 invalid_provider`, checked before anything else in `data` (nothing is stored).
+2. **`paymentRef`** (on `payment.captured`) is required.
+   * `provider: "sola"`: Sola's transaction reference **`xRefNum`** of the approved sale, as a string, at most **100** characters (`422 invalid_payment_ref`).
+   * `provider: "stripe"`: the Stripe charge or payment intent id, as today (the existing limit of 120 characters is kept, so no Stripe event that worked before is refused).
+3. **Dispute id** (`disputeId` on `dispute.*`): for `provider: "sola"` it is **Sola's chargeback reference** (at most 100 characters). For Stripe it stays the `dp_` id.
+4. **References are unique per (provider, reference), never across providers.** A Sola `xRefNum` and a Stripe id with the same characters are two different references; a Sola chargeback reference and a Stripe `dp_` id with the same characters are two different disputes. Stripe's `charge.dispute.*` webhooks look only at Stripe references and Stripe dispute rows, so they can never match, change or debit a Sola payment or a Sola dispute (a Stripe dispute whose charge is known only as a Sola reference is treated as an unknown charge: no money moves and staff get the usual `dispute_unattributed` flag).
+5. **One provider per sale.** A seller order is paid by one provider: the provider of the `payment.captured` that recorded its sale. A later `payment.captured`, `refund.processed` or `dispute.*` for that seller order with **another** provider is `422 provider_mismatch` (nothing is stored). Send the refund and the dispute with the provider that took the payment. (A dispute that arrives before any capture is accepted with its own provider, as disputes are today.)
+6. **Product orders only.** Services are not booked by phone (buyer `docs/VOICE.md`). `provider: "sola"` with any booking `kind` (`booking`, `booking_cancellation_fee`, `booking_no_show_fee`, `booking_extra_charge`), or a Sola `refund.processed` / `dispute.*` that names a `marketplaceBookingId`, is `422 provider_not_supported`.
+7. **Same rules otherwise.** For a Sola sale every other rule of `docs/PAYMENTS.md` section 6 holds unchanged: amounts in integer minor units without tax, the currency rules (`invalid_currency`, `currency_mismatch`), `exceeds_sale`, `ambiguous_order`, `seller_order_required`, the dispute statuses and the multi-seller rule (one `dispute.*` per seller order with that seller order's share), the retryable `404 order_not_found`, `409 sale_not_recorded` and `409 concurrent_update`.
+8. **Idempotency.** `eventId` is one namespace for all marketplace payment events, whatever the provider (the same `eventId` twice answers `200 duplicate`); use ids that cannot collide, for example `sola-cap-{xRefNum}`, `sola-ref-{refundRef}`, `sola-cb-{chargebackRef}-{status}`. The journals are idempotent on their source ids as well: the sale on the seller order, a Sola refund on `(sola, refundId)`, a Sola dispute on `(sola, disputeId, seller order)`. So a re-sent event with a new `eventId` still posts nothing twice.
+9. **Seller money does not depend on the provider.** Fee, net, release (delivery + return window), reserve, negative-balance recovery and transfers are identical for a Sola sale and an equal Stripe sale. Only the counter account that holds the buyer's money differs (`PlatformSola` instead of `Platform`, C19.5).
+10. **Sola disputes have no evidence flow in the portal.** The seller sees the dispute, its amount, fee and status, but cannot respond (`canRespond: false`); Solvelt staff handle Sola chargeback evidence outside the portal.
+
+### C19.2 Fields
+
+| Event | New / changed `data` fields |
+|---|---|
+| `payment.captured` | `provider?: "stripe" \| "sola"`; `paymentRef` = `xRefNum` for Sola (required, at most 100 characters); `kind` must be `order` (or absent) for Sola |
+| `refund.processed` | `provider?: "stripe" \| "sola"`; `refundId` = the Sola reference of the refund transaction (`xRefNum` of the `cc:refund` / `cc:voidrefund`), at most 100 characters; `marketplaceOrderId` (+ `sellerOrderNumber` when the marketplace order has several seller orders) |
+| `dispute.created` / `dispute.updated` / `dispute.closed` | `provider?: "stripe" \| "sola"`; `disputeId` = Sola chargeback reference; `marketplaceOrderId` + `sellerOrderNumber` (required when the order has several seller orders); `amountCents` (this seller order's share); `feeCents` (send it for Sola: the chargeback fee; default `Payments:DefaultDisputeFeeCents`) |
+
+Responses are unchanged, plus `provider` in the `result` of `payment.captured`, `refund.processed` and `dispute.*`.
+
+### C19.3 Examples
+
+```json
+{ "eventId": "sola-cap-10984432761", "type": "payment.captured",
+  "data": { "kind": "order", "provider": "sola", "marketplaceOrderId": "MP-20311", "paymentRef": "10984432761", "currency": "USD", "capturedAt": "2026-11-22T15:04:05Z" } }
+200 { "status": "ok", "result": { "provider": "sola", "results": [ { "sellerOrderId": "5c1e...", "number": "A-1042", "recorded": true } ] } }
+```
+```json
+{ "eventId": "sola-ref-10984433110", "type": "refund.processed",
+  "data": { "provider": "sola", "refundId": "10984433110", "marketplaceOrderId": "MP-20311", "sellerOrderNumber": "A-1042", "amountCents": 2400, "shippingCents": 0, "currency": "USD", "reason": "return" } }
+200 { "status": "ok", "result": { "provider": "sola", "recorded": true, "debitCents": 2160, "feeRefundedCents": 240, "fromPendingCents": 2160 } }
+```
+```json
+{ "eventId": "sola-cb-CB778812-created", "type": "dispute.created",
+  "data": { "provider": "sola", "disputeId": "CB778812", "marketplaceOrderId": "MP-20311", "sellerOrderNumber": "A-1042", "amountCents": 5900, "feeCents": 1500, "currency": "USD", "reason": "fraudulent", "status": "needs_response" } }
+{ "eventId": "sola-cb-CB778812-won", "type": "dispute.closed",
+  "data": { "provider": "sola", "disputeId": "CB778812", "marketplaceOrderId": "MP-20311", "sellerOrderNumber": "A-1042", "status": "won" } }
+```
+A Stripe event is unchanged; `"provider": "stripe"` may be sent explicitly:
+```json
+{ "eventId": "evt-9f2", "type": "payment.captured", "data": { "kind": "order", "marketplaceOrderId": "MP-10045", "paymentRef": "pi_3Nxyz", "currency": "USD" } }
+```
+
+### C19.4 Errors
+
+| Status, `code` | When | Retry? |
+|---|---|---|
+| `422 invalid_provider` | `provider` is not `stripe` / `sola` (or not a string) | No: fix the event |
+| `422 provider_not_supported` | `provider: "sola"` with a booking `kind`, or a Sola refund / dispute naming a `marketplaceBookingId` | No |
+| `422 provider_mismatch` | The seller order's sale was recorded with the other provider (capture, refund or dispute) | No: send it with the provider that took the payment |
+| `422 invalid_payment_ref` | `paymentRef` missing, or longer than 100 characters for Sola (120 for Stripe) | No |
+| `404 order_not_found`, `409 sale_not_recorded`, `409 concurrent_update` | As before | Yes, with backoff |
+| every other `422` | As before (`docs/PAYMENTS.md` section 6) | No |
+
+### C19.5 What the portal does with it (informative)
+
+* **Ledger.** A new counter account **`PlatformSola`** = buyer money held at Sola. A Sola sale debits `PlatformSola` instead of `Platform`; a Sola refund, dispute and dispute fee credit it; a Sola `dispute_won` debits it. The seller-side entries are exactly those of a Stripe sale. Journal keys: the sale `sale:{sellerOrderId}` (one sale per seller order), Sola refunds `sola:refund:{refundId}`, Sola disputes `sola:dispute:{id}:{sellerOrderId}`, `sola:dispute-fee:...`, `sola:dispute-won:...`.
+* **Treasury.** Transfers to sellers come from the platform's **Stripe** balance. When Ronald moves money from the Sola settlement to Stripe, staff record a **`provider_funding`** journal (Platform −x, PlatformSola +x; the reverse corrects a mistake). The staff payments view shows the **unfunded Sola balance**: what has been released to sellers from Sola sales and not yet funded. By default transfers are **not** held by it; the owner switch `Payments:Sola:HoldTransfersWhenUnfunded` holds new transfer batches of a currency while it is above zero. Details: `docs/PAYMENTS.md` sections 2, 9 and 10.
+* **Seller views.** Sale, refund and dispute rows carry `provider`; Sola sales are labelled "Phone order (Sola)" in the ledger, the statement CSV and the order money panel; Sola disputes have `canRespond: false`.
+
+### C19.6 Marketplace side: checklist for the buyer orchestrator
+
+Hand these to the marketplace workers (`solvelt-marketplace-api`; files `Voice/SolaPayment.cs`, `Voice/PhoneOrder.cs`, `Payments/Refunds.cs`, `Outbox/PaymentEventOutbox.cs`):
+
+- [ ] **Capture.** After a **verified** Sola approval of a phone order (`xResult: "A"` on `cc:sale`, or the approved capture of a `cc:authonly`; the response checked server side, never trusted from the caller), send through the payment-event outbox, once per marketplace order: `payment.captured {kind: "order", provider: "sola", marketplaceOrderId, paymentRef: xRefNum, currency, capturedAt}`, `eventId` e.g. `sola-cap-{xRefNum}`. Omit `sellerOrderNumber` to record every seller order of the marketplace order (as for Stripe), or send one event per seller order with `sellerOrderNumber`. Never send a Sola capture for a declined, errored or voided transaction.
+- [ ] **No bookings.** Never send `provider: "sola"` for a booking or a booking fee; phone orders are product orders only.
+- [ ] **Refund.** After a Sola `cc:refund` or `cc:voidrefund` (or a `cc:void` of an unsettled sale) **succeeds**, send `refund.processed {provider: "sola", refundId: <xRefNum of the refund transaction>, marketplaceOrderId, sellerOrderNumber (when several seller orders), amountCents (items without tax), shippingCents (without tax), currency}`, one per seller order refunded, with the tax backed out exactly as for Stripe (`docs/ORDERS.md`, "Money in events"). A void of the whole sale is a full refund of every seller order. Never send it before Sola confirmed the refund.
+- [ ] **Disputes.** From Sola chargeback notifications (or a staff tool where Sola does not notify), send `dispute.created` / `dispute.updated` / `dispute.closed {provider: "sola", disputeId: <chargeback reference>, marketplaceOrderId, sellerOrderNumber, amountCents (this seller order's share), feeCents, currency, status, reason?, evidenceDueBy?}`, one event per seller order, shares adding up to the chargeback amount, each share at most that seller order's sale. Statuses: `needs_response`, `under_review`, `won`, `lost` (and `warning_closed` for an inquiry that ended without a chargeback). A won chargeback: `dispute.closed` with `status: "won"` for every seller order.
+- [ ] **Stripe keeps working.** Website orders keep sending Stripe events unchanged (`provider` absent or `"stripe"`).
+- [ ] **On each answer.** `200 ok / duplicate`: done. `404 order_not_found`, `409 sale_not_recorded`, `409 concurrent_update`: retry with backoff (the outbox already does). `422 invalid_provider`, `invalid_payment_ref`, `provider_not_supported`: a bug in the sender: dead-letter, alert at error level, do not retry. `422 provider_mismatch`: the event names the wrong provider for that order: dead-letter and alert; fix the provider and re-send with a **new** `eventId`. Other `422` (`exceeds_sale`, `currency_mismatch`, `seller_order_required`, `ambiguous_order`): dead-letter and alert, as for Stripe.
+- [ ] **Real money stays off** until Ronald enables it (buyer `docs/VOICE.md`, "Why real money stays off"): sandbox Sola keys only; the portal side is ready once C19 is merged.
+- [ ] **Tests to mirror the portal's:** a Sola capture records the same seller net as a Stripe capture of the same order; a Sola refund and a Sola chargeback (single and multi-seller) are accepted; a Sola booking capture is `422 provider_not_supported`; `provider: "paypal"` is `422 invalid_provider`; a refund with the other provider is `422 provider_mismatch`; the same event twice is `duplicate`.
