@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Solvelt.Api.Admin;
 using Solvelt.Api.Domain;
 using Solvelt.Api.Payments;
@@ -454,6 +455,66 @@ public class PaymentSolaTests
         Assert.Equal(HttpStatusCode.OK, (await sa.Post($"{Admin}/sola/funding", new { amountCents = 2299, currency = "USD", reference = "SOLA-1", note = "Move for the first phone order", requestId = "h-1" })).StatusCode);
         Assert.Equal(2, (await Pay.Transfers(f)).Created);
         Assert.Equal((2299L, 2299L), ((await Pay.Bal(f, a.Seller)).Settled, (await Pay.Bal(f, b.Seller)).Settled));
+    }
+
+    private static Task<List<SolaTreasuryLine>> Treasury(ApiFactory f) => Pay.Run(f, sp => sp.GetRequiredService<SolaTreasuryService>().LinesAsync());
+    private static async Task<(long Released, long Unfunded)> Usd(ApiFactory f) { var l = (await Treasury(f)).Single(x => x.Currency == "USD"); return (l.ReleasedCents, l.UnfundedCents); }
+
+    [Fact]
+    public async Task The_unfunded_figure_follows_Sola_refunds_lost_and_won_chargebacks_after_release_and_fundings()
+    {
+        using var f = new PayFactory();
+        var s = await Orders.NewShop(f);
+        var refunded = await SolaPaid(s); var lost = await SolaPaid(s); var won = await SolaPaid(s);
+        Pay.Age(f, 8); await Pay.Release(f);
+        Assert.Equal((3 * 2299L, 3 * 2299L), await Usd(f));                                // three releases, nothing funded
+
+        // a partial Sola refund after release: 1000 items, 100 fee back, 900 taken from Available
+        Assert.Equal(HttpStatusCode.OK, (await SolaRefund(f, refunded.Mid, refunded.Number, 1000, "60000001")).StatusCode);
+        Assert.Equal((6897L - 900, 6897L - 900), await Usd(f));
+        // a lost chargeback: amount + fee come out of Available
+        Assert.Equal(HttpStatusCode.OK, (await SolaDispute(f, "dispute.created", "CB-60L", lost.Mid, null, 1000, 1500)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await SolaDispute(f, "dispute.closed", "CB-60L", lost.Mid, null, status: "lost")).StatusCode);
+        Assert.Equal((5997L - 2500, 5997L - 2500), await Usd(f));
+        // a won chargeback: the amount comes back, the fee stays taken
+        Assert.Equal(HttpStatusCode.OK, (await SolaDispute(f, "dispute.created", "CB-60W", won.Mid, null, 1000, 1500)).StatusCode);
+        Assert.Equal((3497L - 2500, 3497L - 2500), await Usd(f));
+        Assert.Equal(HttpStatusCode.OK, (await SolaDispute(f, "dispute.closed", "CB-60W", won.Mid, null, status: "won")).StatusCode);
+        Assert.Equal((997L + 1000, 1997L), await Usd(f));
+
+        // a funding takes the unfunded figure down; the released figure stays
+        await Pay.Run(f, async sp =>
+        {
+            Assert.NotNull(await sp.GetRequiredService<SolaTreasuryService>().AddFundingAsync("sola_to_stripe", 1500, "USD", "SOLA-60", "Part of the week", "f-60", Guid.NewGuid()));
+            return await sp.GetRequiredService<LedgerService>().SaveAsync();
+        });
+        Assert.Equal((1997L, 497L), await Usd(f));
+        AllJournalsBalance(f);
+    }
+
+    [Fact]
+    public async Task The_hold_switch_holds_only_the_unfunded_currency_a_EUR_seller_is_still_paid()
+    {
+        using var f = new SolaHoldFactory();
+        var usd = await Orders.NewShop(f); var eur = await Orders.NewShop(f);
+        await Pay.Onboard(usd); await Pay.Onboard(eur);
+        await SolaPaid(usd);
+        Pay.Age(f, 8); await Pay.Release(f);
+        // the EUR seller has an available EUR balance (a staff credit), no Sola money in EUR
+        await Pay.Run(f, async sp =>
+        {
+            var ledger = sp.GetRequiredService<LedgerService>();
+            await ledger.PostAsync(eur.Seller, "EUR", "adjustment", "adjustment:eur-60", "Adjustment by Solvelt (credit)",
+                [new(LedgerAccount.Available, 3000, "adjustment"), new(LedgerAccount.Platform, -3000, "adjustment")]);
+            return await ledger.SaveAsync();
+        });
+        Assert.True((await Treasury(f)).Single(l => l.Currency == "USD").TransfersHeld);
+        Assert.DoesNotContain(await Treasury(f), l => l.Currency == "EUR");
+        var r = await Pay.Transfers(f);
+        Assert.Equal((1, 1), (r.Created, r.Paused));
+        var t = Assert.Single(f.WithDb(db => db.PaymentTransfers.AsNoTracking().ToList()));
+        Assert.Equal((eur.Seller, "EUR", 3000L), (t.SellerId, t.Currency, t.AmountCents));
+        Assert.Equal(2299L, (await Pay.Bal(f, usd.Seller)).Available);                       // the USD seller waits, nothing lost
     }
 
     // ---- reconciliation ---------------------------------------------------------------------------------------------------------
