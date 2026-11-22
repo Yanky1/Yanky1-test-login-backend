@@ -93,6 +93,8 @@ public class AdminAccessTests(OrdersFactory f) : IClassFixture<OrdersFactory>
         ("GET", "/api/v1/admin/payments/accounts/requirements-past-due", StaffPermission.PaymentsView, null),
         ("GET", "/api/v1/admin/payments/reconciliation", StaffPermission.PaymentsView, null),
         ("GET", "/api/v1/admin/payments/unallocated-disputes", StaffPermission.PaymentsView, null),
+        ("GET", "/api/v1/admin/payments/sola/treasury", StaffPermission.PaymentsView, null),
+        ("POST", "/api/v1/admin/payments/sola/funding", StaffPermission.PaymentsAdjust, new { amountCents = 100, currency = "USD", reference = "MATRIX-1", note = StaffKit.Why, requestId = "matrix-funding" }),
         ("POST", "/api/v1/admin/payments/reconciliation/run", StaffPermission.PaymentsRetry, null),
         ("POST", $"/api/v1/admin/payments/reconciliation/{G}/resolve", StaffPermission.PaymentsRetry, new { reason = StaffKit.Why }),
         // shipping (docs/SHIPPING.md)
